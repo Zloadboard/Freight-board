@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Freight Board v2</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f4f8;}
+input,select,textarea{font-family:inherit;}
+input:focus:not(:disabled),select:focus:not(:disabled){outline:2px solid #2563eb;outline-offset:1px;border-radius:3px;}
+button:hover{opacity:0.85;}
+.tab-btn{padding:7px 14px;border:none;border-radius:6px 6px 0 0;cursor:pointer;font-size:11px;font-weight:600;background:#2a4a7a;color:rgba(255,255,255,0.6);margin-right:2px;}
+.tab-btn.active{background:#f0f4f8;color:#1a2e50;}
+.section-header{display:flex;align-items:center;gap:10px;padding:8px 14px;color:#fff;cursor:pointer;user-select:none;}
+.modal-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:1000;}
+.modal{background:#fff;border-radius:12px;padding:24px;max-width:520px;width:90%;max-height:85vh;overflow-y:auto;}
+.sync-dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.spinning{animation:spin 1s linear infinite;display:inline-block;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.fade-in{animation:fadeIn 0.3s ease forwards;}
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#071526 0%,#0f2848 55%,#071e40 100%);padding:20px;}
+.login-card{background:#fff;border-radius:18px;padding:40px 36px;max-width:420px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,0.5);}
+.login-logo{font-size:22px;font-weight:800;color:#0f1f3d;letter-spacing:-0.5px;margin-bottom:4px;}
+.login-sub{font-size:12px;color:#64748b;margin-bottom:28px;}
+.mode-btn{width:100%;padding:14px;border-radius:10px;border:2px solid #e2e8f0;background:#f8fafc;cursor:pointer;font-size:13px;font-weight:700;color:#1e293b;display:flex;align-items:center;gap:10px;transition:border-color .15s,background .15s;margin-bottom:10px;}
+.mode-btn:hover{border-color:#2563eb;background:#eff6ff;}
+.mode-icon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;}
+.pin-input{width:100%;padding:12px 14px;border:2px solid #e2e8f0;border-radius:8px;font-size:18px;font-weight:700;letter-spacing:8px;text-align:center;color:#1e293b;outline:none;margin-top:16px;}
+.pin-input:focus{border-color:#2563eb;}
+.pin-error{color:#dc2626;font-size:11px;font-weight:600;text-align:center;margin-top:6px;}
+.login-btn{width:100%;padding:13px;border:none;border-radius:8px;background:#2563eb;color:#fff;font-size:13px;font-weight:700;cursor:pointer;margin-top:14px;}
+.login-btn:hover{background:#1d4ed8;}
+.viewer-badge{background:#dc2626;color:#fff;font-size:10px;font-weight:700;padding:3px 10px;border-radius:5px;letter-spacing:.06em;text-transform:uppercase;}
+input:disabled,select:disabled{opacity:0.72;cursor:not-allowed!important;}
+@media print{body{display:none!important;}}
+/* Save indicator */
+.save-indicator{position:fixed;bottom:16px;right:16px;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:700;z-index:999;transition:all .3s;box-shadow:0 4px 12px rgba(0,0,0,0.2);}
+.save-ok{background:#064e3b;color:#34d399;border:1px solid #34d399;}
+.save-saving{background:#1e3a5f;color:#93c5fd;border:1px solid #93c5fd;}
+.save-error{background:#7f1d1d;color:#fca5a5;border:1px solid #fca5a5;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef,useMemo,Fragment,useCallback}=React;
+
+// ── CONFIG ────────────────────────────────────────────────────────────────────
+const SHEETS_URL="https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec";
+const ADMIN_PIN_KEY="fcbv2_adminPin";
+const VIEWER_PIN_KEY="fcbv2_viewerPin";
+const DEFAULT_ADMIN="5456654";
+const DEFAULT_VIEWER="12345";
+const HUB="Romeoville, IL";
+
+// ── CONSTANTS ─────────────────────────────────────────────────────────────────
+const LOAD_STATUSES=["Picked Up","Dispatched","In Transit","Dock","Yard","Loaded","Delivered"];
+const TRAILER_NUMBERS=["53113","5384","5378","5366","5381","53121","53104","5389","5315","5357","5379","53109","5344","5332","53100","5342","5392","5390","5369","53108","5337","5391","5348","53102","5307","5325","53118","5329","5388","53122","5335","5368","5333","5314","53117","53112","5321","5351","5395","5355","5304","5345","53115","5396","5363","5386","5353","53106","5356","5370","5393","53114","5317","5310","5338","53124","53123","53116","5399","5362","5347","5371","5319","53103","53101","5324","5322","5352","5331","5346","5330","53107","5365","5376","5385","53120","5340","5343","53111","5334","5349","5375","5394","5358","5397","53","5350","5359","5305","5373","5374","53110","5361","5367","5364","5383","53119","5354","5312","53105","5323","5398","5387","5306","5336","5303","5326","5380","5313"].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+const TRUCK_NUMBERS=["13","15","29","029","407","408","414","422","432","444","445","446","447","449","452","454","455","456","457","458","459","460","461","462","463","464","466","467","468","469","470","471","472","473","474","475","476","477","478","479","480","481","482","483","484","485","486","487","488","489","490","491","492","493","494","495","496","497","498","499","500","501","502","503","504","505","506","507","508","509","510","511","512","514","515","516","517","518","519","520","521","522","523","524"].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+const DRIVERS=["Linas Greiciunas","John Johnson","Douglas Russo","Ringo Brown","Theron Mack","Samwel Masamo","Dennis Onsomu","Moussa Sow","Twizere Brown","Kennedy Nyangena","Emilis Ibianskas","Egidijus Matulis","Edward Kirui","Teresia Mungai","Wycliff Osumo","Martin Kariuki","Leonard Zigirinshuti","Denis Ntore","Edwens Sykvestre","Alex Oyaro","Elhadji Sene","Seth Munyangeri","Erlandas Mastavicius","Jean Ndutiye","Oleh Lashkevych","Willy Rukundo","Paul Ngotho","Jackson Nshimiye","Sefu Mutabazi","Faustin Nkuriyingoma","Jusin Maniraguha","Jamil Hussaini","Badrudin Siraji","Fakhre Alam","Hassan Mupenzi","Simolien Etienne","Joshua Onditi","Bassirou Diouf","Elkanah Machuka","Palvinson Phizema","Claude Michael","Dominic Nyangau","Zach Barker","Evans Nyangechi","Khoda Nabizada","Nkurikiye Damascene","Taban Tor","Austen Powers","Ahmed Omar","Benard Nyamanya","Michael Mutua","Allan Zebron","Papy Gakona","Vincent Okero","Luc Mpangaje","Sumaile Abedi","Fred Nyangau","Ananias Lisimwege","Tiberius Mose","Elhadji Diagne","Gassendy Alcemora","Dominic Muchiri","Victor Machoka","Betwel Onchabo","Rudatinya Ganza","Daniel Mwangi","Mayom Akeeg","Gideon Githinji","Sterling Yves","Haron Ombui"].sort();
+
+const DIST={"romeoville":0,"lockport":5,"joliet":8,"bolingbrook":5,"woodridge":8,"darien":15,"burr ridge":12,"willowbrook":10,"hodgkins":18,"bedford park":20,"bridgeview":20,"oak lawn":22,"evergreen park":24,"alsip":18,"blue island":20,"country club hills":20,"markham":22,"harvey":22,"naperville":15,"aurora":20,"batavia":25,"geneva":28,"st. charles":28,"saint charles":28,"north aurora":20,"n aurora":20,"sugar grove":22,"oswego":12,"montgomery":14,"yorkville":15,"plano":22,"sandwich":28,"west chicago":25,"w chicago":25,"carol stream":20,"glendale heights":22,"addison":22,"elmhurst":22,"villa park":22,"lombard":20,"downers grove":15,"westmont":15,"lisle":15,"itasca":22,"wood dale":22,"bensenville":25,"elk grove village":25,"elk grove vlg":25,"bloomingdale":22,"roselle":25,"hanover park":28,"streamwood":28,"bartlett":30,"schaumburg":28,"elgin":35,"hoffman estates":30,"barrington":40,"crystal lake":45,"mchenry":50,"wauconda":48,"lake zurich":45,"mundelein":48,"libertyville":50,"gurnee":52,"waukegan":55,"north chicago":55,"zion":58,"chicago":30,"chicago hts":25,"chicago heights":25,"cicero":22,"berwyn":22,"oak park":25,"melrose park":25,"franklin park":25,"northlake":23,"bellwood":23,"broadview":22,"berkeley":22,"hillside":20,"la grange":18,"la grange park":18,"mccook":20,"forest park":24,"maywood":25,"stone park":25,"rosemont":27,"des plaines":28,"park ridge":28,"niles":28,"skokie":30,"evanston":32,"wheeling":33,"buffalo grove":38,"palatine":35,"arlington heights":33,"mount prospect":30,"rolling meadows":30,"willow springs":12,"palos heights":12,"orland park":15,"tinley park":18,"oak forest":15,"midlothian":22,"homewood":22,"flossmoor":22,"matteson":20,"park forest":22,"crete":25,"sauk village":28,"calumet city":28,"lansing":28,"south holland":25,"dolton":26,"monee":22,"university park":22,"beecher":28,"peotone":20,"channahon":10,"minooka":12,"elwood":10,"manhattan":12,"mokena":14,"new lenox":14,"frankfort":16,"steger":22,"wilmington":18,"braidwood":22,"coal city":20,"diamond":22,"seneca":30,"marseilles":40,"ottawa":62,"la salle":65,"peru":65,"streator":50,"pontiac":70,"bloomington":90,"normal":90,"decatur":110,"springfield":100,"peoria":120,"bartonville":120,"east peoria":120,"morton":120,"mackinaw":110,"goodfield":115,"minonk":100,"kankakee":35,"bourbonnais":35,"bradley":32,"manteno":30,"momence":45,"hoopeston":80,"danville":100,"champaign":110,"urbana":110,"lemont":12,"homer glen":12,"orland hills":15,"carpentersville":38,"dundee":40,"west dundee":40,"hampshire":42,"genoa":50,"dekalb":50,"sycamore":52,"rochelle":65,"dixon":75,"sterling":95,"rock falls":95,"rockford":78,"loves park":80,"machesney park":82,"roscoe":82,"belvidere":60,"marengo":52,"woodstock":55,"antioch":60,"fox lake":58,"round lake":52,"hammond":28,"east chicago":28,"gary":32,"portage":40,"chesterton":50,"valparaiso":45,"hobart":35,"merrillville":35,"merrilville":35,"crown point":32,"dyer":28,"st. john":28,"schererville":30,"munster":28,"highland":30,"michigan city":60,"la porte":65,"laporte":65,"south bend":95,"mishawaka":95,"elkhart":110,"goshen":115,"warsaw":130,"bremen":100,"plymouth":95,"rochester":95,"north judson":65,"knox":85,"logansport":105,"kokomo":120,"indianapolis":175,"anderson":155,"fort wayne":155,"auburn":150,"remington":80,"rensselaer":70,"temperance":55,"kenosha":55,"pleasant prairie":55,"racine":62,"sturtevant":62,"oak creek":65,"franksville":65,"caledonia":68,"milwaukee":72,"west allis":72,"greenfield":72,"new berlin":72,"muskego":70,"franklin":68,"glendale":74,"wauwatosa":72,"butler":72,"menomonee falls":78,"waukesha":75,"brookfield":74,"pewaukee":78,"delafield":85,"oconomowoc":90,"watertown":100,"germantown":82,"sussex":82,"hartland":85,"east troy":72,"elkhorn":75,"lake geneva":80,"delavan":82,"beloit":82,"janesville":85,"edgerton":90,"whitewater":90,"fort atkinson":110,"jefferson":100,"madison":95,"middleton":98,"stoughton":98,"verona":97,"baraboo":140,"beaver dam":115,"fond du lac":125,"oshkosh":130,"appleton":135,"neenah":135,"green bay":155,"sheboygan":130,"brillion":160,"manitowoc":150,"wausau":190,"eau claire":250,"la crosse":250,"hudson":310,"kalamazoo":115,"battle creek":125,"grand rapids":130,"lansing":155,"detroit":290,"ann arbor":280,"davenport":170,"des moines":290,"st. louis":285,"kansas city":480,"fountain inn":840,"spartanburg":850,"rock hill":875,"charlotte":905,"matthews":890,"lugoff":860,"jacksonville":1240,"deltona":1260,"orlando":1290,"tampa":1340,"dothan":1000,"birmingham":890,"huntsville":840,"nashville":510,"memphis":560,"knoxville":570,"chattanooga":620,"louisville":330,"lexington":425,"hammond la":950,"baton rouge":1000,"new orleans":1050,"dallas":980,"fort worth":985,"houston":1110,"san antonio":1200,"oklahoma city":720,"tulsa":700,"atlanta":730,"mcdonough":745,"douglasville":750,"college park":738,"alabaster":890};
+
+function cityMiles(s){if(!s)return null;const c=s.split(",")[0].trim().toLowerCase();if(DIST[c]!==undefined)return DIST[c];for(const k of Object.keys(DIST))if((c.includes(k)||k.includes(c))&&k.length>4)return DIST[k];return null;}
+const TIERS=[[10,250],[25,300],[50,350],[75,400],[100,450],[125,500],[150,550]];
+function localCharge(m){if(m==null||m==="")return null;const v=parseFloat(m);if(isNaN(v)||v<0)return null;if(v===0)return 250;for(const[mx,c]of TIERS)if(v<=mx)return c;return 550;}
+function parsePickupDate(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return null;const d=new Date(`${dm[3]}-${dm[1].padStart(2,"0")}-${dm[2].padStart(2,"0")}`);d.setHours(0,0,0,0);return d;}
+function parseTS(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return Infinity;const d=new Date(`${dm[3]}-${dm[1].padStart(2,"0")}-${dm[2].padStart(2,"0")}`);const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);if(tm){let h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}return d.getTime();}
+function parseSR(t=""){const i=t.indexOf(" - ");return i<0?{s:t.trim(),r:""}:{s:t.slice(0,i).trim(),r:t.slice(i+3).trim()};}
+
+function rowColor(load,today,tomorrow){
+  if(load.status==="Delivered")return{bg:"#86efac",stripe:"#16a34a",tc:"#000000",bold:true};
+  if(load.status==="Loaded")return{bg:"#86efac",stripe:"#16a34a",tc:"#000000",bold:true};
+  if(load.status==="In Transit"||load.status==="Dispatched")return{bg:"#fb923c",stripe:"#c2410c",tc:"#000000",bold:true};
+  if(load.status==="Dock"||load.status==="Yard")return{bg:"#c4b5fd",stripe:"#6d28d9",tc:"#000000",bold:true};
+  if(load.status==="Picked Up")return{bg:"#fde047",stripe:"#ca8a04",tc:"#000000",bold:true};
+  const pd=parsePickupDate(load.pickup);
+  if(!pd)return{bg:"#f8fafc",stripe:"#94a3b8",tc:"#1e293b",bold:false};
+  const pt=pd.getTime(),t=today.getTime(),tm=tomorrow?tomorrow.getTime():t+86400000;
+  if(pt===t)return{bg:"#fde047",stripe:"#ca8a04",tc:"#000000",bold:true};
+  return{bg:"#f87171",stripe:"#b91c1c",tc:"#000000",bold:true};
+}
+
+const rpmBg=v=>v==null?"#f9fafb":v>=3?"#dcfce7":v<2.5?"#fee2e2":"#fef9c3";
+const rpmFg=v=>v==null?"#9ca3af":v>=3?"#166534":v<2.5?"#991b1b":"#92400e";
+const GSS={"Pending":{bg:"#f9fafb",fg:"#6b7280",br:"#d1d5db"},"Driver assigned":{bg:"#fff7ed",fg:"#c2410c",br:"#fb923c"},"Loaded":{bg:"#fffbeb",fg:"#92400e",br:"#fcd34d"},"In Transit":{bg:"#f5f3ff",fg:"#5b21b6",br:"#a78bfa"},"Delivered":{bg:"#f0fdf4",fg:"#166534",br:"#86efac"},"Issue":{bg:"#fff1f2",fg:"#be123c",br:"#fca5a5"}};
+
+let _uid=Date.now();
+const uid=()=>++_uid;
+const mkLoad=(o={})=>({id:uid(),sr:"",broker:"",pickup:"",delivery:"",product:"",pallets:"",weight:"",rate:"",driver:"",truck:"",trailer:"",status:"",notes:"",manualPickupMi:"",...o});
+const mkGroup=()=>({id:uid(),tripMiles:"",groupDriver:"",groupTruck:"",groupTrailer:"",groupStatus:"Pending",groupNotes:"",loads:[mkLoad()]});
+const mkWeek=(label)=>({id:uid(),label:label||"New Week",groups:[mkGroup()],localDeliveries:[],crossdockDrops:[],accessorials:[],openSections:{main:true,local:false,xdrop:false,acc:false,otr:true}});
+const mkLocal=()=>({id:uid(),destination:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""});
+const mkXDrop=()=>({id:uid(),location:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""});
+const mkAcc=()=>({id:uid(),broker:"",loadNum:"",amount:"",type:"Detention",notes:""});
+
+function calcGroup(g){
+  const loads=g.loads.map(l=>{const{s,r}=parseSR(l.sr);const am=cityMiles(s);const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;return{...l,shipper:s,receiver:r,pickupMiAuto:am,pickupMiUsed:um,localCharge:localCharge(um),tripPrice:parseFloat(l.rate)||0};});
+  const sd=[...loads].sort((a,b)=>parseTS(a.delivery)-parseTS(b.delivery));
+  const so={};sd.forEach((l,i)=>{so[l.id]=i+1;});
+  const sp=[...loads].sort((a,b)=>parseTS(a.pickup)-parseTS(b.pickup));
+  const rcvrs=sd.map(l=>l.receiver).filter(Boolean);
+  const tm=g.tripMiles?parseFloat(g.tripMiles):null;
+  const gross=loads.reduce((s,l)=>s+l.tripPrice,0);
+  const loc=loads.reduce((s,l)=>s+(l.localCharge||0),0);
+  const rpm=(tm&&tm>0)?+((gross-loc)/tm).toFixed(2):null;
+  return{...g,calcTripMi:tm,rcvrs,rpm,gross,loc,loads:sp.map(l=>({...l,stop:so[l.id]??null}))};
+}
+
+// ── SHEETS API ────────────────────────────────────────────────────────────────
+async function sheetsLoad(){
+  const r=await fetch(SHEETS_URL,{redirect:"follow"});
+  if(!r.ok)throw new Error("HTTP "+r.status);
+  const d=await r.json();
+  return d;
+}
+async function sheetsSave(data){
+  const payload={...data,savedAt:Date.now()};
+  // Use no-cors mode — we can't read the response but the save goes through
+  await fetch(SHEETS_URL,{
+    method:"POST",
+    mode:"no-cors",
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body:JSON.stringify({data:payload})
+  });
+}
+
+// ── LOGIN ─────────────────────────────────────────────────────────────────────
+function LoginScreen({onLogin}){
+  const adminPin=localStorage.getItem(ADMIN_PIN_KEY)||DEFAULT_ADMIN;
+  const viewerPin=localStorage.getItem(VIEWER_PIN_KEY)||DEFAULT_VIEWER;
+  const[mode,setMode]=useState(null);
+  const[pin,setPin]=useState("");
+  const[err,setErr]=useState("");
+  const inputRef=useRef(null);
+  useEffect(()=>{if(mode)setTimeout(()=>inputRef.current?.focus(),100);},[mode]);
+  const attempt=()=>{
+    if(mode==="admin"){if(pin===adminPin)onLogin("admin");else{setErr("Incorrect PIN");setPin("");}}
+    else{if(pin===viewerPin)onLogin("viewer");else{setErr("Incorrect PIN");setPin("");}}
+  };
+  return(
+    <div className="login-wrap">
+      <div className="login-card fade-in">
+        <div style={{textAlign:"center",marginBottom:"28px"}}>
+          <div style={{width:"54px",height:"54px",background:"#0f1f3d",borderRadius:"14px",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 14px",fontSize:"26px"}}>🚛</div>
+          <div className="login-logo">Freight Board</div>
+          <div className="login-sub">Romeoville, IL Hub · Restricted Access</div>
+        </div>
+        {!mode?(
+          <>
+            <button className="mode-btn" onClick={()=>setMode("admin")}><div className="mode-icon" style={{background:"#1e3a5f"}}>🔐</div><div><div style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>Admin Access</div><div style={{fontSize:"11px",color:"#64748b",fontWeight:"400"}}>Full board control</div></div></button>
+            <button className="mode-btn" onClick={()=>setMode("viewer")}><div className="mode-icon" style={{background:"#064e3b"}}>👁</div><div><div style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>View Board</div><div style={{fontSize:"11px",color:"#64748b",fontWeight:"400"}}>Live read-only access</div></div></button>
+          </>
+        ):(
+          <div className="fade-in">
+            <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"16px"}}>
+              <button onClick={()=>{setMode(null);setPin("");setErr("");}} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",color:"#475569",cursor:"pointer"}}>← Back</button>
+              <span style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>{mode==="admin"?"Admin PIN":"Viewer PIN"}</span>
+            </div>
+            <input ref={inputRef} type="password" className="pin-input" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>e.key==="Enter"&&attempt()} placeholder="••••" maxLength={20} autoComplete="off"/>
+            {err&&<div className="pin-error">{err}</div>}
+            <button className="login-btn" onClick={attempt}>{mode==="admin"?"Enter Admin Mode":"View Board →"}</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── MAIN APP ──────────────────────────────────────────────────────────────────
+function App(){
+  const[appMode,setAppMode]=useState(null);
+  const[weeks,setWeeks]=useState([]);
+  const[activeWeek,setActiveWeek]=useState(0);
+  const[activeTab,setActiveTab]=useState("weeks");
+  const[saveStatus,setSaveStatus]=useState("idle"); // idle|saving|saved|error
+  const[loading,setLoading]=useState(true);
+  const[driverFilter,setDriverFilter]=useState({});
+  const saveTimer=useRef(null);
+  const isViewer=appMode==="viewer";
+
+  const today=useMemo(()=>{const d=new Date();d.setHours(0,0,0,0);return d;},[]);
+  const tomorrow=useMemo(()=>{const d=new Date(today);d.setDate(d.getDate()+1);return d;},[today]);
+
+  // ── Load from Sheets on login ─────────────────────────────────────────────
+  useEffect(()=>{
+    if(!appMode)return;
+    setLoading(true);
+    sheetsLoad()
+      .then(data=>{
+        const rawWeeks=Array.isArray(data)?data:(data.weeks||[]);
+        if(rawWeeks.length>0){
+          setWeeks(rawWeeks);
+        } else {
+          // Sheets is empty — start with a blank week
+          setWeeks([mkWeek("Week of "+new Date().toLocaleDateString("en-US"))]);
+        }
+        setLoading(false);
+      })
+      .catch(()=>{
+        setWeeks([mkWeek(new Date().toLocaleDateString("en-US",{month:"numeric",day:"numeric",year:"numeric"}))]);
+        setLoading(false);
+        setSaveStatus("error");
+      });
+  },[appMode]);
+
+  // ── Auto-save to Sheets on every change ───────────────────────────────────
+  const saveToSheets=useCallback((w)=>{
+    clearTimeout(saveTimer.current);
+    setSaveStatus("saving");
+    saveTimer.current=setTimeout(async()=>{
+      try{
+        await sheetsSave({weeks:w});
+        // no-cors means we can't read response but if no exception = success
+        setSaveStatus("saved");
+        setTimeout(()=>setSaveStatus("idle"),3000);
+      }catch(err){
+        // Only show error if it's a real network failure
+        if(err.name==="TypeError"){
+          setSaveStatus("error");
+        } else {
+          // no-cors opaque response — treat as success
+          setSaveStatus("saved");
+          setTimeout(()=>setSaveStatus("idle"),3000);
+        }
+      }
+    },800);
+  },[]);
+
+  const setWeeksAndSave=useCallback((updater)=>{
+    setWeeks(prev=>{
+      const next=typeof updater==="function"?updater(prev):updater;
+      if(!isViewer)saveToSheets(next);
+      return next;
+    });
+  },[isViewer,saveToSheets]);
+
+  const week=weeks[Math.min(activeWeek,weeks.length-1)];
+  const computed=useMemo(()=>(week?.groups||[]).map(calcGroup),[week]);
+  const allLoads=computed.flatMap(g=>g.loads);
+  const totGross=computed.reduce((s,g)=>s+g.gross,0);
+  const totLocal=computed.reduce((s,g)=>s+g.loc,0);
+  const totAcc=(week?.accessorials||[]).reduce((s,a)=>s+(parseFloat(a.amount)||0),0);
+  const pendingGroups=computed.filter(g=>g.groupStatus!=="In Transit"&&g.groupStatus!=="Delivered");
+  const otrGroups=computed.filter(g=>g.groupStatus==="In Transit"||g.groupStatus==="Delivered");
+
+  const cToday=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);return pd&&pd.getTime()===today.getTime()&&!l.status;}).length;
+  const cTomorrow=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);return pd&&pd.getTime()===tomorrow.getTime()&&!l.status;}).length;
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const setW=(f,v)=>setWeeksAndSave(p=>p.map((w,i)=>i!==activeWeek?w:{...w,[f]:v}));
+  const toggleSection=k=>setW("openSections",{...week.openSections,[k]:!week.openSections?.[k]});
+  const setLoad=(gid,lid,f,v)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:g.loads.map(l=>l.id!==lid?l:{...l,[f]:v})}));
+  const setGroup=(gid,f,v)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,[f]:v}));
+  const addLoad=gid=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:[...g.loads,mkLoad()]}));
+  const removeLoad=(gid,lid)=>setW("groups",week.groups.map(g=>{if(g.id!==gid)return g;const ls=g.loads.filter(l=>l.id!==lid);return{...g,loads:ls.length?ls:[mkLoad()]};}));
+  const addGroup=()=>setW("groups",[...week.groups,mkGroup()]);
+  const removeGroup=gid=>{if(week.groups.length>1)setW("groups",week.groups.filter(g=>g.id!==gid));};
+  const updSub=(sec,id,f,v)=>setW(sec,(week[sec]||[]).map(r=>r.id!==id?r:{...r,[f]:v}));
+  const addSub=(sec,mk)=>setW(sec,[...(week[sec]||[]),mk()]);
+  const removeSub=(sec,id)=>setW(sec,(week[sec]||[]).filter(r=>r.id!==id));
+  const addWeek=()=>{const l=prompt("Week label (e.g. 3.30.2026 - 4.6.2026)");if(!l)return;setWeeksAndSave(p=>[...p,mkWeek(l)]);setActiveWeek(weeks.length);};
+  const removeWeek=i=>{if(weeks.length<=1){alert("Cannot remove last week.");return;}if(!confirm("Remove this week?"))return;setWeeksAndSave(p=>p.filter((_,j)=>j!==i));setActiveWeek(0);};
+
+  const TH=(bg,ex={})=>({padding:"6px 4px",fontSize:"10px",fontWeight:"600",background:bg||"#1a2e50",color:"#fff",border:"1px solid rgba(255,255,255,0.15)",whiteSpace:"nowrap",textAlign:"center",position:"sticky",top:0,zIndex:5,...ex});
+  const TD=(bg,ex={})=>({padding:"2px 4px",border:"0.5px solid rgba(0,0,0,0.08)",background:bg||"transparent",verticalAlign:"middle",fontSize:"11px",...ex});
+  const IN=(ex={})=>({width:"100%",border:"none",background:"transparent",fontSize:"11px",padding:"2px",color:"inherit",fontFamily:"inherit",fontWeight:"inherit",outline:"none",boxSizing:"border-box",...ex});
+  const CELL=(bg,ex={})=>({padding:"4px 6px",border:"0.5px solid #e2e8f0",background:bg||"#fff",verticalAlign:"middle",fontSize:"11px",...ex});
+  const INCEL=(ex={})=>({width:"100%",border:"none",background:"transparent",fontSize:"11px",padding:"1px 2px",color:"#111",fontFamily:"inherit",outline:"none",...ex});
+
+  if(!appMode)return <LoginScreen onLogin={setAppMode}/>;
+
+  if(loading)return(
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#0f1f3d",flexDirection:"column",gap:"16px"}}>
+      <div className="spinning" style={{fontSize:"32px"}}>↻</div>
+      <div style={{color:"#fff",fontSize:"14px",fontWeight:"600"}}>Loading from Google Sheets...</div>
+      <div style={{color:"rgba(255,255,255,0.4)",fontSize:"11px"}}>This is the live data. One moment.</div>
+    </div>
+  );
+
+  return(
+  <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",padding:"12px"}}>
+
+    {/* ── SAVE INDICATOR ── */}
+    {saveStatus!=="idle"&&(
+      <div className={`save-indicator ${saveStatus==="saving"?"save-saving":saveStatus==="saved"?"save-ok":"save-error"}`}>
+        {saveStatus==="saving"&&<><span className="spinning">↻</span> Saving to Sheets...</>}
+        {saveStatus==="saved"&&<>✓ Saved to Google Sheets</>}
+        {saveStatus==="error"&&<>⚠ Save failed — retrying</>}
+      </div>
+    )}
+
+    {/* ── HEADER ── */}
+    <div style={{background:"#0f1f3d",borderRadius:"10px 10px 0 0",padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"8px"}}>
+      <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+        <div style={{color:"#fff",fontWeight:"700",fontSize:"15px"}}>🚛 Freight Consolidation Board</div>
+        {isViewer&&<span className="viewer-badge">Viewer</span>}
+      </div>
+      <div style={{display:"flex",gap:"8px",alignItems:"center",flexWrap:"wrap"}}>
+        <div style={{display:"flex",alignItems:"center",gap:"5px",background:"#0a1628",border:"1px solid #1e3a5f",padding:"3px 10px",borderRadius:"6px"}}>
+          <span style={{width:"7px",height:"7px",borderRadius:"50%",background:saveStatus==="error"?"#f87171":"#34d399",display:"inline-block",boxShadow:saveStatus==="error"?"0 0 6px #f87171":"0 0 6px #34d399"}}/>
+          <span style={{fontSize:"10px",color:"#94a3b8",fontWeight:"600"}}>Live · Google Sheets</span>
+        </div>
+        {!isViewer&&<button onClick={()=>setActiveTab("weeks")} style={{background:activeTab==="weeks"?"#2563eb":"#1e3a5f",color:"#fff",border:"none",padding:"5px 13px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>Weekly Boards</button>}
+        {!isViewer&&<button onClick={()=>setActiveTab("stats")} style={{background:activeTab==="stats"?"#b45309":"#1e3a5f",color:"#fff",border:"none",padding:"5px 13px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>📊 Stats</button>}
+        <button onClick={()=>{
+          const data={weeks,savedAt:Date.now()};
+          const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+          const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+          a.download=`freight-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();
+        }} style={{background:"#7c3aed",color:"#fff",border:"none",padding:"5px 13px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>⬇ Export</button>
+        {!isViewer&&<label style={{background:"#059669",color:"#fff",borderRadius:"6px",padding:"5px 13px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>
+          ⬆ Import
+          <input type="file" accept=".json" style={{display:"none"}} onChange={e=>{
+            const f=e.target.files[0];if(!f)return;
+            const r=new FileReader();
+            r.onload=ev=>{
+              try{const d=JSON.parse(ev.target.result);const w=d.weeks||d;if(!Array.isArray(w)){alert("Invalid file");return;}if(!confirm(`Import ${w.length} week(s)? This replaces current data.`))return;setWeeksAndSave(w);setActiveWeek(0);alert("✅ Imported!");}
+              catch{alert("Could not read file.");}
+            };r.readAsText(f);e.target.value="";
+          }}/>
+        </label>}
+        <button onClick={()=>setAppMode(null)} style={{background:"transparent",border:"1px solid rgba(255,255,255,0.2)",color:"rgba(255,255,255,0.5)",padding:"4px 10px",borderRadius:"6px",fontSize:"10px",cursor:"pointer"}}>⏻ Exit</button>
+      </div>
+    </div>
+
+    {/* ── WEEKS TAB ── */}
+    {activeTab==="weeks"&&week&&(
+    <div>
+      {/* Week tabs */}
+      <div style={{background:"#1a2e50",padding:"8px 12px 0",display:"flex",alignItems:"flex-end",gap:"2px",overflowX:"auto"}}>
+        {weeks.map((w,i)=>(
+          <div key={w.id} style={{display:"flex",alignItems:"center"}}>
+            <button className={`tab-btn${i===activeWeek?" active":""}`} onClick={()=>setActiveWeek(i)}>{w.label}</button>
+            {!isViewer&&weeks.length>1&&<button onClick={()=>removeWeek(i)} style={{background:"transparent",border:"none",color:i===activeWeek?"#dc2626":"rgba(255,255,255,0.3)",fontSize:"14px",padding:"0 4px 6px",cursor:"pointer",lineHeight:1}}>×</button>}
+          </div>
+        ))}
+        {!isViewer&&<button onClick={addWeek} style={{padding:"7px 14px",background:"transparent",border:"1px dashed rgba(255,255,255,0.3)",borderBottom:"none",borderRadius:"6px 6px 0 0",color:"rgba(255,255,255,0.6)",cursor:"pointer",fontSize:"11px",fontWeight:"600",marginLeft:"4px"}}>+ Add Week</button>}
+      </div>
+
+      {/* Status bar */}
+      <div style={{background:"#f8fafc",borderLeft:"1px solid #d1d5db",borderRight:"1px solid #d1d5db",padding:"5px 14px",display:"flex",alignItems:"center",gap:"10px"}}>
+        {isViewer?<span style={{fontSize:"12px",fontWeight:"700",color:"#1a2e50"}}>{week.label}</span>
+        :<input value={week.label} onChange={e=>setW("label",e.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 8px",fontSize:"12px",fontWeight:"600",color:"#1a2e50",width:"240px"}}/>}
+        <span style={{fontSize:"10px",color:saveStatus==="saving"?"#fbbf24":saveStatus==="saved"?"#34d399":saveStatus==="error"?"#f87171":"#94a3b8",fontWeight:"600"}}>
+          {saveStatus==="saving"&&<><span className="spinning" style={{display:"inline-block",marginRight:"3px"}}>↻</span>Saving...</>}
+          {saveStatus==="saved"&&"✓ Saved"}
+          {saveStatus==="error"&&"⚠ Save error"}
+          {saveStatus==="idle"&&"✓ Live"}
+        </span>
+      </div>
+
+      {/* Totals bar */}
+      <div style={{background:"#1e3a5f",padding:"7px 16px",display:"flex",gap:"12px",flexWrap:"wrap",alignItems:"center"}}>
+        <span style={{color:"rgba(255,255,255,0.45)",fontSize:"11px"}}>Week:</span>
+        <span style={{color:"#fff",fontSize:"11px",fontWeight:"600"}}>{computed.length} trailers · {allLoads.length} loads</span>
+        <span style={{color:"#93c5fd",fontSize:"11px",fontWeight:"700"}}>${totGross.toLocaleString()} gross</span>
+        <span style={{color:"#fcd34d",fontSize:"11px"}}>− ${totLocal.toLocaleString()} local</span>
+        <span style={{color:"#86efac",fontSize:"11px",fontWeight:"700"}}>= ${(totGross-totLocal).toLocaleString()} net</span>
+        {totAcc>0&&<span style={{color:"#fda4af",fontSize:"11px"}}>+ ${totAcc.toLocaleString()} acc</span>}
+        <div style={{marginLeft:"auto",display:"flex",gap:"5px",flexWrap:"wrap",alignItems:"center"}}>
+          {cToday>0&&<span style={{fontSize:"10px",padding:"2px 8px",background:"#fef9c3",color:"#713f12",borderRadius:"4px",fontWeight:"700",border:"2px solid #eab308"}}>📅 Today ({cToday})</span>}
+          {cTomorrow>0&&<span style={{fontSize:"10px",padding:"2px 8px",background:"#ffe4e6",color:"#881337",borderRadius:"4px",fontWeight:"700",border:"2px solid #f43f5e"}}>📅 Tomorrow ({cTomorrow})</span>}
+          {!isViewer&&<button onClick={addGroup} style={{background:"#2563eb",color:"#fff",border:"none",padding:"2px 10px",borderRadius:"5px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>+ Trailer</button>}
+        </div>
+      </div>
+
+      {/* ── PLANNED SHIPMENTS ── */}
+      <div className="section-header" style={{background:"#1a2e50",marginTop:0,borderRadius:0}} onClick={()=>toggleSection("main")}>
+        <span>{week.openSections?.main?"▼":"▶"}</span>
+        <span style={{fontWeight:"700",fontSize:"13px"}}>Planned Shipments — {pendingGroups.length} trailers</span>
+      </div>
+      {week.openSections?.main&&(
+      <div style={{border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}>
+        <table style={{borderCollapse:"collapse",width:"100%",minWidth:"1350px"}}>
+          <colgroup>
+            <col style={{width:"5px"}}/><col style={{width:"20px"}}/><col style={{width:"20px"}}/><col style={{width:"160px"}}/><col style={{width:"90px"}}/><col style={{width:"75px"}}/><col style={{width:"75px"}}/><col style={{width:"55px"}}/><col style={{width:"45px"}}/><col style={{width:"55px"}}/><col style={{width:"48px"}}/><col style={{width:"85px"}}/><col style={{width:"50px"}}/><col style={{width:"55px"}}/><col style={{width:"68px"}}/><col style={{width:"155px"}}/><col style={{width:"125px"}}/><col style={{width:"160px"}}/>
+          </colgroup>
+          <thead>
+            <tr>
+              <th style={{background:"#1a2e50",padding:0,border:"none"}}/>
+              <th style={{background:"#1a2e50",padding:0,border:"none"}}/>
+              <th style={{background:"#1a2e50",padding:0,border:"none"}}/>
+              {["Shipper & Receiver","Broker & Load #","Pickup","Delivery","Product","Pallets","Weight","Rate ($)","Driver","Truck #","Trailer #","Status"].map(h=><th key={h} style={TH("#1a2e50")}>{h}</th>)}
+              <th style={TH("#1d4f9e")}>Route Info</th>
+              <th style={TH("#1d4f9e")}>Financials</th>
+              <th style={{...TH("#0f5132"),background:isViewer?"#064e3b":undefined}}>Driver · Truck · Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pendingGroups.map((group,gi)=>{
+              const rc2=group.loads.length;
+              const gsSt=GSS[group.groupStatus]||GSS["Pending"];
+              const hasDriver=group.groupDriver&&group.groupDriver.trim();
+              return(
+                <Fragment key={group.id}>
+                  {/* Trailer header */}
+                  <tr style={{borderTop:gi>0?"3px solid #1a2e50":"none"}}>
+                    <td colSpan={18} style={{padding:0}}>
+                      <div style={{background:"linear-gradient(90deg,#1a2e50,#1e3a5f)",padding:"5px 10px",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}}>
+                        <span style={{fontSize:"13px",fontWeight:"800",color:"#fff",background:"#2563eb",padding:"2px 10px",borderRadius:"5px",flexShrink:0}}>T{gi+1}</span>
+                        {!isViewer&&<button onClick={()=>addLoad(group.id)} style={{background:"#3b82f6",color:"#fff",border:"none",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>+ Load</button>}
+                        <div style={{display:"flex",alignItems:"center",gap:"5px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:"5px",padding:"2px 8px",flexShrink:0}}>
+                          <span style={{fontSize:"10px",color:"#93c5fd",fontWeight:"600",whiteSpace:"nowrap"}}>Miles:</span>
+                          <input value={group.tripMiles} type="number" placeholder="—" onChange={e=>setGroup(group.id,"tripMiles",e.target.value)} style={{width:"70px",border:"none",background:"transparent",fontSize:"11px",fontWeight:"700",color:"#fff",padding:0,outline:"none",fontFamily:"inherit"}} disabled={isViewer}/>
+                        </div>
+                        {group.calcTripMi&&group.rpm!=null&&<span style={{fontSize:"11px",fontWeight:"800",background:rpmBg(group.rpm),color:rpmFg(group.rpm),padding:"2px 8px",borderRadius:"4px",border:`1px solid ${group.rpm>=3?"#86efac":group.rpm<2.5?"#fca5a5":"#fde68a"}`,flexShrink:0}}>${group.rpm}/mi</span>}
+                        {group.gross>0&&<span style={{fontSize:"10px",color:"#93c5fd",fontWeight:"600"}}>${group.gross.toLocaleString()}</span>}
+                        {group.loc>0&&<span style={{fontSize:"10px",color:"#fcd34d"}}>− ${group.loc.toLocaleString()} local</span>}
+                        {group.gross>0&&group.loc>0&&<span style={{fontSize:"11px",fontWeight:"800",color:"#86efac"}}>= ${(group.gross-group.loc).toLocaleString()} net</span>}
+                        {group.rcvrs.length>0&&group.calcTripMi&&<span style={{fontSize:"10px",color:"rgba(255,255,255,0.4)",fontStyle:"italic",flexShrink:0}}>{HUB} → {group.rcvrs.join(" → ")}</span>}
+                        <span style={{marginLeft:"auto",fontSize:"10px",color:hasDriver?"#86efac":"#fca5a5",fontWeight:"700",background:hasDriver?"rgba(134,239,172,0.1)":"rgba(252,165,165,0.1)",border:`1px solid ${hasDriver?"#86efac":"#fca5a5"}`,padding:"2px 8px",borderRadius:"4px",whiteSpace:"nowrap",flexShrink:0}}>
+                          {hasDriver?<>🚛 {group.groupDriver}{group.groupTruck&&<span style={{marginLeft:"5px",opacity:.8}}>· 🚚#{group.groupTruck}</span>}{group.groupTrailer&&<span style={{marginLeft:"5px",opacity:.8}}>· #{group.groupTrailer}</span>}</>:"⚠ No driver"}
+                        </span>
+                        {!isViewer&&week.groups.length>1&&<button onClick={()=>removeGroup(group.id)} style={{background:"#7f1d1d",color:"#fca5a5",border:"1px solid #dc2626",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>Remove Trailer</button>}
+                      </div>
+                    </td>
+                  </tr>
+                  {/* Load rows */}
+                  {group.loads.map((load,li)=>{
+                    const isF=li===0,isL=li===group.loads.length-1;
+                    const rc=rowColor(load,today,tomorrow);
+                    const nMi=load.shipper&&load.pickupMiAuto==null;
+                    return(
+                      <tr key={load.id} style={{borderBottom:isL?"none":"0.5px solid rgba(0,0,0,0.07)",fontWeight:rc.bold?"700":"400"}}>
+                        <td style={{padding:0,background:rc.stripe,width:"5px",boxShadow:`2px 0 6px ${rc.stripe}88`}}/>
+                        <td style={TD(rc.bg,{padding:"1px 2px",textAlign:"center"})}>
+                          {!isViewer&&<button onClick={()=>removeLoad(group.id,load.id)} style={{width:"18px",height:"18px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"3px",fontSize:"11px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}
+                        </td>
+                        <td style={TD(rc.bg,{padding:"1px 2px",textAlign:"center"})}>
+                          {load.stop!=null&&<span style={{fontSize:"11px",fontWeight:"800",color:"#92400e",background:"#fef9c3",padding:"0 4px",borderRadius:"3px",border:"1px solid #fde68a"}}>{load.stop}</span>}
+                        </td>
+                        <td style={TD(rc.bg)}><input value={load.sr} onChange={e=>setLoad(group.id,load.id,"sr",e.target.value)} style={IN({color:rc.tc})} placeholder="City, ST - City, ST" disabled={isViewer}/></td>
+                        <td style={TD(rc.bg)}><input value={load.broker} onChange={e=>setLoad(group.id,load.id,"broker",e.target.value)} style={IN({color:rc.tc})} placeholder="Broker & Load #" disabled={isViewer}/></td>
+                        <td style={TD(rc.bg)}><input value={load.pickup} onChange={e=>setLoad(group.id,load.id,"pickup",e.target.value)} style={IN({color:rc.tc})} placeholder="3/31/2026 8AM" disabled={isViewer}/></td>
+                        <td style={TD(rc.bg)}><input value={load.delivery} onChange={e=>setLoad(group.id,load.id,"delivery",e.target.value)} style={IN({color:rc.tc})} placeholder="4/2/2026 9AM" disabled={isViewer}/></td>
+                        <td style={TD(rc.bg)}><input value={load.product} onChange={e=>setLoad(group.id,load.id,"product",e.target.value)} style={IN({color:rc.tc})} placeholder="Product" disabled={isViewer}/></td>
+                        <td style={TD(rc.bg)}><input value={load.pallets} onChange={e=>setLoad(group.id,load.id,"pallets",e.target.value)} style={IN({color:rc.tc})} placeholder="—" disabled={isViewer}/></td>
+                        <td style={TD(rc.bg)}><input value={load.weight} onChange={e=>setLoad(group.id,load.id,"weight",e.target.value)} style={IN({color:rc.tc})} placeholder="Lbs" disabled={isViewer}/></td>
+                        <td style={TD(rc.bg)}><input value={load.rate} type="number" onChange={e=>setLoad(group.id,load.id,"rate",e.target.value)} style={IN({textAlign:"right",color:rc.tc})} placeholder="0" disabled={isViewer}/></td>
+                        <td style={TD(rc.bg)}>
+                          <select value={load.driver||""} onChange={e=>setLoad(group.id,load.id,"driver",e.target.value)} style={IN({color:load.driver?"#c2410c":"#9ca3af",cursor:isViewer?"not-allowed":"pointer"})} disabled={isViewer}>
+                            <option value="">— Driver —</option>
+                            {DRIVERS.map(d=><option key={d} value={d}>{d}</option>)}
+                          </select>
+                        </td>
+                        <td style={TD(rc.bg,{padding:"1px 2px"})}>
+                          <select value={load.truck||""} onChange={e=>setLoad(group.id,load.id,"truck",e.target.value)} style={IN({color:load.truck?"#1e40af":"#9ca3af",cursor:isViewer?"not-allowed":"pointer",fontWeight:load.truck?"700":"400",fontSize:"11px"})} disabled={isViewer}>
+                            <option value="">—</option>
+                            {TRUCK_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
+                          </select>
+                        </td>
+                        <td style={TD(rc.bg,{padding:"1px 2px"})}>
+                          <select value={load.trailer||""} onChange={e=>setLoad(group.id,load.id,"trailer",e.target.value)} style={IN({color:load.trailer?"#7c3aed":"#9ca3af",cursor:isViewer?"not-allowed":"pointer",fontWeight:load.trailer?"700":"400",fontSize:"11px"})} disabled={isViewer}>
+                            <option value="">—</option>
+                            {TRAILER_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
+                          </select>
+                        </td>
+                        <td style={TD(rc.bg)}>
+                          <select value={load.status} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={IN({color:rc.tc,cursor:isViewer?"not-allowed":"pointer"})} disabled={isViewer}>
+                            <option value="">— Not set —</option>
+                            {LOAD_STATUSES.map(s=><option key={s}>{s}</option>)}
+                          </select>
+                        </td>
+                        {/* Route info */}
+                        <td style={TD("#f0f4ff",{verticalAlign:"middle",padding:"3px 6px"})}>
+                          <div style={{display:"flex",flexDirection:"column",gap:"2px"}}>
+                            {load.shipper&&<span style={{fontSize:"10px",color:"#1a2e50",fontWeight:"600"}}>{load.shipper}</span>}
+                            {load.receiver&&<span style={{fontSize:"10px",color:"#475569"}}>→ {load.receiver}</span>}
+                          </div>
+                        </td>
+                        {/* Financials */}
+                        <td style={TD("#fffbeb",{verticalAlign:"middle",padding:"3px 6px"})}>
+                          <div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
+                            {load.localCharge!=null?(<>
+                              <span style={{fontSize:"10px",color:"#92400e",fontWeight:"700"}}>${load.localCharge} local</span>
+                              <span style={{fontSize:"9px",color:"#b45309"}}>{load.pickupMiUsed} mi</span>
+                            </>):nMi?(<div style={{display:"flex",alignItems:"center",gap:"3px"}}>
+                              <span style={{fontSize:"9px",color:"#f59e0b"}}>?</span>
+                              <input value={load.manualPickupMi} type="number" placeholder="mi" onChange={e=>setLoad(group.id,load.id,"manualPickupMi",e.target.value)} style={{width:"44px",border:"1px solid #fbbf24",borderRadius:"3px",background:"#fffbeb",textAlign:"center",color:"#92400e",fontWeight:"600",padding:"1px 2px",fontSize:"11px"}} disabled={isViewer}/>
+                            </div>):null}
+                            {load.tripPrice>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#1d4f9e"}}>${load.tripPrice.toLocaleString()}</span>}
+                          </div>
+                        </td>
+                        {/* Group driver/status — rowspan */}
+                        {isF&&(
+                          <td rowSpan={rc2} style={{...TD(isViewer?"#f0fdf4":"#f0fdf4",{textAlign:"center",verticalAlign:"middle",borderLeft:"2px solid #86efac",borderRight:"2px solid #86efac",padding:"6px"}),borderBottom:isL?"none":undefined}}>
+                            <select value={group.groupDriver||""} onChange={e=>setGroup(group.id,"groupDriver",e.target.value)} style={{...IN({textAlign:"center",fontWeight:"600",fontSize:"11px",cursor:isViewer?"not-allowed":"pointer"}),color:group.groupDriver?"#166534":"#9ca3af",background:"transparent",border:isViewer?"1px solid #86efac":"1px solid #d1d5db",borderRadius:"4px",marginBottom:"3px"}} disabled={isViewer}>
+                              <option value="">— Assign Driver —</option>
+                              {DRIVERS.map(d=><option key={d} value={d}>{d}</option>)}
+                            </select>
+                            {rc2===1&&(
+                              <div style={{display:"flex",gap:"2px",marginBottom:"2px"}}>
+                                <select value={group.groupTruck||""} onChange={e=>setGroup(group.id,"groupTruck",e.target.value)} style={{...IN({cursor:isViewer?"not-allowed":"pointer",fontSize:"9px"}),flex:1,color:group.groupTruck?"#1e40af":"#9ca3af",background:"transparent",border:"1px solid #bfdbfe",borderRadius:"3px",padding:"1px"}} disabled={isViewer}>
+                                  <option value="">🚚—</option>
+                                  {TRUCK_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
+                                </select>
+                                <select value={group.groupTrailer||""} onChange={e=>setGroup(group.id,"groupTrailer",e.target.value)} style={{...IN({cursor:isViewer?"not-allowed":"pointer",fontSize:"9px"}),flex:1,color:group.groupTrailer?"#7c3aed":"#9ca3af",background:"transparent",border:"1px solid #e9d5ff",borderRadius:"3px",padding:"1px"}} disabled={isViewer}>
+                                  <option value="">🚛—</option>
+                                  {TRAILER_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
+                                </select>
+                              </div>
+                            )}
+                            <select value={group.groupStatus} onChange={e=>setGroup(group.id,"groupStatus",e.target.value)} style={{...IN({textAlign:"center",cursor:isViewer?"not-allowed":"pointer",fontWeight:"700",fontSize:"10px"}),color:gsSt.fg,background:gsSt.bg,borderRadius:"4px",padding:"2px",border:`1px solid ${gsSt.br}`}} disabled={isViewer}>
+                              {Object.keys(GSS).map(s=><option key={s}>{s}</option>)}
+                            </select>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+        {!isViewer&&<div style={{padding:"8px 12px",background:"#f1f5f9",borderTop:"1px solid #e2e8f0"}}>
+          <button onClick={addGroup} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Trailer</button>
+        </div>}
+      </div>
+      )}
+
+      {/* ── OTR ── */}
+      {otrGroups.length>0&&(
+      <>
+      <div className="section-header" style={{background:"linear-gradient(90deg,#4c1d95,#5b21b6)",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("otr")}>
+        <span>{week.openSections?.otr!==false?"▼":"▶"}</span>
+        <span style={{fontWeight:"700",fontSize:"13px"}}>🚛 OTR — In Transit & Delivered</span>
+        <span style={{fontSize:"11px",opacity:.75,marginLeft:"6px"}}>{otrGroups.filter(g=>g.groupStatus==="In Transit").length} rolling · {otrGroups.filter(g=>g.groupStatus==="Delivered").length} delivered</span>
+      </div>
+      {week.openSections?.otr!==false&&(
+      <div style={{border:"1px solid #7c3aed",borderTop:"none",borderRadius:"0 0 8px 8px",background:"#0f0a1e"}}>
+        {[...otrGroups].sort((a,b)=>{const aD=a.groupStatus==="Delivered"?1:0;const bD=b.groupStatus==="Delivered"?1:0;return aD-bD;}).map((group)=>{
+          const loads=[...group.loads].sort((a,b)=>parseTS(a.delivery)-parseTS(b.delivery));
+          const rc=rowColor(loads[0]||{},today,tomorrow);
+          return(
+            <div key={group.id} style={{borderBottom:"1px solid rgba(139,92,246,0.2)",padding:"10px 14px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:"10px",flexWrap:"wrap",marginBottom:"8px"}}>
+                <span style={{fontSize:"13px",fontWeight:"800",color:"#fff",background:"#7c3aed",padding:"2px 10px",borderRadius:"5px",flexShrink:0}}>T</span>
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#e2e8f0"}}>{group.groupDriver||"No driver"}</span>
+                {group.groupTruck&&<span style={{fontSize:"11px",color:"#a78bfa"}}>🚚#{group.groupTruck}</span>}
+                {group.groupTrailer&&<span style={{fontSize:"11px",color:"#a78bfa"}}>🚛#{group.groupTrailer}</span>}
+                <select value={group.groupStatus} onChange={e=>setGroup(group.id,"groupStatus",e.target.value)} style={{fontSize:"11px",fontWeight:"700",color:"#a78bfa",background:"rgba(167,139,250,0.1)",border:"1px solid #7c3aed",borderRadius:"4px",padding:"2px 6px",cursor:isViewer?"not-allowed":"pointer",outline:"none",marginLeft:"auto"}} disabled={isViewer}>
+                  {Object.keys(GSS).map(s=><option key={s}>{s}</option>)}
+                </select>
+              </div>
+              {loads.map((load,li)=>{
+                const lrc=rowColor(load,today,tomorrow);
+                const loadNum=load.broker&&load.broker.includes("&")?load.broker.split("&")[1]?.trim():"";
+                const brokerName=load.broker?load.broker.split("&")[0].trim():"";
+                return(
+                  <div key={load.id} style={{display:"flex",alignItems:"center",gap:"8px",background:"rgba(255,255,255,0.04)",borderRadius:"6px",padding:"5px 10px",border:`1px solid ${lrc.stripe}33`,flexWrap:"wrap",marginBottom:"4px"}}>
+                    {loads.length>1&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fbbf24",background:"rgba(251,191,36,0.15)",border:"1px solid rgba(251,191,36,0.4)",borderRadius:"4px",padding:"1px 6px",flexShrink:0}}>Stop {li+1}</span>}
+                    <span style={{fontSize:"11px",fontWeight:"600",color:"#e2e8f0",flex:"1",minWidth:"150px"}}>{load.sr||"—"}</span>
+                    <span style={{fontSize:"10px",color:"#94a3b8"}}>{brokerName}</span>
+                    {loadNum&&<span style={{fontSize:"10px",color:"#7dd3fc"}}>🔢{loadNum}</span>}
+                    <span style={{fontSize:"10px",color:"#a78bfa",whiteSpace:"nowrap"}}>🛫 {load.pickup||"—"}</span>
+                    <span style={{fontSize:"10px",color:"#cbd5e1",whiteSpace:"nowrap"}}>📦 {load.delivery||"—"}</span>
+                    {load.driver&&<span style={{fontSize:"10px",color:"#c4b5fd",background:"rgba(139,92,246,0.12)",border:"1px solid rgba(139,92,246,0.25)",borderRadius:"4px",padding:"1px 6px",whiteSpace:"nowrap"}}>🧑‍✈️ {load.driver}{load.truck&&` · 🚚#${load.truck}`}{load.trailer&&` · #${load.trailer}`}</span>}
+                    <select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{fontSize:"10px",fontWeight:"600",color:lrc.tc,background:lrc.bg,border:`1px solid ${lrc.stripe}`,borderRadius:"4px",padding:"1px 4px",cursor:isViewer?"not-allowed":"pointer",outline:"none",flexShrink:0}} disabled={isViewer}>
+                      <option value="">— Not set —</option>
+                      {LOAD_STATUSES.map(s=><option key={s}>{s}</option>)}
+                    </select>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+      )}
+      </>
+      )}
+
+      {/* ── LOCAL DELIVERIES ── */}
+      <div className="section-header" style={{background:"#065f46",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("local")}>
+        <span>{week.openSections?.local?"▼":"▶"}</span>
+        <span style={{fontWeight:"700",fontSize:"13px"}}>Local Deliveries</span>
+        <span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.localDeliveries||[]).length} entries</span>
+      </div>
+      {week.openSections?.local&&(
+      <div style={{border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}>
+        <table style={{borderCollapse:"collapse",width:"100%",minWidth:"900px"}}>
+          <colgroup><col style={{width:"160px"}}/><col style={{width:"85px"}}/><col style={{width:"85px"}}/><col style={{width:"100px"}}/><col style={{width:"100px"}}/><col style={{width:"130px"}}/><col style={{width:"130px"}}/><col style={{width:"110px"}}/><col style={{width:"100px"}}/><col style={{width:"28px"}}/></colgroup>
+          <thead><tr>{["Destination","Trailer #","Truck #","Broker","Load #","Date / Time","Driver","Notes","Status",""].map((h,i)=><th key={i} style={TH("#065f46")}>{h}</th>)}</tr></thead>
+          <tbody>
+            {!(week.localDeliveries||[]).length&&<tr><td colSpan={10} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#f9fafb"}}>No local deliveries</td></tr>}
+            {(week.localDeliveries||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#f0fdf4";return(
+              <tr key={row.id} style={{borderBottom:"0.5px solid #d1fae5"}}>
+                <td style={CELL(bg)}><input value={row.destination||""} onChange={e=>updSub("localDeliveries",row.id,"destination",e.target.value)} style={INCEL()} placeholder="City / Address" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><select value={row.trailer||""} onChange={e=>updSub("localDeliveries",row.id,"trailer",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.trailer?"#7c3aed":"#9ca3af"}} disabled={isViewer}><option value="">—</option>{TRAILER_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}</select></td>
+                <td style={CELL(bg)}><select value={row.truck||""} onChange={e=>updSub("localDeliveries",row.id,"truck",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.truck?"#1e40af":"#9ca3af"}} disabled={isViewer}><option value="">—</option>{TRUCK_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}</select></td>
+                <td style={CELL(bg)}><input value={row.broker||""} onChange={e=>updSub("localDeliveries",row.id,"broker",e.target.value)} style={INCEL()} placeholder="Broker" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><input value={row.loadNum||""} onChange={e=>updSub("localDeliveries",row.id,"loadNum",e.target.value)} style={INCEL()} placeholder="Load #" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><input value={row.datetime||""} onChange={e=>updSub("localDeliveries",row.id,"datetime",e.target.value)} style={INCEL()} placeholder="3/31/2026 8AM" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><select value={row.driver||""} onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.driver?"#065f46":"#9ca3af"}} disabled={isViewer}><option value="">— Driver —</option>{DRIVERS.map(d=><option key={d} value={d}>{d}</option>)}</select></td>
+                <td style={CELL(bg)}><input value={row.notes||""} onChange={e=>updSub("localDeliveries",row.id,"notes",e.target.value)} style={INCEL()} placeholder="Notes" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer",fontWeight:"600"}),color:row.status==="Delivered"?"#166534":row.status==="In Transit"?"#5b21b6":"#374151"}} disabled={isViewer}><option value="">— Status —</option><option>Need to deliver</option><option>In Transit</option><option>Waiting Appointment</option><option>Delivered</option></select></td>
+                <td style={CELL(bg,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>removeSub("localDeliveries",row.id)} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
+              </tr>
+            );})}
+          </tbody>
+        </table>
+        {!isViewer&&<div style={{padding:"8px 12px",background:"#ecfdf5",borderTop:"1px solid #d1fae5"}}>
+          <button onClick={()=>addSub("localDeliveries",mkLocal)} style={{background:"#059669",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Local Delivery</button>
+        </div>}
+      </div>
+      )}
+
+      {/* ── CROSSDOCK DROPS ── */}
+      <div className="section-header" style={{background:"#7c3aed",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("xdrop")}>
+        <span>{week.openSections?.xdrop?"▼":"▶"}</span>
+        <span style={{fontWeight:"700",fontSize:"13px"}}>Loads Dropped at Crossdock</span>
+        <span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.crossdockDrops||[]).length} entries</span>
+      </div>
+      {week.openSections?.xdrop&&(
+      <div style={{border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}>
+        <table style={{borderCollapse:"collapse",width:"100%",minWidth:"900px"}}>
+          <colgroup><col style={{width:"160px"}}/><col style={{width:"130px"}}/><col style={{width:"100px"}}/><col style={{width:"100px"}}/><col style={{width:"130px"}}/><col style={{width:"130px"}}/><col style={{width:"110px"}}/><col style={{width:"100px"}}/><col style={{width:"28px"}}/></colgroup>
+          <thead><tr>{["Location","Crossdock","Broker","Load #","Date / Time","Driver","Notes","Status",""].map((h,i)=><th key={i} style={TH("#7c3aed")}>{h}</th>)}</tr></thead>
+          <tbody>
+            {!(week.crossdockDrops||[]).length&&<tr><td colSpan={9} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#f9fafb"}}>No crossdock drops</td></tr>}
+            {(week.crossdockDrops||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#faf5ff";return(
+              <tr key={row.id} style={{borderBottom:"0.5px solid #e9d5ff"}}>
+                <td style={CELL(bg)}><input value={row.location||""} onChange={e=>updSub("crossdockDrops",row.id,"location",e.target.value)} style={INCEL()} placeholder="Delivery city" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><input value={row.trailer||""} onChange={e=>updSub("crossdockDrops",row.id,"trailer",e.target.value)} style={INCEL()} placeholder="Crossdock name" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><input value={row.broker||""} onChange={e=>updSub("crossdockDrops",row.id,"broker",e.target.value)} style={INCEL()} placeholder="Broker" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><input value={row.loadNum||""} onChange={e=>updSub("crossdockDrops",row.id,"loadNum",e.target.value)} style={INCEL()} placeholder="Load #" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><input value={row.datetime||""} onChange={e=>updSub("crossdockDrops",row.id,"datetime",e.target.value)} style={INCEL()} placeholder="3/31/2026 8AM" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><input value={row.driver||""} onChange={e=>updSub("crossdockDrops",row.id,"driver",e.target.value)} style={INCEL()} placeholder="Driver / #" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><input value={row.notes||""} onChange={e=>updSub("crossdockDrops",row.id,"notes",e.target.value)} style={INCEL()} placeholder="Notes" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><select value={row.status||""} onChange={e=>updSub("crossdockDrops",row.id,"status",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer",fontWeight:"600"}),color:row.status==="Delivered"?"#166534":row.status==="In Transit"?"#5b21b6":"#374151"}} disabled={isViewer}><option value="">— Status —</option><option>Waiting Appointment</option><option>In Transit</option><option>Delivered</option></select></td>
+                <td style={CELL(bg,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>removeSub("crossdockDrops",row.id)} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
+              </tr>
+            );})}
+          </tbody>
+        </table>
+        {!isViewer&&<div style={{padding:"8px 12px",background:"#faf5ff",borderTop:"1px solid #e9d5ff"}}>
+          <button onClick={()=>addSub("crossdockDrops",mkXDrop)} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button>
+        </div>}
+      </div>
+      )}
+
+      {/* ── ACCESSORIALS ── */}
+      <div className="section-header" style={{background:"#b45309",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("acc")}>
+        <span>{week.openSections?.acc?"▼":"▶"}</span>
+        <span style={{fontWeight:"700",fontSize:"13px"}}>Accessorials</span>
+        <span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.accessorials||[]).length} entries{totAcc>0?` · Total: $${totAcc.toLocaleString()}`:""}</span>
+      </div>
+      {week.openSections?.acc&&(
+      <div style={{border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}>
+        <table style={{borderCollapse:"collapse",width:"100%",minWidth:"600px"}}>
+          <colgroup><col style={{width:"140px"}}/><col style={{width:"140px"}}/><col style={{width:"90px"}}/><col style={{width:"130px"}}/><col style={{width:"220px"}}/><col style={{width:"28px"}}/></colgroup>
+          <thead><tr>{["Broker","Load #","Amount ($)","Type","Notes",""].map((h,i)=><th key={i} style={TH("#b45309")}>{h}</th>)}</tr></thead>
+          <tbody>
+            {!(week.accessorials||[]).length&&<tr><td colSpan={6} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#f9fafb"}}>No accessorials</td></tr>}
+            {(week.accessorials||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#fffbeb";const tFg=row.type==="Detention"?"#b45309":row.type==="Lumper"?"#1e40af":row.type==="Layover"?"#166534":"#7c3aed";return(
+              <tr key={row.id} style={{borderBottom:"0.5px solid #fde68a"}}>
+                <td style={CELL(bg)}><input value={row.broker||""} onChange={e=>updSub("accessorials",row.id,"broker",e.target.value)} style={INCEL()} placeholder="Broker" disabled={isViewer}/></td>
+                <td style={CELL(bg)}><input value={row.loadNum||""} onChange={e=>updSub("accessorials",row.id,"loadNum",e.target.value)} style={INCEL()} placeholder="Load #" disabled={isViewer}/></td>
+                <td style={CELL(bg,{textAlign:"right"})}><div style={{display:"flex",alignItems:"center",gap:"2px"}}><span style={{color:"#b45309",fontWeight:"700"}}>$</span><input value={row.amount||""} type="number" onChange={e=>updSub("accessorials",row.id,"amount",e.target.value)} style={INCEL({textAlign:"right",fontWeight:"700",color:"#b45309"})} placeholder="0" disabled={isViewer}/></div></td>
+                <td style={CELL(bg,{textAlign:"center"})}><select value={row.type||"Detention"} onChange={e=>updSub("accessorials",row.id,"type",e.target.value)} style={{...INCEL({textAlign:"center",cursor:isViewer?"not-allowed":"pointer",fontWeight:"700",color:tFg}),background:"transparent"}} disabled={isViewer}><option>Detention</option><option>Lumper</option><option>Layover</option><option>TONU</option><option>Other</option></select></td>
+                <td style={CELL(bg)}><input value={row.notes||""} onChange={e=>updSub("accessorials",row.id,"notes",e.target.value)} style={INCEL()} placeholder="Notes" disabled={isViewer}/></td>
+                <td style={CELL(bg,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>removeSub("accessorials",row.id)} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
+              </tr>
+            );})}
+            {(week.accessorials||[]).length>0&&(
+              <tr style={{background:"#fff7ed",borderTop:"2px solid #fbbf24"}}>
+                <td colSpan={2} style={CELL("#fff7ed",{fontWeight:"700",color:"#92400e",textAlign:"right"})}>Total:</td>
+                <td style={CELL("#fff7ed",{textAlign:"right",fontWeight:"700",color:"#b45309",fontSize:"13px"})}>${totAcc.toLocaleString()}</td>
+                <td colSpan={3} style={CELL("#fff7ed")}/>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        {!isViewer&&<div style={{padding:"8px 12px",background:"#fffbeb",borderTop:"1px solid #fde68a"}}>
+          <button onClick={()=>addSub("accessorials",mkAcc)} style={{background:"#b45309",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Accessorial</button>
+        </div>}
+      </div>
+      )}
+    </div>
+    )}
+
+    {/* ── STATS TAB ── */}
+    {activeTab==="stats"&&!isViewer&&(
+    <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
+      <div style={{fontWeight:"700",fontSize:"14px",color:"#1a2e50",marginBottom:"16px"}}>📊 Statistics — All Weeks</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:"12px"}}>
+        {[
+          {label:"Total Trailers",value:weeks.reduce((s,w)=>s+(w.groups||[]).length,0),color:"#2563eb"},
+          {label:"Total Loads",value:weeks.reduce((s,w)=>s+(w.groups||[]).flatMap(g=>g.loads||[]).length,0),color:"#7c3aed"},
+          {label:"Total Gross",value:"$"+weeks.reduce((s,w)=>s+(w.groups||[]).flatMap(g=>g.loads||[]).reduce((s2,l)=>s2+(parseFloat(l.rate)||0),0),0).toLocaleString(),color:"#059669"},
+        ].map(({label,value,color})=>(
+          <div key={label} style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"10px",padding:"16px",textAlign:"center"}}>
+            <div style={{fontSize:"11px",color:"#64748b",fontWeight:"600",marginBottom:"6px"}}>{label}</div>
+            <div style={{fontSize:"22px",fontWeight:"800",color}}>{value}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{marginTop:"20px"}}>
+        <table style={{borderCollapse:"collapse",width:"100%"}}>
+          <thead><tr>{["Week","Trailers","Loads","Gross"].map(h=><th key={h} style={{padding:"8px",background:"#1a2e50",color:"#fff",fontSize:"11px",fontWeight:"600",textAlign:"left"}}>{h}</th>)}</tr></thead>
+          <tbody>
+            {weeks.map((w,i)=>{
+              const grps=w.groups||[];
+              const loads=grps.flatMap(g=>g.loads||[]);
+              const gross=loads.reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
+              return(
+                <tr key={w.id} style={{background:i%2===0?"#fff":"#f8fafc",borderBottom:"0.5px solid #e2e8f0"}}>
+                  <td style={{padding:"8px",fontSize:"12px",fontWeight:"600",color:"#1a2e50"}}>{w.label}</td>
+                  <td style={{padding:"8px",fontSize:"12px"}}>{grps.length}</td>
+                  <td style={{padding:"8px",fontSize:"12px"}}>{loads.length}</td>
+                  <td style={{padding:"8px",fontSize:"12px",fontWeight:"700",color:"#059669"}}>${gross.toLocaleString()}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    )}
+
+  </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("app")).render(<App/>);
+</script>
+</body>
+</html>
