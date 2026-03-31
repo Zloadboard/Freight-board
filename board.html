@@ -193,6 +193,9 @@ function App(){
   const[notifications,setNotifications]=useState([]);
   const[showNotif,setShowNotif]=useState(false);
   const[archivedWeeks,setArchivedWeeks]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_archive")||"[]");}catch{return[];}});
+  const[customDrivers,setCustomDrivers]=useState([]);
+  const[customTrucks,setCustomTrucks]=useState([]);
+  const[customTrailers,setCustomTrailers]=useState([]);
   const saveTimer=useRef(null);
   const apiKeyRef=useRef(apiKey);
   useEffect(()=>{apiKeyRef.current=apiKey;},[apiKey]);
@@ -216,9 +219,11 @@ function App(){
         if(rawWeeks.length>0){
           setWeeks(rawWeeks);
         } else {
-          // Sheets is empty — start with a blank week
           setWeeks([mkWeek("Week of "+new Date().toLocaleDateString("en-US"))]);
         }
+        if(data.customDrivers)setCustomDrivers(data.customDrivers);
+        if(data.customTrucks)setCustomTrucks(data.customTrucks);
+        if(data.customTrailers)setCustomTrailers(data.customTrailers);
         setLoading(false);
       })
       .catch(()=>{
@@ -348,7 +353,7 @@ function App(){
     setSaveStatus("saving");
     saveTimer.current=setTimeout(async()=>{
       try{
-        await sheetsSave({weeks:w});
+        await sheetsSave({weeks:w,customDrivers,customTrucks,customTrailers});
         // no-cors means we can't read response but if no exception = success
         setSaveStatus("saved");
         setTimeout(()=>setSaveStatus("idle"),3000);
@@ -591,6 +596,7 @@ function App(){
         </div>
         {!isViewer&&<button onClick={()=>setActiveTab("weeks")} style={{background:activeTab==="weeks"?"#2563eb":"#1e3a5f",color:"#fff",border:"none",padding:"5px 13px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>Weekly Boards</button>}
         {!isViewer&&<button onClick={()=>setActiveTab("roster")} style={{background:activeTab==="roster"?"#065f46":"#1e3a5f",color:"#fff",border:"none",padding:"5px 13px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>👥 Drivers</button>}
+        {!isViewer&&<button onClick={()=>setActiveTab("equipment")} style={{background:activeTab==="equipment"?"#0369a1":"#1e3a5f",color:"#fff",border:"none",padding:"5px 13px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>🚛 Equipment</button>}
         {!isViewer&&<button onClick={()=>setActiveTab("xdock")} style={{background:activeTab==="xdock"?"#7c3aed":"#1e3a5f",color:"#fff",border:"none",padding:"5px 13px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>🔁 Crossdock</button>}
         {!isViewer&&<button onClick={()=>setActiveTab("archive")} style={{background:activeTab==="archive"?"#4c1d95":"#1e3a5f",color:"#fff",border:"none",padding:"5px 13px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>📦 Archive{archivedWeeks.length>0&&<span style={{background:"#a78bfa",color:"#fff",borderRadius:"10px",padding:"1px 5px",fontSize:"9px",marginLeft:"3px"}}>{archivedWeeks.length}</span>}</button>}
         {!isViewer&&<button onClick={()=>setActiveTab("stats")} style={{background:activeTab==="stats"?"#b45309":"#1e3a5f",color:"#fff",border:"none",padding:"5px 13px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>📊 Stats</button>}
@@ -765,19 +771,19 @@ function App(){
                         <td style={T(rc.bg)}>
                           <select value={load.driver||""} onChange={e=>setLoad(group.id,load.id,"driver",e.target.value)} style={IN({color:load.driver?"#c2410c":"#9ca3af",cursor:isViewer?"not-allowed":"pointer"})} disabled={isViewer}>
                             <option value="">— Driver —</option>
-                            {DRIVERS.map(d=><option key={d} value={d}>{d}</option>)}
+                            {[...DRIVERS,...customDrivers].sort().map(d=><option key={d} value={d}>{d}</option>)}
                           </select>
                         </td>
                         <td style={T(rc.bg,{padding:"1px 2px"})}>
                           <select value={load.truck||""} onChange={e=>setLoad(group.id,load.id,"truck",e.target.value)} style={IN({color:load.truck?"#1e40af":"#9ca3af",cursor:isViewer?"not-allowed":"pointer",fontWeight:load.truck?"700":"400",fontSize:"11px"})} disabled={isViewer}>
                             <option value="">—</option>
-                            {TRUCK_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
+                            {[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=><option key={t} value={t}>#{t}</option>)}
                           </select>
                         </td>
                         <td style={T(rc.bg,{padding:"1px 2px"})}>
                           <select value={load.trailer||""} onChange={e=>setLoad(group.id,load.id,"trailer",e.target.value)} style={IN({color:load.trailer?"#7c3aed":"#9ca3af",cursor:isViewer?"not-allowed":"pointer",fontWeight:load.trailer?"700":"400",fontSize:"11px"})} disabled={isViewer}>
                             <option value="">—</option>
-                            {TRAILER_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
+                            {[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=><option key={t} value={t}>#{t}</option>)}
                           </select>
                         </td>
                         <td style={T(rc.bg)}>
@@ -807,20 +813,20 @@ function App(){
                             <select value={DRIVERS.includes(group.groupDriver||"")?group.groupDriver||"":"__custom__"} onChange={e=>{if(e.target.value==="__custom__")setGroup(group.id,"groupDriver","");else setGroup(group.id,"groupDriver",e.target.value);}} style={{...IN({textAlign:"center",fontWeight:"700",fontSize:"11px",cursor:"pointer"}),color:group.groupDriver?"#1e40af":"#6b7280",background:"transparent",border:"1px solid #d1d5db",borderRadius:"4px",marginBottom:"2px"}}>
                               <option value="">— Assign Driver —</option>
                               <option value="__custom__">✏ Type name manually</option>
-                              {DRIVERS.map(d=><option key={d} value={d}>{d}</option>)}
+                              {[...DRIVERS,...customDrivers].sort().map(d=><option key={d} value={d}>{d}</option>)}
                             </select>
-                            {(!DRIVERS.includes(group.groupDriver||""))&&(
+                            {(![...DRIVERS,...customDrivers].includes(group.groupDriver||""))&&(
                               <input value={group.groupDriver||""} onChange={e=>setGroup(group.id,"groupDriver",e.target.value)} placeholder="Type driver name..." style={{width:"100%",border:"1px solid #93c5fd",borderRadius:"4px",padding:"2px 6px",fontSize:"11px",fontWeight:"700",color:"#1e40af",background:"rgba(255,255,255,0.8)",marginBottom:"2px",fontFamily:"inherit",outline:"none"}}/>
                             )}
                             {(
                               <div style={{display:"flex",gap:"2px",marginBottom:"2px"}}>
                                 <select value={group.groupTruck||""} onChange={e=>setGroup(group.id,"groupTruck",e.target.value)} style={{...IN({cursor:"pointer",fontSize:"9px",fontWeight:"700"}),flex:1,color:group.groupTruck?"#000000":"#6b7280",background:"transparent",border:"1px solid #bfdbfe",borderRadius:"3px",padding:"1px"}}>
                                   <option value="">🚚—</option>
-                                  {TRUCK_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
+                                  {[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=><option key={t} value={t}>#{t}</option>)}
                                 </select>
                                 <select value={group.groupTrailer||""} onChange={e=>setGroup(group.id,"groupTrailer",e.target.value)} style={{...IN({cursor:"pointer",fontSize:"9px",fontWeight:"700"}),flex:1,color:group.groupTrailer?"#000000":"#6b7280",background:"transparent",border:"1px solid #e9d5ff",borderRadius:"3px",padding:"1px"}}>
                                   <option value="">🚛—</option>
-                                  {TRAILER_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
+                                  {[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=><option key={t} value={t}>#{t}</option>)}
                                 </select>
                               </div>
                             )}
@@ -921,8 +927,8 @@ function App(){
             {(week.localDeliveries||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#f0fdf4";return(
               <tr key={row.id} style={{borderBottom:"0.5px solid #d1fae5"}}>
                 <td style={CELL(bg)}><input value={row.destination||""} onChange={e=>updSub("localDeliveries",row.id,"destination",e.target.value)} style={INCEL()} placeholder="City / Address" disabled={isViewer}/></td>
-                <td style={CELL(bg)}><select value={row.trailer||""} onChange={e=>updSub("localDeliveries",row.id,"trailer",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.trailer?"#7c3aed":"#9ca3af"}} disabled={isViewer}><option value="">—</option>{TRAILER_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}</select></td>
-                <td style={CELL(bg)}><select value={row.truck||""} onChange={e=>updSub("localDeliveries",row.id,"truck",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.truck?"#1e40af":"#9ca3af"}} disabled={isViewer}><option value="">—</option>{TRUCK_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}</select></td>
+                <td style={CELL(bg)}><select value={row.trailer||""} onChange={e=>updSub("localDeliveries",row.id,"trailer",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.trailer?"#7c3aed":"#9ca3af"}} disabled={isViewer}><option value="">—</option>{[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=><option key={t} value={t}>#{t}</option>)}</select></td>
+                <td style={CELL(bg)}><select value={row.truck||""} onChange={e=>updSub("localDeliveries",row.id,"truck",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.truck?"#1e40af":"#9ca3af"}} disabled={isViewer}><option value="">—</option>{[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=><option key={t} value={t}>#{t}</option>)}</select></td>
                 <td style={CELL(bg)}><input value={row.broker||""} onChange={e=>updSub("localDeliveries",row.id,"broker",e.target.value)} style={INCEL()} placeholder="Broker" disabled={isViewer}/></td>
                 <td style={CELL(bg)}><input value={row.loadNum||""} onChange={e=>updSub("localDeliveries",row.id,"loadNum",e.target.value)} style={INCEL()} placeholder="Load #" disabled={isViewer}/></td>
                 <td style={CELL(bg)}><input value={row.datetime||""} onChange={e=>updSub("localDeliveries",row.id,"datetime",e.target.value)} style={INCEL()} placeholder="3/31/2026 8AM" disabled={isViewer}/></td>
@@ -1015,14 +1021,93 @@ function App(){
     )}
 
     {/* ── STATS TAB ── */}
+    {/* ── EQUIPMENT TAB ── */}
+    {activeTab==="equipment"&&!isViewer&&(
+    <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
+      <div style={{fontWeight:"700",fontSize:"14px",color:"#0369a1",marginBottom:"20px"}}>🚛 Equipment Registry</div>
+
+      {/* ── TRUCKS ── */}
+      <div style={{marginBottom:"24px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"12px",paddingBottom:"8px",borderBottom:"2px solid #bfdbfe"}}>
+          <div style={{fontWeight:"700",fontSize:"13px",color:"#1e40af"}}>🚚 Trucks</div>
+          <span style={{fontSize:"11px",color:"#64748b"}}>{TRUCK_NUMBERS.length + customTrucks.length} total</span>
+          <button onClick={()=>{const num=prompt("Enter new truck number:");if(!num||!num.trim())return;const n=num.trim();if([...TRUCK_NUMBERS,...customTrucks].includes(n)){alert("Truck already exists.");return;}const updated=[...customTrucks,n];setCustomTrucks(updated);saveToSheets({weeks,customDrivers,customTrucks:updated,customTrailers});}} style={{background:"#1e40af",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer",marginLeft:"auto"}}>+ Add Truck</button>
+        </div>
+        {customTrucks.length>0&&<div style={{marginBottom:"10px"}}>
+          <div style={{fontSize:"10px",fontWeight:"700",color:"#059669",marginBottom:"6px",textTransform:"uppercase",letterSpacing:".06em"}}>Custom Added</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:"6px",marginBottom:"10px"}}>
+            {customTrucks.map(t=>(
+              <div key={t} style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:"6px",padding:"5px 10px",display:"flex",alignItems:"center",gap:"6px"}}>
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#166534"}}>#{t}</span>
+                <button onClick={()=>{if(!confirm(`Remove truck #${t}?`))return;const updated=customTrucks.filter(x=>x!==t);setCustomTrucks(updated);saveToSheets({weeks,customDrivers,customTrucks:updated,customTrailers});}} style={{background:"#fee2e2",border:"1px solid #fca5a5",color:"#dc2626",borderRadius:"3px",padding:"0 5px",fontSize:"11px",cursor:"pointer",lineHeight:"16px"}}>×</button>
+              </div>
+            ))}
+          </div>
+          <div style={{borderTop:"1px solid #e2e8f0",marginBottom:"8px"}}/>
+        </div>}
+        <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+          {TRUCK_NUMBERS.map(t=>(
+            <div key={t} style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:"6px",padding:"5px 10px"}}>
+              <span style={{fontSize:"12px",fontWeight:"600",color:"#1e40af"}}>#{t}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── TRAILERS ── */}
+      <div>
+        <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"12px",paddingBottom:"8px",borderBottom:"2px solid #e9d5ff"}}>
+          <div style={{fontWeight:"700",fontSize:"13px",color:"#7c3aed"}}>🚛 Trailers</div>
+          <span style={{fontSize:"11px",color:"#64748b"}}>{TRAILER_NUMBERS.length + customTrailers.length} total</span>
+          <button onClick={()=>{const num=prompt("Enter new trailer number:");if(!num||!num.trim())return;const n=num.trim();if([...TRAILER_NUMBERS,...customTrailers].includes(n)){alert("Trailer already exists.");return;}const updated=[...customTrailers,n];setCustomTrailers(updated);saveToSheets({weeks,customDrivers,customTrucks,customTrailers:updated});}} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer",marginLeft:"auto"}}>+ Add Trailer</button>
+        </div>
+        {customTrailers.length>0&&<div style={{marginBottom:"10px"}}>
+          <div style={{fontSize:"10px",fontWeight:"700",color:"#059669",marginBottom:"6px",textTransform:"uppercase",letterSpacing:".06em"}}>Custom Added</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:"6px",marginBottom:"10px"}}>
+            {customTrailers.map(t=>(
+              <div key={t} style={{background:"#faf5ff",border:"1px solid #c4b5fd",borderRadius:"6px",padding:"5px 10px",display:"flex",alignItems:"center",gap:"6px"}}>
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#6d28d9"}}>#{t}</span>
+                <button onClick={()=>{if(!confirm(`Remove trailer #${t}?`))return;const updated=customTrailers.filter(x=>x!==t);setCustomTrailers(updated);saveToSheets({weeks,customDrivers,customTrucks,customTrailers:updated});}} style={{background:"#fee2e2",border:"1px solid #fca5a5",color:"#dc2626",borderRadius:"3px",padding:"0 5px",fontSize:"11px",cursor:"pointer",lineHeight:"16px"}}>×</button>
+              </div>
+            ))}
+          </div>
+          <div style={{borderTop:"1px solid #e2e8f0",marginBottom:"8px"}}/>
+        </div>}
+        <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+          {TRAILER_NUMBERS.map(t=>(
+            <div key={t} style={{background:"#faf5ff",border:"1px solid #e9d5ff",borderRadius:"6px",padding:"5px 10px"}}>
+              <span style={{fontSize:"12px",fontWeight:"600",color:"#7c3aed"}}>#{t}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+    )}
+
     {/* ── DRIVER ROSTER TAB ── */}
     {activeTab==="roster"&&!isViewer&&(
     <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
-      <div style={{fontWeight:"700",fontSize:"14px",color:"#1a2e50",marginBottom:"16px"}}>👥 Driver Roster</div>
+      <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"16px"}}>
+        <div style={{fontWeight:"700",fontSize:"14px",color:"#1a2e50"}}>👥 Driver Roster</div>
+        <button onClick={()=>{const name=prompt("Enter new driver name:");if(!name||!name.trim())return;const n=name.trim();if([...DRIVERS,...customDrivers].includes(n)){alert("Driver already exists.");return;}const updated=[...customDrivers,n];setCustomDrivers(updated);saveToSheets({weeks,customDrivers:updated});}} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 14px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>+ Add New Driver</button>
+      </div>
+      {customDrivers.length>0&&<div style={{marginBottom:"14px"}}>
+        <div style={{fontSize:"11px",fontWeight:"700",color:"#059669",marginBottom:"8px"}}>Custom Drivers ({customDrivers.length})</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:"6px",marginBottom:"10px"}}>
+          {customDrivers.map(name=>(
+            <div key={name} style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:"8px",padding:"8px 14px",display:"flex",alignItems:"center",gap:"8px"}}>
+              <span style={{fontSize:"16px"}}>🧑‍✈️</span>
+              <span style={{fontSize:"12px",fontWeight:"600",color:"#166534",flex:1}}>{name}</span>
+              <button onClick={()=>{if(!confirm(`Remove ${name}?`))return;const updated=customDrivers.filter(d=>d!==name);setCustomDrivers(updated);saveToSheets({weeks,customDrivers:updated});}} style={{background:"#fee2e2",border:"1px solid #fca5a5",color:"#dc2626",borderRadius:"4px",padding:"1px 6px",fontSize:"11px",cursor:"pointer"}}>×</button>
+            </div>
+          ))}
+        </div>
+        <div style={{borderTop:"1px solid #e2e8f0",marginBottom:"10px"}}/>
+      </div>}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:"8px"}}>
         {DRIVERS.map(name=>(
           <div key={name} style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"8px",padding:"10px 14px",display:"flex",alignItems:"center",gap:"8px"}}>
-            <span style={{fontSize:"18px"}}>🧑‍✈️</span>
+            <span style={{fontSize:"16px"}}>🧑‍✈️</span>
             <span style={{fontSize:"12px",fontWeight:"600",color:"#1a2e50"}}>{name}</span>
           </div>
         ))}
