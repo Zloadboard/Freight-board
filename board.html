@@ -69,8 +69,8 @@ const DIST={"romeoville":0,"lockport":5,"joliet":8,"bolingbrook":5,"woodridge":8
 function cityMiles(s){if(!s)return null;const c=s.split(",")[0].trim().toLowerCase();if(DIST[c]!==undefined)return DIST[c];for(const k of Object.keys(DIST))if((c.includes(k)||k.includes(c))&&k.length>4)return DIST[k];return null;}
 const TIERS=[[10,250],[25,300],[50,350],[75,400],[100,450],[125,500],[150,550]];
 function localCharge(m){if(m==null||m==="")return null;const v=parseFloat(m);if(isNaN(v)||v<0)return null;if(v===0)return 250;for(const[mx,c]of TIERS)if(v<=mx)return c;return 550;}
-function parsePickupDate(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return null;const d=new Date(`${dm[3]}-${dm[1].padStart(2,"0")}-${dm[2].padStart(2,"0")}`);d.setHours(0,0,0,0);return d;}
-function parseTS(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return Infinity;const d=new Date(`${dm[3]}-${dm[1].padStart(2,"0")}-${dm[2].padStart(2,"0")}`);const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);if(tm){let h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}return d.getTime();}
+function parsePickupDate(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return null;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);d.setHours(0,0,0,0);return d;}
+function parseTS(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return Infinity;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);if(tm){let h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}else{d.setHours(0,0,0,0);}return d.getTime();}
 function parseSR(t=""){const i=t.indexOf(" - ");return i<0?{s:t.trim(),r:""}:{s:t.slice(0,i).trim(),r:t.slice(i+3).trim()};}
 
 function rowColor(load,today,tomorrow){
@@ -80,10 +80,12 @@ function rowColor(load,today,tomorrow){
   if(load.status==="Dock"||load.status==="Yard")return{bg:"#c4b5fd",stripe:"#6d28d9",tc:"#000000",bold:true};
   if(load.status==="Picked Up")return{bg:"#fde047",stripe:"#ca8a04",tc:"#000000",bold:true};
   const pd=parsePickupDate(load.pickup);
-  if(!pd)return{bg:"#f8fafc",stripe:"#94a3b8",tc:"#1e293b",bold:false};
+  if(!pd)return{bg:"#dbeafe",stripe:"#3b82f6",tc:"#1e3a5f",bold:false};
   const pt=pd.getTime(),t=today.getTime(),tm=tomorrow?tomorrow.getTime():t+86400000;
   if(pt===t)return{bg:"#fde047",stripe:"#ca8a04",tc:"#000000",bold:true};
-  return{bg:"#f87171",stripe:"#b91c1c",tc:"#000000",bold:true};
+  if(pt===tm)return{bg:"#f87171",stripe:"#b91c1c",tc:"#000000",bold:true};
+  if(pt>tm)return{bg:"#f87171",stripe:"#b91c1c",tc:"#000000",bold:true};
+  return{bg:"#dbeafe",stripe:"#3b82f6",tc:"#1e3a5f",bold:false};
 }
 
 const rpmBg=v=>v==null?"#f9fafb":v>=3?"#dcfce7":v<2.5?"#fee2e2":"#fef9c3";
@@ -195,6 +197,11 @@ function App(){
   const apiKeyRef=useRef(apiKey);
   useEffect(()=>{apiKeyRef.current=apiKey;},[apiKey]);
   const isViewer=appMode==="viewer";
+  const[searchQuery,setSearchQuery]=useState("");
+  const[showSearch,setShowSearch]=useState(false);
+  const[searchResults,setSearchResults]=useState([]);
+  const[searchIdx,setSearchIdx]=useState(0);
+  const searchRef=useRef(null);
 
   const today=useMemo(()=>{const d=new Date();d.setHours(0,0,0,0);return d;},[]);
   const tomorrow=useMemo(()=>{const d=new Date(today);d.setDate(d.getDate()+1);return d;},[today]);
@@ -220,6 +227,47 @@ function App(){
         setSaveStatus("error");
       });
   },[appMode]);
+
+  // ── Ctrl+F search ────────────────────────────────────────────────────────────
+  useEffect(()=>{
+    const handler=(e)=>{
+      if((e.ctrlKey||e.metaKey)&&e.key==="f"){
+        e.preventDefault();
+        setShowSearch(s=>{if(!s)setTimeout(()=>searchRef.current?.focus(),50);return true;});
+      }
+      if(e.key==="Escape")setShowSearch(false);
+    };
+    window.addEventListener("keydown",handler);
+    return()=>window.removeEventListener("keydown",handler);
+  },[]);
+
+  // ── Run search across ALL weeks ───────────────────────────────────────────
+  useEffect(()=>{
+    if(!searchQuery.trim()){setSearchResults([]);setSearchIdx(0);return;}
+    const q=searchQuery.toLowerCase().trim();
+    const results=[];
+    weeks.forEach((w,wi)=>{
+      (w.groups||[]).forEach((g,gi)=>{
+        (g.loads||[]).forEach((l,li)=>{
+          const fields=[l.sr,l.broker,l.pickup,l.delivery,l.product,l.driver,l.status,l.notes,g.groupDriver].join(" ").toLowerCase();
+          if(fields.includes(q)){
+            results.push({weekIdx:wi,weekLabel:w.label,groupId:g.id,loadId:l.id,sr:l.sr,broker:l.broker,pickup:l.pickup,delivery:l.delivery,driver:g.groupDriver||l.driver,status:l.status});
+          }
+        });
+        // Also search local deliveries and crossdock
+        (w.localDeliveries||[]).forEach(r=>{
+          const fields=[r.destination,r.broker,r.loadNum,r.driver,r.datetime,r.status].join(" ").toLowerCase();
+          if(fields.includes(q))results.push({weekIdx:wi,weekLabel:w.label,groupId:null,loadId:r.id,sr:r.destination,broker:r.broker+" #"+r.loadNum,pickup:r.datetime,delivery:"Local",driver:r.driver,status:r.status});
+        });
+        (w.crossdockDrops||[]).forEach(r=>{
+          const fields=[r.location,r.broker,r.loadNum,r.driver,r.datetime,r.status].join(" ").toLowerCase();
+          if(fields.includes(q))results.push({weekIdx:wi,weekLabel:w.label,groupId:null,loadId:r.id,sr:r.location,broker:r.broker+" #"+r.loadNum,pickup:r.datetime,delivery:"Crossdock",driver:r.driver,status:r.status});
+        });
+      });
+    });
+    setSearchResults(results);
+    setSearchIdx(0);
+  },[searchQuery,weeks]);
 
   // ── Notifications: check every 60s for pickups within 2 hours with no status ──
   useEffect(()=>{
@@ -362,8 +410,9 @@ function App(){
   const addWeek=()=>{const l=prompt("Week label (e.g. 3.30.2026 - 4.6.2026)");if(!l)return;setWeeksAndSave(p=>[...p,mkWeek(l)]);setActiveWeek(weeks.length);};
   const removeWeek=i=>{if(weeks.length<=1){alert("Cannot remove last week.");return;}if(!confirm("Remove this week?"))return;setWeeksAndSave(p=>p.filter((_,j)=>j!==i));setActiveWeek(0);};
 
-  const TH=(bg,ex={})=>({padding:"6px 4px",fontSize:"10px",fontWeight:"600",background:bg||"#1a2e50",color:"#fff",border:"1px solid rgba(255,255,255,0.15)",whiteSpace:"nowrap",textAlign:"center",position:"sticky",top:0,zIndex:5,...ex});
-  const TD=(bg,ex={})=>({padding:"2px 4px",border:"0.5px solid rgba(0,0,0,0.08)",background:bg||"transparent",verticalAlign:"middle",fontSize:"11px",...ex});
+  const TH=(bg,ex={})=>({padding:"6px 4px",fontSize:"10px",fontWeight:"600",background:bg||"#1a2e50",color:"#fff",border:"1px solid rgba(255,255,255,0.15)",whiteSpace:"nowrap",textAlign:"center",position:"sticky",top:0,zIndex:5,backdropFilter:"none",...ex});
+  const TD=(bg,ex={})=>({padding:"1px 4px",border:"0.5px solid rgba(0,0,0,0.08)",background:bg||"transparent",verticalAlign:"middle",fontSize:"11px",...ex});
+  const TDc=(bg,ex={})=>({padding:"0px 4px",border:"0.5px solid rgba(0,0,0,0.08)",background:bg||"transparent",verticalAlign:"middle",fontSize:"11px",lineHeight:"1",...ex});
   const IN=(ex={})=>({width:"100%",border:"none",background:"transparent",fontSize:"11px",padding:"2px",color:"inherit",fontFamily:"inherit",fontWeight:"inherit",outline:"none",boxSizing:"border-box",...ex});
   const CELL=(bg,ex={})=>({padding:"4px 6px",border:"0.5px solid #e2e8f0",background:bg||"#fff",verticalAlign:"middle",fontSize:"11px",...ex});
   const INCEL=(ex={})=>({width:"100%",border:"none",background:"transparent",fontSize:"11px",padding:"1px 2px",color:"#111",fontFamily:"inherit",outline:"none",...ex});
@@ -470,6 +519,56 @@ function App(){
       </div>
     )}
 
+    {/* ── SEARCH BAR ── */}
+    {showSearch&&(
+      <div style={{position:"fixed",top:"60px",left:"50%",transform:"translateX(-50%)",zIndex:2000,background:"#fff",borderRadius:"12px",boxShadow:"0 8px 40px rgba(0,0,0,0.25)",border:"1px solid #e2e8f0",padding:"12px 16px",width:"min(600px,95vw)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:searchResults.length>0?"10px":"0"}}>
+          <span style={{fontSize:"14px"}}>🔍</span>
+          <input
+            ref={searchRef}
+            value={searchQuery}
+            onChange={e=>setSearchQuery(e.target.value)}
+            onKeyDown={e=>{
+              if(e.key==="Enter"&&searchResults.length>0)setSearchIdx(i=>(i+1)%searchResults.length);
+              if(e.key==="Escape"){setShowSearch(false);setSearchQuery("");}
+            }}
+            placeholder="Search loads, brokers, load numbers, drivers... (all weeks)"
+            style={{flex:1,border:"none",outline:"none",fontSize:"14px",color:"#1a2e50",fontFamily:"inherit"}}
+          />
+          {searchQuery&&<span style={{fontSize:"11px",color:"#94a3b8",whiteSpace:"nowrap",fontWeight:"600"}}>{searchResults.length} result{searchResults.length!==1?"s":""}</span>}
+          {searchResults.length>1&&<div style={{display:"flex",gap:"4px"}}>
+            <button onClick={()=>setSearchIdx(i=>(i-1+searchResults.length)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↑</button>
+            <button onClick={()=>setSearchIdx(i=>(i+1)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↓</button>
+          </div>}
+          <button onClick={()=>{setShowSearch(false);setSearchQuery("");}} style={{background:"#fee2e2",border:"none",borderRadius:"6px",padding:"4px 10px",cursor:"pointer",fontSize:"11px",color:"#dc2626",fontWeight:"700"}}>✕ Close</button>
+        </div>
+        {searchResults.length>0&&(
+          <div style={{maxHeight:"320px",overflowY:"auto",borderTop:"1px solid #f1f5f9",paddingTop:"8px"}}>
+            {searchResults.map((r,i)=>(
+              <div key={i} onClick={()=>{setSearchIdx(i);setActiveWeek(r.weekIdx);setActiveTab("weeks");setShowSearch(false);setSearchQuery("");setTimeout(()=>{const el=document.getElementById(`load-${r.loadId}`);if(el){el.scrollIntoView({behavior:"smooth",block:"center"});el.style.outline="3px solid #2563eb";el.style.outlineOffset="2px";setTimeout(()=>{el.style.outline="";el.style.outlineOffset="";},2500);}},100);}}
+                style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 10px",borderRadius:"8px",cursor:"pointer",background:i===searchIdx?"#eff6ff":"transparent",border:i===searchIdx?"1px solid #bfdbfe":"1px solid transparent",marginBottom:"3px",transition:"all .1s"}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:"12px",fontWeight:"700",color:"#1a2e50",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r.sr||"—"}</div>
+                  <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"2px"}}>
+                    {r.broker&&<span style={{fontSize:"10px",color:"#2563eb",fontWeight:"600"}}>{r.broker}</span>}
+                    {r.pickup&&<span style={{fontSize:"10px",color:"#64748b"}}>🛫 {r.pickup}</span>}
+                    {r.driver&&<span style={{fontSize:"10px",color:"#059669",fontWeight:"600"}}>🧑 {r.driver}</span>}
+                    {r.status&&<span style={{fontSize:"10px",color:"#7c3aed",fontWeight:"600"}}>{r.status}</span>}
+                  </div>
+                </div>
+                <div style={{textAlign:"right",flexShrink:0}}>
+                  <div style={{fontSize:"10px",fontWeight:"700",color:"#1a2e50",background:"#dbeafe",padding:"1px 7px",borderRadius:"8px"}}>{r.weekLabel}</div>
+                  <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>{r.delivery}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {searchQuery&&searchResults.length===0&&<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"12px 0"}}>No results found across {weeks.length} week{weeks.length!==1?"s":""}</div>}
+        <div style={{fontSize:"10px",color:"#cbd5e1",marginTop:searchResults.length>0?"8px":"0",textAlign:"center"}}>Press Enter to cycle · Esc to close · Click a result to jump to it</div>
+      </div>
+    )}
+
     {/* ── SAVE INDICATOR ── */}
     {saveStatus!=="idle"&&(
       <div className={`save-indicator ${saveStatus==="saving"?"save-saving":saveStatus==="saved"?"save-ok":"save-error"}`}>
@@ -518,6 +617,7 @@ function App(){
         {!isViewer&&<button onClick={()=>setShowNotif(true)} style={{background:notifications.length>0?"#dc2626":"#1e3a5f",border:"1px solid #374151",color:"#fff",padding:"4px 12px",borderRadius:"6px",fontSize:"10px",fontWeight:"600",cursor:"pointer",position:"relative"}}>
           🔔{notifications.length>0&&<span style={{background:"#fbbf24",color:"#000",borderRadius:"50%",width:"16px",height:"16px",fontSize:"9px",fontWeight:"800",display:"inline-flex",alignItems:"center",justifyContent:"center",marginLeft:"4px"}}>{notifications.length}</span>}
         </button>}
+        <button onClick={()=>{setShowSearch(s=>{if(!s)setTimeout(()=>searchRef.current?.focus(),50);return true;});}} style={{background:"#1e3a5f",border:"1px solid #374151",color:"#93c5fd",padding:"4px 12px",borderRadius:"6px",fontSize:"10px",fontWeight:"600",cursor:"pointer"}}>🔍 Search <span style={{opacity:.5,fontSize:"9px"}}>(Ctrl+F)</span></button>
         <button onClick={()=>setAppMode(null)} style={{background:"transparent",border:"1px solid rgba(255,255,255,0.2)",color:"rgba(255,255,255,0.5)",padding:"4px 10px",borderRadius:"6px",fontSize:"10px",cursor:"pointer"}}>⏻ Exit</button>
       </div>
     </div>
@@ -582,7 +682,7 @@ function App(){
       <div style={{border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}>
         <table style={{borderCollapse:"collapse",width:"100%",minWidth:"1350px"}}>
           <colgroup>
-            <col style={{width:"5px"}}/><col style={{width:"20px"}}/><col style={{width:"20px"}}/><col style={{width:"160px"}}/><col style={{width:"90px"}}/><col style={{width:"75px"}}/><col style={{width:"75px"}}/><col style={{width:"55px"}}/><col style={{width:"45px"}}/><col style={{width:"55px"}}/><col style={{width:"48px"}}/><col style={{width:"85px"}}/><col style={{width:"50px"}}/><col style={{width:"55px"}}/><col style={{width:"68px"}}/><col style={{width:"155px"}}/><col style={{width:"125px"}}/><col style={{width:"160px"}}/>
+            <col style={{width:"5px"}}/><col style={{width:"18px"}}/><col style={{width:"22px"}}/><col style={{width:"165px"}}/><col style={{width:"100px"}}/><col style={{width:"78px"}}/><col style={{width:"78px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"88px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"62px"}}/><col style={{width:"90px"}}/><col style={{width:"145px"}}/>
           </colgroup>
           <thead>
             <tr>
@@ -590,10 +690,8 @@ function App(){
               <th style={{background:"#1a2e50",padding:0,border:"none"}}/>
               <th style={{background:"#1a2e50",padding:0,border:"none"}}/>
               {["Shipper & Receiver","Broker & Load #","Pickup","Delivery","Product","Pallets","Weight","Rate ($)","Driver","Truck #","Trailer #","Status"].map(h=><th key={h} style={TH("#1a2e50")}>{h}</th>)}
-              <th style={TH("#1d4f9e")}>Route Info</th>
               <th style={TH("#1d4f9e")}>Financials</th>
-              <th style={TH("#374151")}>Notes</th>
-              <th style={{...TH("#0f5132"),background:isViewer?"#064e3b":undefined}}>Driver · Truck · Status</th>
+              <th style={{...TH("#1d4f9e"),background:"#1d4f9e",color:"#fff"}}>Driver · Truck · Status</th>
             </tr>
           </thead>
           <tbody>
@@ -605,7 +703,7 @@ function App(){
                 <Fragment key={group.id}>
                   {/* Trailer header */}
                   <tr style={{borderTop:gi>0?"3px solid #1a2e50":"none"}}>
-                    <td colSpan={18} style={{padding:0}}>
+                    <td colSpan={16} style={{padding:0}}>
                       <div style={{background:"linear-gradient(90deg,#1a2e50,#1e3a5f)",padding:"5px 10px",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}}>
                         <span style={{fontSize:"13px",fontWeight:"800",color:"#fff",background:"#2563eb",padding:"2px 10px",borderRadius:"5px",flexShrink:0}}>T{gi+1}</span>
                         {!isViewer&&<button onClick={()=>addLoad(group.id)} style={{background:"#3b82f6",color:"#fff",border:"none",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>+ Load</button>}
@@ -630,62 +728,68 @@ function App(){
                         {!isViewer&&week.groups.length>1&&<button onClick={()=>removeGroup(group.id)} style={{background:"#7f1d1d",color:"#fca5a5",border:"1px solid #dc2626",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>Remove Trailer</button>}
                       </div>
                     </td>
+                    <td style={{background:"#1d4f9e",padding:0}}/>
                   </tr>
                   {/* Load rows */}
                   {group.loads.map((load,li)=>{
                     const isF=li===0,isL=li===group.loads.length-1;
                     const rc=rowColor(load,today,tomorrow);
                     const nMi=load.shipper&&load.pickupMiAuto==null;
+                    const isSingle=group.loads.length===1;
+                    const T=isSingle?TDc:TD;
                     return(
-                      <tr key={load.id} style={{borderBottom:isL?"none":"0.5px solid rgba(0,0,0,0.07)",fontWeight:rc.bold?"700":"400"}}>
+                      <tr key={load.id} id={`load-${load.id}`} style={{borderBottom:isL?"none":"0.5px solid rgba(0,0,0,0.07)",fontWeight:rc.bold?"700":"400",lineHeight:isSingle?"1":"1.3",height:isSingle?"22px":undefined,maxHeight:isSingle?"22px":undefined}}>
                         <td style={{padding:0,background:rc.stripe,width:"5px",boxShadow:`2px 0 6px ${rc.stripe}88`}}/>
-                        <td style={TD(rc.bg,{padding:"1px 2px",textAlign:"center"})}>
+                        <td style={T(rc.bg,{padding:"1px 2px",textAlign:"center"})}>
                           {!isViewer&&<button onClick={()=>removeLoad(group.id,load.id)} style={{width:"18px",height:"18px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"3px",fontSize:"11px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}
                         </td>
-                        <td style={TD(rc.bg,{padding:"1px 2px",textAlign:"center"})}>
+                        <td style={T(rc.bg,{padding:"1px 2px",textAlign:"center"})}>
                           {load.stop!=null&&<span style={{fontSize:"11px",fontWeight:"800",color:"#92400e",background:"#fef9c3",padding:"0 4px",borderRadius:"3px",border:"1px solid #fde68a"}}>{load.stop}</span>}
                         </td>
-                        <td style={TD(rc.bg)}><input value={load.sr} onChange={e=>setLoad(group.id,load.id,"sr",e.target.value)} style={IN({color:rc.tc})} placeholder="City, ST - City, ST" disabled={isViewer}/></td>
-                        <td style={TD(rc.bg)}><input value={load.broker} onChange={e=>setLoad(group.id,load.id,"broker",e.target.value)} style={IN({color:rc.tc})} placeholder="Broker & Load #" disabled={isViewer}/></td>
-                        <td style={TD(rc.bg)}><input value={load.pickup} onChange={e=>setLoad(group.id,load.id,"pickup",e.target.value)} style={IN({color:rc.tc})} placeholder="3/31/2026 8AM" disabled={isViewer}/></td>
-                        <td style={TD(rc.bg)}><input value={load.delivery} onChange={e=>setLoad(group.id,load.id,"delivery",e.target.value)} style={IN({color:rc.tc})} placeholder="4/2/2026 9AM" disabled={isViewer}/></td>
-                        <td style={TD(rc.bg)}><input value={load.product} onChange={e=>setLoad(group.id,load.id,"product",e.target.value)} style={IN({color:rc.tc})} placeholder="Product" disabled={isViewer}/></td>
-                        <td style={TD(rc.bg)}><input value={load.pallets} onChange={e=>setLoad(group.id,load.id,"pallets",e.target.value)} style={IN({color:rc.tc})} placeholder="—" disabled={isViewer}/></td>
-                        <td style={TD(rc.bg)}><input value={load.weight} onChange={e=>setLoad(group.id,load.id,"weight",e.target.value)} style={IN({color:rc.tc})} placeholder="Lbs" disabled={isViewer}/></td>
-                        <td style={TD(rc.bg)}><input value={load.rate} type="number" onChange={e=>setLoad(group.id,load.id,"rate",e.target.value)} style={IN({textAlign:"right",color:rc.tc})} placeholder="0" disabled={isViewer}/></td>
-                        <td style={TD(rc.bg)}>
+                        <td style={T(rc.bg)}><input value={load.sr} onChange={e=>setLoad(group.id,load.id,"sr",e.target.value)} style={IN({color:rc.tc})} placeholder="City, ST - City, ST" disabled={isViewer}/></td>
+                        <td style={T(rc.bg)}><input value={load.broker} onChange={e=>setLoad(group.id,load.id,"broker",e.target.value)} style={IN({color:rc.tc})} placeholder="Broker & Load #" disabled={isViewer}/></td>
+                        <td style={T(rc.bg)}><input value={load.pickup} onChange={e=>setLoad(group.id,load.id,"pickup",e.target.value)} style={IN({color:rc.tc})} placeholder="3/31/2026 8AM" disabled={isViewer}/></td>
+                        <td style={T(rc.bg)}><input value={load.delivery} onChange={e=>setLoad(group.id,load.id,"delivery",e.target.value)} style={IN({color:rc.tc})} placeholder="4/2/2026 9AM" disabled={isViewer}/></td>
+                        <td style={T(rc.bg)}><input value={load.product} onChange={e=>setLoad(group.id,load.id,"product",e.target.value)} style={IN({color:rc.tc})} placeholder="Product" disabled={isViewer}/></td>
+                        <td style={T(rc.bg)}><input value={load.pallets} onChange={e=>setLoad(group.id,load.id,"pallets",e.target.value)} style={IN({color:rc.tc})} placeholder="—" disabled={isViewer}/></td>
+                        <td style={T(rc.bg)}><input value={load.weight} onChange={e=>setLoad(group.id,load.id,"weight",e.target.value)} style={IN({color:rc.tc})} placeholder="Lbs" disabled={isViewer}/></td>
+                        <td style={T(rc.bg,{padding:"1px 6px",textAlign:"right"})}>
+                          {isViewer
+                            ?<span style={{fontWeight:"700",color:rc.tc,fontSize:"11px"}}>{load.rate?`$${parseFloat(load.rate).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:2})}`:"—"}</span>
+                            :<span style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:"1px"}}>
+                              <span style={{fontSize:"10px",color:rc.tc,fontWeight:"700",opacity:.7}}>$</span>
+                              <input value={load.rate} type="number" onChange={e=>setLoad(group.id,load.id,"rate",e.target.value)} style={IN({textAlign:"right",color:rc.tc,fontWeight:"700",width:"60px"})} placeholder="0"/>
+                            </span>
+                          }
+                        </td>
+                        <td style={T(rc.bg)}>
                           <select value={load.driver||""} onChange={e=>setLoad(group.id,load.id,"driver",e.target.value)} style={IN({color:load.driver?"#c2410c":"#9ca3af",cursor:isViewer?"not-allowed":"pointer"})} disabled={isViewer}>
                             <option value="">— Driver —</option>
                             {DRIVERS.map(d=><option key={d} value={d}>{d}</option>)}
                           </select>
                         </td>
-                        <td style={TD(rc.bg,{padding:"1px 2px"})}>
+                        <td style={T(rc.bg,{padding:"1px 2px"})}>
                           <select value={load.truck||""} onChange={e=>setLoad(group.id,load.id,"truck",e.target.value)} style={IN({color:load.truck?"#1e40af":"#9ca3af",cursor:isViewer?"not-allowed":"pointer",fontWeight:load.truck?"700":"400",fontSize:"11px"})} disabled={isViewer}>
                             <option value="">—</option>
                             {TRUCK_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
                           </select>
                         </td>
-                        <td style={TD(rc.bg,{padding:"1px 2px"})}>
+                        <td style={T(rc.bg,{padding:"1px 2px"})}>
                           <select value={load.trailer||""} onChange={e=>setLoad(group.id,load.id,"trailer",e.target.value)} style={IN({color:load.trailer?"#7c3aed":"#9ca3af",cursor:isViewer?"not-allowed":"pointer",fontWeight:load.trailer?"700":"400",fontSize:"11px"})} disabled={isViewer}>
                             <option value="">—</option>
                             {TRAILER_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
                           </select>
                         </td>
-                        <td style={TD(rc.bg)}>
+                        <td style={T(rc.bg)}>
                           <select value={load.status} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={IN({color:rc.tc,cursor:isViewer?"not-allowed":"pointer"})} disabled={isViewer}>
                             <option value="">— Not set —</option>
                             {LOAD_STATUSES.map(s=><option key={s}>{s}</option>)}
                           </select>
                         </td>
                         {/* Route info */}
-                        <td style={TD("#f0f4ff",{verticalAlign:"middle",padding:"3px 6px"})}>
-                          <div style={{display:"flex",flexDirection:"column",gap:"2px"}}>
-                            {load.shipper&&<span style={{fontSize:"10px",color:"#1a2e50",fontWeight:"600"}}>{load.shipper}</span>}
-                            {load.receiver&&<span style={{fontSize:"10px",color:"#475569"}}>→ {load.receiver}</span>}
-                          </div>
-                        </td>
+
                         {/* Financials */}
-                        <td style={TD("#fffbeb",{verticalAlign:"middle",padding:"3px 6px"})}>
+                        <td style={T("#fffbeb",{verticalAlign:"middle",padding:"3px 6px"})}>
                           <div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
                             {load.localCharge!=null?(<>
                               <span style={{fontSize:"10px",color:"#92400e",fontWeight:"700"}}>${load.localCharge} local</span>
@@ -697,27 +801,26 @@ function App(){
                             {load.tripPrice>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#1d4f9e"}}>${load.tripPrice.toLocaleString()}</span>}
                           </div>
                         </td>
-                        <td style={TD(rc.bg)}><input value={load.notes||""} onChange={e=>setLoad(group.id,load.id,"notes",e.target.value)} style={IN({color:rc.tc})} placeholder="Notes" disabled={isViewer}/></td>
                         {/* Group driver/status — rowspan */}
                         {isF&&(
-                          <td rowSpan={rc2} style={{...TD(isViewer?"#f0fdf4":"#f0fdf4",{textAlign:"center",verticalAlign:"middle",borderLeft:"2px solid #86efac",borderRight:"2px solid #86efac",padding:"6px"}),borderBottom:isL?"none":undefined}}>
-                            <select value={group.groupDriver||""} onChange={e=>setGroup(group.id,"groupDriver",e.target.value)} style={{...IN({textAlign:"center",fontWeight:"600",fontSize:"11px",cursor:isViewer?"not-allowed":"pointer"}),color:group.groupDriver?"#166534":"#9ca3af",background:"transparent",border:isViewer?"1px solid #86efac":"1px solid #d1d5db",borderRadius:"4px",marginBottom:"3px"}} disabled={isViewer}>
+                          <td rowSpan={rc2} style={{...TD(rc.bg,{textAlign:"center",verticalAlign:"middle",borderLeft:`2px solid ${rc.stripe}`,borderRight:`2px solid ${rc.stripe}`,padding:isSingle?"1px 4px":"6px"}),borderBottom:isL?"none":undefined}}>
+                            <select value={group.groupDriver||""} onChange={e=>setGroup(group.id,"groupDriver",e.target.value)} style={{...IN({textAlign:"center",fontWeight:"700",fontSize:"11px",cursor:isViewer?"not-allowed":"pointer"}),color:group.groupDriver?"#1e40af":"#6b7280",background:"transparent",border:isViewer?"1px solid #86efac":"1px solid #d1d5db",borderRadius:"4px",marginBottom:"3px"}} disabled={isViewer}>
                               <option value="">— Assign Driver —</option>
                               {DRIVERS.map(d=><option key={d} value={d}>{d}</option>)}
                             </select>
                             {rc2===1&&(
                               <div style={{display:"flex",gap:"2px",marginBottom:"2px"}}>
-                                <select value={group.groupTruck||""} onChange={e=>setGroup(group.id,"groupTruck",e.target.value)} style={{...IN({cursor:isViewer?"not-allowed":"pointer",fontSize:"9px"}),flex:1,color:group.groupTruck?"#1e40af":"#9ca3af",background:"transparent",border:"1px solid #bfdbfe",borderRadius:"3px",padding:"1px"}} disabled={isViewer}>
+                                <select value={group.groupTruck||""} onChange={e=>setGroup(group.id,"groupTruck",e.target.value)} style={{...IN({cursor:isViewer?"not-allowed":"pointer",fontSize:"9px",fontWeight:"700"}),flex:1,color:group.groupTruck?"#000000":"#6b7280",background:"transparent",border:"1px solid #bfdbfe",borderRadius:"3px",padding:"1px"}} disabled={isViewer}>
                                   <option value="">🚚—</option>
                                   {TRUCK_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
                                 </select>
-                                <select value={group.groupTrailer||""} onChange={e=>setGroup(group.id,"groupTrailer",e.target.value)} style={{...IN({cursor:isViewer?"not-allowed":"pointer",fontSize:"9px"}),flex:1,color:group.groupTrailer?"#7c3aed":"#9ca3af",background:"transparent",border:"1px solid #e9d5ff",borderRadius:"3px",padding:"1px"}} disabled={isViewer}>
+                                <select value={group.groupTrailer||""} onChange={e=>setGroup(group.id,"groupTrailer",e.target.value)} style={{...IN({cursor:isViewer?"not-allowed":"pointer",fontSize:"9px",fontWeight:"700"}),flex:1,color:group.groupTrailer?"#000000":"#6b7280",background:"transparent",border:"1px solid #e9d5ff",borderRadius:"3px",padding:"1px"}} disabled={isViewer}>
                                   <option value="">🚛—</option>
                                   {TRAILER_NUMBERS.map(t=><option key={t} value={t}>#{t}</option>)}
                                 </select>
                               </div>
                             )}
-                            <select value={group.groupStatus} onChange={e=>setGroup(group.id,"groupStatus",e.target.value)} style={{...IN({textAlign:"center",cursor:isViewer?"not-allowed":"pointer",fontWeight:"700",fontSize:"10px"}),color:gsSt.fg,background:gsSt.bg,borderRadius:"4px",padding:"2px",border:`1px solid ${gsSt.br}`}} disabled={isViewer}>
+                            <select value={group.groupStatus} onChange={e=>setGroup(group.id,"groupStatus",e.target.value)} style={{...IN({textAlign:"center",cursor:isViewer?"not-allowed":"pointer",fontWeight:"700",fontSize:"10px"}),color:"#000000",background:"rgba(255,255,255,0.6)",borderRadius:"4px",padding:"2px",border:`1px solid ${gsSt.br}`}} disabled={isViewer}>
                               {Object.keys(GSS).map(s=><option key={s}>{s}</option>)}
                             </select>
                           </td>
