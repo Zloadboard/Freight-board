@@ -54,6 +54,7 @@ input:disabled,select:disabled{opacity:0.72;cursor:not-allowed!important;}
 <body>
 <div id="app"></div>
 
+
 <script>
 const DIST={"romeoville":0,"lockport":5,"joliet":8,"bolingbrook":5,"woodridge":8,"darien":15,"burr ridge":12,"willowbrook":10,"hodgkins":18,"bedford park":20,"bridgeview":20,"oak lawn":22,"evergreen park":24,"alsip":18,"blue island":20,"country club hills":20,"markham":22,"harvey":22,"naperville":15,"aurora":20,"batavia":25,"geneva":28,"st. charles":28,"saint charles":28,"north aurora":20,"n aurora":20,"sugar grove":22,"oswego":12,"montgomery":14,"yorkville":15,"plano":22,"sandwich":28,"west chicago":25,"w chicago":25,"carol stream":20,"glendale heights":22,"addison":22,"elmhurst":22,"villa park":22,"lombard":20,"downers grove":15,"westmont":15,"lisle":15,"itasca":22,"wood dale":22,"bensenville":25,"elk grove village":25,"elk grove vlg":25,"bloomingdale":22,"roselle":25,"hanover park":28,"streamwood":28,"bartlett":30,"schaumburg":28,"elgin":35,"hoffman estates":30,"barrington":40,"crystal lake":45,"mchenry":50,"wauconda":48,"lake zurich":45,"mundelein":48,"libertyville":50,"gurnee":52,"waukegan":55,"north chicago":55,"zion":58,"chicago":30,"chicago hts":25,"chicago heights":25,"cicero":22,"berwyn":22,"oak park":25,"melrose park":25,"franklin park":25,"northlake":23,"bellwood":23,"broadview":22,"berkeley":22,"hillside":20,"la grange":18,"la grange park":18,"mccook":20,"forest park":24,"maywood":25,"stone park":25,"rosemont":27,"des plaines":28,"park ridge":28,"niles":28,"skokie":30,"evanston":32,"wheeling":33,"buffalo grove":38,"palatine":35,"arlington heights":33,"mount prospect":30,"rolling meadows":30,"willow springs":12,"palos heights":12,"orland park":15,"tinley park":18,"oak forest":15,"midlothian":22,"homewood":22,"flossmoor":22,"matteson":20,"park forest":22,"crete":25,"sauk village":28,"calumet city":28,"lansing":28,"south holland":25,"dolton":26,"monee":22,"university park":22,"beecher":28,"peotone":20,"channahon":10,"minooka":12,"elwood":10,"manhattan":12,"mokena":14,"new lenox":14,"frankfort":16,"steger":22,"wilmington":18,"braidwood":22,"coal city":20,"diamond":22,"seneca":30,"marseilles":40,"ottawa":62,"la salle":65,"peru":65,"streator":50,"pontiac":70,"bloomington":90,"normal":90,"decatur":110,"springfield":100,"peoria":120,"bartonville":120,"east peoria":120,"morton":120,"mackinaw":110,"goodfield":115,"minonk":100,"kankakee":35,"bourbonnais":35,"bradley":32,"manteno":30,"momence":45,"hoopeston":80,"danville":100,"champaign":110,"urbana":110,"lemont":12,"homer glen":12,"orland hills":15,"carpentersville":38,"dundee":40,"west dundee":40,"hampshire":42,"genoa":50,"dekalb":50,"sycamore":52,"rochelle":65,"dixon":75,"sterling":95,"rock falls":95,"rockford":78,"loves park":80,"machesney park":82,"roscoe":82,"belvidere":60,"marengo":52,"woodstock":55,"antioch":60,"fox lake":58,"round lake":52,"hammond":28,"east chicago":28,"gary":32,"portage":40,"chesterton":50,"valparaiso":45,"hobart":35,"merrillville":35,"merrilville":35,"crown point":32,"dyer":28,"st. john":28,"schererville":30,"munster":28,"highland":30,"michigan city":60,"la porte":65,"laporte":65,"south bend":95,"mishawaka":95,"elkhart":110,"goshen":115,"warsaw":130,"bremen":100,"plymouth":95,"rochester":95,"north judson":65,"knox":85,"logansport":105,"kokomo":120,"indianapolis":175,"anderson":155,"fort wayne":155,"auburn":150,"remington":80,"rensselaer":70,"temperance":55,"kenosha":55,"pleasant prairie":55,"racine":62,"sturtevant":62,"oak creek":65,"franksville":65,"caledonia":68,"milwaukee":72,"west allis":72,"greenfield":72,"new berlin":72,"muskego":70,"franklin":68,"glendale":74,"wauwatosa":72,"butler":72,"menomonee falls":78,"waukesha":75,"brookfield":74,"pewaukee":78,"delafield":85,"oconomowoc":90,"watertown":100,"germantown":82,"sussex":82,"hartland":85,"east troy":72,"elkhorn":75,"lake geneva":80,"delavan":82,"beloit":82,"janesville":85,"edgerton":90,"whitewater":90,"fort atkinson":110,"jefferson":100,"madison":95,"middleton":98,"stoughton":98,"verona":97,"baraboo":140,"beaver dam":115,"fond du lac":125,"oshkosh":130,"appleton":135,"neenah":135,"green bay":155,"sheboygan":130,"brillion":160,"manitowoc":150,"wausau":190,"eau claire":250,"la crosse":250,"hudson":310,"kalamazoo":115,"battle creek":125,"grand rapids":130,"lansing":155,"detroit":290,"ann arbor":280,"davenport":170,"des moines":290,"st. louis":285,"kansas city":480,"fountain inn":840,"spartanburg":850,"rock hill":875,"charlotte":905,"matthews":890,"lugoff":860,"jacksonville":1240,"deltona":1260,"orlando":1290,"tampa":1340,"dothan":1000,"birmingham":890,"huntsville":840,"nashville":510,"memphis":560,"knoxville":570,"chattanooga":620,"louisville":330,"lexington":425,"hammond la":950,"baton rouge":1000,"new orleans":1050,"dallas":980,"fort worth":985,"houston":1110,"san antonio":1200,"oklahoma city":720,"tulsa":700,"atlanta":730,"mcdonough":745,"douglasville":750,"college park":738,"alabaster":890};
 
@@ -385,32 +386,32 @@ function App(){
           <button onClick={()=>setShowSummary(false)} style={{background:"transparent",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:"16px",lineHeight:1}}>×</button>
         </div>
         <div style={{fontSize:"10px",fontWeight:"700",color:"#64748b",letterSpacing:".07em",marginBottom:"6px"}}>PICKUPS</div>
-        {[["📅","Picks Today",cToday,"#fef9c3","#713f12","#eab308"],["📅","Picks Tomorrow",cTomorrow,"#ffe4e6","#881337","#f43f5e"],cFuture>0?["📅","Future Picks",cFuture,"#fee2e2","#991b1b","#f87171"]:null].filter(Boolean).map(([ico,label,count,bg,c,bd])=>(
+        {[["📅","Picks Today",cToday,"#fef9c3","#713f12","#eab308"],["📅","Picks Tomorrow",cTomorrow,"#ffe4e6","#881337","#f43f5e"],cFuture>0?["📅","Future Picks",cFuture,"#fee2e2","#991b1b","#f87171"]:null].filter(Boolean).map((row)=>{const [ico,label,count,bg,c,bd]=row;return(
           <div key={label} style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"5px"}}>
             <span style={{fontSize:"13px",width:"18px",textAlign:"center"}}>{ico}</span>
             <span style={{flex:1,fontSize:"11px",color:"#cbd5e1",fontWeight:"500"}}>{label}</span>
             <span style={{fontSize:"11px",fontWeight:"800",padding:"2px 10px",borderRadius:"4px",background:bg,color:c,border:`2px solid ${bd}`,minWidth:"28px",textAlign:"center"}}>{count}</span>
           </div>
-        ))}
+        );})}
         <div style={{height:"1px",background:"#2d4a7a",margin:"9px 0"}}/>
         <div style={{fontSize:"10px",fontWeight:"700",color:"#64748b",letterSpacing:".07em",marginBottom:"6px"}}>DELIVERIES</div>
-        {[cDelToday>0?["📦","Delivering Today",cDelToday,"#eff6ff","#1e40af","#3b82f6"]:null,cDelTomorrow>0?["📦","Delivering Tomorrow",cDelTomorrow,"#eff6ff","#1d4ed8","#93c5fd"]:null,["✅","Delivered",cDelivered,"#f0fdf4","#166534","#86efac"]].filter(Boolean).map(([ico,label,count,bg,c,bd])=>(
+        {[cDelToday>0?["📦","Delivering Today",cDelToday,"#eff6ff","#1e40af","#3b82f6"]:null,cDelTomorrow>0?["📦","Delivering Tomorrow",cDelTomorrow,"#eff6ff","#1d4ed8","#93c5fd"]:null,["✅","Delivered",cDelivered,"#f0fdf4","#166534","#86efac"]].filter(Boolean).map((row)=>{const [ico,label,count,bg,c,bd]=row;return(
           <div key={label} style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"5px"}}>
             <span style={{fontSize:"13px",width:"18px",textAlign:"center"}}>{ico}</span>
             <span style={{flex:1,fontSize:"11px",color:"#cbd5e1",fontWeight:"500"}}>{label}</span>
             <span style={{fontSize:"11px",fontWeight:"800",padding:"2px 10px",borderRadius:"4px",background:bg,color:c,border:`2px solid ${bd}`,minWidth:"28px",textAlign:"center"}}>{count}</span>
           </div>
-        ))}
+        );})}
         {(cLocalToday>0||cLocalTomorrow>0||cCrossdock>0)&&<>
           <div style={{height:"1px",background:"#2d4a7a",margin:"9px 0"}}/>
           <div style={{fontSize:"10px",fontWeight:"700",color:"#64748b",letterSpacing:".07em",marginBottom:"6px"}}>LOCAL & CROSSDOCK</div>
-          {[cLocalToday>0?["🏠","Local Today",cLocalToday,"#ecfdf5","#065f46","#6ee7b7"]:null,cLocalTomorrow>0?["🏠","Local Tomorrow",cLocalTomorrow,"#ecfdf5","#047857","#a7f3d0"]:null,cCrossdock>0?["🔁","Crossdock Active",cCrossdock,"#f5f3ff","#5b21b6","#a78bfa"]:null].filter(Boolean).map(([ico,label,count,bg,c,bd])=>(
+          {[cLocalToday>0?["🏠","Local Today",cLocalToday,"#ecfdf5","#065f46","#6ee7b7"]:null,cLocalTomorrow>0?["🏠","Local Tomorrow",cLocalTomorrow,"#ecfdf5","#047857","#a7f3d0"]:null,cCrossdock>0?["🔁","Crossdock Active",cCrossdock,"#f5f3ff","#5b21b6","#a78bfa"]:null].filter(Boolean).map((row)=>{const [ico,label,count,bg,c,bd]=row;return(
             <div key={label} style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"5px"}}>
               <span style={{fontSize:"13px",width:"18px",textAlign:"center"}}>{ico}</span>
               <span style={{flex:1,fontSize:"11px",color:"#cbd5e1",fontWeight:"500"}}>{label}</span>
               <span style={{fontSize:"11px",fontWeight:"800",padding:"2px 10px",borderRadius:"4px",background:bg,color:c,border:`2px solid ${bd}`,minWidth:"28px",textAlign:"center"}}>{count}</span>
             </div>
-          ))}
+          );})}
         </>}
         {wagesBase>0&&<>
           <div style={{height:"1px",background:"#2d4a7a",margin:"9px 0"}}/>
@@ -469,8 +470,7 @@ function App(){
 
             {/* Navigation */}
             <div className="hdr-menu-section">Navigation</div>
-            {[
-              ...(isAdmin?[["📅","Weekly Boards","weeks","#2563eb","#eff6ff"],["🎯","Dispatchers","dispatchers","#7c3aed","#faf5ff"],["👥","Drivers","roster","#065f46","#ecfdf5"],["🚛","Equipment","equipment","#0369a1","#eff6ff"],["🔁","Crossdock","xdock","#7c3aed","#faf5ff"],["📦","Archive","archive","#4c1d95","#faf5ff"],["📊","Stats","stats","#b45309","#fffbeb"]]:isDispatcher?[["📅","Weekly Boards","weeks","#2563eb","#eff6ff"],["🔁","Crossdock","xdock","#7c3aed","#faf5ff"],["📊","Stats","stats","#b45309","#fffbeb"]]:[["🔁","Crossdock","xdock","#7c3aed","#faf5ff"],["📊","Stats","stats","#b45309","#fffbeb"]]).map(([ico,label,tab,col,activeBg])=>(
+            {(isAdmin?[["📅","Weekly Boards","weeks","#2563eb","#eff6ff"],["🎯","Dispatchers","dispatchers","#7c3aed","#faf5ff"],["👥","Drivers","roster","#065f46","#ecfdf5"],["🚛","Equipment","equipment","#0369a1","#eff6ff"],["🔁","Crossdock","xdock","#7c3aed","#faf5ff"],["📦","Archive","archive","#4c1d95","#faf5ff"],["📊","Stats","stats","#b45309","#fffbeb"]]:isDispatcher?[["📅","Weekly Boards","weeks","#2563eb","#eff6ff"],["🔁","Crossdock","xdock","#7c3aed","#faf5ff"],["📊","Stats","stats","#b45309","#fffbeb"]]:[["🔁","Crossdock","xdock","#7c3aed","#faf5ff"],["📊","Stats","stats","#b45309","#fffbeb"]]).map(([ico,label,tab,col,activeBg])=>(
               <button key={tab} className={`hdr-menu-item${activeTab===tab?" active":""}`}
                 style={{color:activeTab===tab?col:"#374151",background:activeTab===tab?activeBg:"transparent"}}
                 onClick={()=>{setActiveTab(tab);setShowHdrMenu(false);}}>
