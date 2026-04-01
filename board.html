@@ -476,7 +476,7 @@ function App(){
                 onClick={()=>{setActiveTab(tab);setShowHdrMenu(false);}}>
                 <span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>{ico}</span>
                 {label}
-                {tab==="archive"&&archivedWeeks.length>0&&(<span style={{marginLeft:"auto",fontSize:"9px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 6px",borderRadius:"10px"}}>{archivedWeeks.length}</span>)}
+                {tab==="archive"&&archivedWeeks.length>0 ? <span style={{marginLeft:"auto",fontSize:"9px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 6px",borderRadius:"10px"}}>{archivedWeeks.length}</span> : null}
               </button>
             ))}
 
