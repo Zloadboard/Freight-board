@@ -241,13 +241,36 @@ function App(){
     sheetsLoad()
       .then(data=>{
         const rawWeeks=Array.isArray(data)?data:(data.weeks||[]);
-        if(rawWeeks.length>0){setWeeks(rawWeeks);}else{setWeeks([mkWeek("Week of "+new Date().toLocaleDateString("en-US"))]);}
-        if(data.customDrivers)setCustomDrivers(data.customDrivers);
-        if(data.customTrucks)setCustomTrucks(data.customTrucks);
-        if(data.customTrailers)setCustomTrailers(data.customTrailers);
+        if(rawWeeks.length>0){
+          setWeeks(rawWeeks);
+          if(data.customDrivers)setCustomDrivers(data.customDrivers);
+          if(data.customTrucks)setCustomTrucks(data.customTrucks);
+          if(data.customTrailers)setCustomTrailers(data.customTrailers);
+        } else {
+          try{
+            const local=JSON.parse(localStorage.getItem("fcbv2_localdata")||"{}");
+            if(local.weeks&&local.weeks.length>0){
+              setWeeks(local.weeks);
+              if(local.customDrivers)setCustomDrivers(local.customDrivers);
+              if(local.customTrucks)setCustomTrucks(local.customTrucks);
+              if(local.customTrailers)setCustomTrailers(local.customTrailers);
+            } else {setWeeks([mkWeek("Week of "+new Date().toLocaleDateString("en-US"))]);}
+          }catch(e){setWeeks([mkWeek("Week of "+new Date().toLocaleDateString("en-US"))]);}
+        }
         setLoading(false);
       })
-      .catch(()=>{setWeeks([mkWeek(new Date().toLocaleDateString("en-US",{month:"numeric",day:"numeric",year:"numeric"}))]);setLoading(false);setSaveStatus("error");});
+      .catch(()=>{
+        try{
+          const local=JSON.parse(localStorage.getItem("fcbv2_localdata")||"{}");
+          if(local.weeks&&local.weeks.length>0){
+            setWeeks(local.weeks);
+            if(local.customDrivers)setCustomDrivers(local.customDrivers);
+            if(local.customTrucks)setCustomTrucks(local.customTrucks);
+            if(local.customTrailers)setCustomTrailers(local.customTrailers);
+          } else {setWeeks([mkWeek(new Date().toLocaleDateString("en-US",{month:"numeric",day:"numeric",year:"numeric"}))]);}
+        }catch(e){setWeeks([mkWeek(new Date().toLocaleDateString("en-US",{month:"numeric",day:"numeric",year:"numeric"}))]);}
+        setLoading(false);setSaveStatus("error");
+      });
   },[appMode]);
 
   useEffect(()=>{
@@ -303,8 +326,11 @@ function App(){
     setWeeksAndSave(p=>p.filter((_,i)=>i!==weekIdx));setActiveWeek(0);
   };
 
+  const LS_KEY="fcbv2_localdata";
   const saveToSheets=useCallback((w)=>{
     clearTimeout(saveTimer.current);setSaveStatus("saving");
+    // Always save to localStorage immediately as backup
+    try{localStorage.setItem(LS_KEY,JSON.stringify({weeks:w,customDrivers,customTrucks,customTrailers,savedAt:Date.now()}));}catch(e){}
     saveTimer.current=setTimeout(async()=>{
       try{await sheetsSave({weeks:w,customDrivers,customTrucks,customTrailers});setSaveStatus("saved");setTimeout(()=>setSaveStatus("idle"),3000);}
       catch(err){if(err.name==="TypeError"){setSaveStatus("error");}else{setSaveStatus("saved");setTimeout(()=>setSaveStatus("idle"),3000);}}
