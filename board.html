@@ -106,7 +106,7 @@ const GSS={"Pending":{bg:"#f9fafb",fg:"#6b7280",br:"#d1d5db"},"Driver assigned":
 
 let _uid=Date.now();
 const uid=()=>++_uid;
-const mkLoad=(o={})=>({id:uid(),sr:"",broker:"",pickup:"",delivery:"",product:"",pallets:"",weight:"",rate:"",driver:"",truck:"",trailer:"",status:"",notes:"",manualPickupMi:"",...o});
+const mkLoad=(o={})=>({id:uid(),sr:"",broker:"",pickup:"",delivery:"",product:"",pallets:"",weight:"",rate:"",driver:"",truck:"",trailer:"",status:"",notes:"",manualPickupMi:"",photos:[],...o});
 const mkGroup=()=>({id:uid(),tripMiles:"",groupDriver:"",groupTruck:"",groupTrailer:"",groupStatus:"Pending",groupNotes:"",loads:[mkLoad()]});
 const mkWeek=(label)=>({id:uid(),label:label||"New Week",groups:[mkGroup()],localDeliveries:[],crossdockDrops:[],accessorials:[],openSections:{main:true,local:false,xdrop:false,acc:false,otr:true}});
 const mkLocal=()=>({id:uid(),destination:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""});
@@ -207,6 +207,8 @@ function App(){
   const [dragWeekOverIdx,setDragWeekOverIdx]=React.useState(null);
   const [driverSearch,setDriverSearch]=useState("");
   const [selectedDriver,setSelectedDriver]=useState(null);
+  const [photoModal,setPhotoModal]=useState(null);
+  const [photoViewer,setPhotoViewer]=useState(null);
   const apiKeyRef=useRef(apiKey);
   useEffect(()=>{apiKeyRef.current=apiKey;},[apiKey]);
   const isAdmin=appMode==="admin";
@@ -410,6 +412,70 @@ function App(){
   return(
   <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",padding:"12px"}} onClick={()=>setShowHdrMenu(false)}>
 
+    {/* PHOTO MODAL */}
+    {photoModal&&(<div className="modal-bg" onClick={()=>setPhotoModal(null)}><div className="modal" style={{maxWidth:"600px",width:"95%"}} onClick={e=>e.stopPropagation()}>
+      <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"16px"}}>
+        <div style={{fontWeight:"700",fontSize:"15px",color:"#1a2e50",flex:1}}>📷 Load Photos</div>
+        <div style={{fontSize:"11px",color:"#64748b"}}>{photoModal.sr||"Load"}</div>
+        <button onClick={()=>setPhotoModal(null)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"6px",padding:"4px 10px",fontSize:"12px",cursor:"pointer"}}>Close</button>
+      </div>
+      {/* Photo grid */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:"8px",marginBottom:"14px"}}>
+        {(photoModal.photos||[]).map((photo,pi)=>(
+          <div key={pi} style={{position:"relative",borderRadius:"8px",overflow:"hidden",border:"1px solid #e2e8f0",aspectRatio:"4/3",background:"#f8fafc",cursor:"pointer"}} onClick={()=>setPhotoViewer({photos:photoModal.photos,index:pi})}>
+            <img src={photo.data} alt={photo.name||"Photo"} style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+            <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.5)",padding:"3px 6px",display:"flex",alignItems:"center",gap:"4px"}}>
+              <span style={{fontSize:"9px",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{photo.name||"Photo"}</span>
+              {!isViewer&&<button onClick={e=>{e.stopPropagation();const updated=(photoModal.photos||[]).filter((_,i)=>i!==pi);const newLoad={...photoModal,photos:updated};setPhotoModal(newLoad);setLoad(photoModal.groupId,photoModal.id,"photos",updated);}} style={{background:"#dc2626",border:"none",color:"#fff",borderRadius:"3px",padding:"0 4px",fontSize:"10px",cursor:"pointer",lineHeight:"16px"}}>×</button>}
+            </div>
+          </div>
+        ))}
+        {!isViewer&&(
+          <label style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",border:"2px dashed #bfdbfe",borderRadius:"8px",aspectRatio:"4/3",cursor:"pointer",background:"#eff6ff",color:"#2563eb",fontSize:"12px",fontWeight:"600",gap:"6px"}}>
+            <span style={{fontSize:"24px"}}>📷</span>
+            Add Photo
+            <input type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>{
+              const files=Array.from(e.target.files);
+              files.forEach(file=>{
+                const reader=new FileReader();
+                reader.onload=ev=>{
+                  const img=new Image();
+                  img.onload=()=>{
+                    const canvas=document.createElement("canvas");
+                    const MAX=800;
+                    let w=img.width,h=img.height;
+                    if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}
+                    if(h>MAX){w=Math.round(w*MAX/h);h=MAX;}
+                    canvas.width=w;canvas.height=h;
+                    canvas.getContext("2d").drawImage(img,0,0,w,h);
+                    const data=canvas.toDataURL("image/jpeg",0.72);
+                    const newPhoto={name:file.name,data,ts:Date.now()};
+                    setPhotoModal(prev=>{
+                      const updated=[...(prev.photos||[]),newPhoto];
+                      const newLoad={...prev,photos:updated};
+                      setLoad(prev.groupId,prev.id,"photos",updated);
+                      return newLoad;
+                    });
+                  };
+                  img.src=ev.target.result;
+                };
+                reader.readAsDataURL(file);
+              });
+              e.target.value="";
+            }}/>
+          </label>
+        )}
+      </div>
+      {(photoModal.photos||[]).length===0&&isViewer ? <div style={{textAlign:"center",padding:"30px",color:"#94a3b8",fontSize:"12px",border:"2px dashed #e2e8f0",borderRadius:"8px"}}>No photos uploaded yet</div> : null}
+      <div style={{fontSize:"10px",color:"#94a3b8",textAlign:"center"}}>Photos are compressed and saved with load data · Click a photo to expand</div>
+    </div></div>)}
+    {/* PHOTO VIEWER (full screen) */}
+    {photoViewer&&(<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.92)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setPhotoViewer(null)}>
+      <button onClick={e=>{e.stopPropagation();setPhotoViewer(p=>({...p,index:Math.max(0,p.index-1)}));}} style={{position:"absolute",left:"16px",background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:"50%",width:"40px",height:"40px",fontSize:"20px",cursor:"pointer"}} disabled={photoViewer.index===0}>‹</button>
+      <img src={photoViewer.photos[photoViewer.index]?.data} style={{maxWidth:"90vw",maxHeight:"90vh",objectFit:"contain",borderRadius:"8px"}} onClick={e=>e.stopPropagation()}/>
+      <button onClick={e=>{e.stopPropagation();setPhotoViewer(p=>({...p,index:Math.min(p.photos.length-1,p.index+1)}));}} style={{position:"absolute",right:"16px",background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:"50%",width:"40px",height:"40px",fontSize:"20px",cursor:"pointer"}} disabled={photoViewer.index===photoViewer.photos.length-1}>›</button>
+      <div style={{position:"absolute",bottom:"16px",color:"#fff",fontSize:"12px"}}>{photoViewer.index+1} / {photoViewer.photos.length}</div>
+    </div>)}
     {/* PIN MODAL */}
     {showPinModal&&(<div className="modal-bg" onClick={()=>setShowPinModal(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontWeight:"700",fontSize:"16px",color:"#1a2e50",marginBottom:"16px"}}>🔐 Change PINs</div>{[["Admin PIN",ADMIN_PIN_KEY,"Full board access"],["Viewer PIN",VIEWER_PIN_KEY,"Read-only access"]].map((pinItem)=>{const [label,key,hint]=pinItem;return(<div key={key} style={{marginBottom:"16px"}}><label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"5px"}}>{label} <span style={{color:"#9ca3af",fontWeight:"400"}}>({hint})</span></label><input defaultValue={localStorage.getItem(key)||""} onBlur={e=>{localStorage.setItem(key,e.target.value);}} style={{width:"100%",padding:"8px 10px",border:"1px solid #d1d5db",borderRadius:"6px",fontSize:"14px",letterSpacing:"3px"}} placeholder="Enter new PIN"/></div>);})}<div style={{display:"flex",justifyContent:"flex-end",gap:"8px"}}><button onClick={()=>setShowPinModal(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Close</button><button onClick={()=>{alert("PINs saved!");setShowPinModal(false);}} style={{background:"#2563eb",color:"#fff",border:"none",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Save PINs</button></div></div></div>)}
 
@@ -620,11 +686,11 @@ function App(){
       </div>
       {week.openSections?.main&&(
       <div style={{border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}>
-        <table style={{borderCollapse:"collapse",width:"100%",minWidth:"1350px"}}>
-          <colgroup><col style={{width:"5px"}}/><col style={{width:"18px"}}/><col style={{width:"22px"}}/><col style={{width:"165px"}}/><col style={{width:"100px"}}/><col style={{width:"78px"}}/><col style={{width:"78px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"88px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"62px"}}/><col style={{width:"90px"}}/><col style={{width:"145px"}}/></colgroup>
+        <table style={{borderCollapse:"collapse",width:"100%",minWidth:"1400px"}}>
+          <colgroup><col style={{width:"5px"}}/><col style={{width:"18px"}}/><col style={{width:"24px"}}/><col style={{width:"22px"}}/><col style={{width:"165px"}}/><col style={{width:"100px"}}/><col style={{width:"78px"}}/><col style={{width:"78px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"88px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"140px"}}/><col style={{width:"90px"}}/><col style={{width:"145px"}}/></colgroup>
           <thead>
             <tr>
-              <th style={{background:"#1a2e50",padding:0,border:"none"}}/><th style={{background:"#1a2e50",padding:0,border:"none"}}/><th style={{background:"#1a2e50",padding:0,border:"none"}}/>
+              <th style={{background:"#1a2e50",padding:0,border:"none"}}/><th style={{background:"#1a2e50",padding:0,border:"none"}}/><th style={{background:"#1a2e50",padding:0,border:"none"}}/><th style={{background:"#1a2e50",padding:0,border:"none"}}/>
               {["Shipper & Receiver","Broker & Load #","Pickup","Delivery","Product","Pallets","Weight","Rate ($)","Driver","Truck #","Trailer #","Status"].map(h=><th key={h} style={TH("#1a2e50")}>{h}</th>)}
               <th style={TH("#1d4f9e")}>Financials</th>
               <th style={{...TH("#1d4f9e"),background:"#1d4f9e",color:"#fff"}}>Driver · Truck · Status</th>
@@ -671,6 +737,7 @@ function App(){
                       <tr key={load.id} id={`load-${load.id}`} style={{borderBottom:isL?"none":"1px solid #c7d9f0",lineHeight:isSingle?"1":"1.3",height:isSingle?"22px":undefined,maxHeight:isSingle?"22px":undefined}}>
                         <td style={{padding:0,background:"#93c5fd",width:"4px"}}/>
                         <td style={T(ROW_BG,{padding:"1px 2px",textAlign:"center"})}>{isAdmin&&<button onClick={()=>removeLoad(group.id,load.id)} style={{width:"18px",height:"18px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"3px",fontSize:"11px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
+                        <td style={T(ROW_BG,{padding:"1px 2px",textAlign:"center"})}><button onClick={()=>setPhotoModal({...load,groupId:group.id})} style={{width:"22px",height:"22px",border:`1px solid ${(load.photos||[]).length>0?"#3b82f6":"#d1d5db"}`,background:(load.photos||[]).length>0?"#eff6ff":"#f8fafc",color:(load.photos||[]).length>0?"#2563eb":"#9ca3af",borderRadius:"3px",fontSize:"11px",padding:0,lineHeight:1,cursor:"pointer",position:"relative"}} title="Load photos">📷{(load.photos||[]).length>0&&<span style={{position:"absolute",top:"-4px",right:"-4px",background:"#2563eb",color:"#fff",borderRadius:"50%",width:"10px",height:"10px",fontSize:"8px",display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{(load.photos||[]).length}</span>}</button></td>
                         <td style={T(ROW_BG,{padding:"1px 2px",textAlign:"center"})}>{load.stop!=null&&<span style={{fontSize:"11px",fontWeight:"800",color:"#92400e",background:"#fef9c3",padding:"0 4px",borderRadius:"3px",border:"1px solid #fde68a"}}>{load.stop}</span>}</td>
                         <td style={T(ROW_BG)}><input value={load.sr} onChange={e=>setLoad(group.id,load.id,"sr",e.target.value)} style={IN({color:ROW_TEXT})} placeholder="City, ST - City, ST" disabled={!isAdmin}/></td>
                         {(()=>{const show=canSeeBroker(group,load);return(<td style={T(ROW_BG)}>{show?<input value={load.broker} onChange={e=>setLoad(group.id,load.id,"broker",e.target.value)} style={IN({color:ROW_TEXT})} placeholder="Broker & Load #" disabled={!isAdmin}/>:<span style={{fontSize:"11px",color:"#475569",fontStyle:"italic",padding:"2px 4px"}}>●●● hidden</span>}</td>);})()}
