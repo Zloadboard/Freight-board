@@ -202,12 +202,20 @@ function App(){
   const[dispatchers,setDispatchers]=useState(()=>{try{return JSON.parse(localStorage.getItem(DISPATCHERS_KEY)||"[]");}catch{return[];}});
   const[currentDispatcher,setCurrentDispatcher]=useState(null);
   const saveTimer=useRef(null);
+  const [dragWeekIdx,setDragWeekIdx]=React.useState(null);
+  const [loginLog,setLoginLog]=React.useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_loginlog")||"[]");}catch(e){return [];}});
+  const [dragWeekOverIdx,setDragWeekOverIdx]=React.useState(null);
   const apiKeyRef=useRef(apiKey);
   useEffect(()=>{apiKeyRef.current=apiKey;},[apiKey]);
   const isAdmin=appMode==="admin";
   const isViewer=appMode==="viewer";
   const isDispatcher=appMode==="dispatcher";
-  const saveDispatchers=(list)=>{localStorage.setItem(DISPATCHERS_KEY,JSON.stringify(list));setDispatchers(list);};
+  const saveDispatchers=(list)=>{
+    localStorage.setItem(DISPATCHERS_KEY,JSON.stringify(list));
+    setDispatchers(list);
+    // Also persist in main LS backup so it survives cache clears
+    try{const cur=JSON.parse(localStorage.getItem("fcbv2_localdata")||"{}");localStorage.setItem("fcbv2_localdata",JSON.stringify({...cur,dispatchers:list,savedAt:Date.now()}));}catch(e){}
+  };
   const myDrivers=useMemo(()=>{
     if(!isDispatcher||!currentDispatcher)return new Set();
     return new Set(currentDispatcher.drivers||[]);
@@ -246,6 +254,7 @@ function App(){
           if(data.customDrivers)setCustomDrivers(data.customDrivers);
           if(data.customTrucks)setCustomTrucks(data.customTrucks);
           if(data.customTrailers)setCustomTrailers(data.customTrailers);
+          if(data.dispatchers&&data.dispatchers.length>0){setDispatchers(data.dispatchers);localStorage.setItem(DISPATCHERS_KEY,JSON.stringify(data.dispatchers));}
         } else {
           try{
             const local=JSON.parse(localStorage.getItem("fcbv2_localdata")||"{}");
@@ -254,6 +263,7 @@ function App(){
               if(local.customDrivers)setCustomDrivers(local.customDrivers);
               if(local.customTrucks)setCustomTrucks(local.customTrucks);
               if(local.customTrailers)setCustomTrailers(local.customTrailers);
+              if(local.dispatchers)setDispatchers(local.dispatchers);
             } else {setWeeks([mkWeek("Week of "+new Date().toLocaleDateString("en-US"))]);}
           }catch(e){setWeeks([mkWeek("Week of "+new Date().toLocaleDateString("en-US"))]);}
         }
@@ -267,6 +277,7 @@ function App(){
             if(local.customDrivers)setCustomDrivers(local.customDrivers);
             if(local.customTrucks)setCustomTrucks(local.customTrucks);
             if(local.customTrailers)setCustomTrailers(local.customTrailers);
+            if(local.dispatchers)setDispatchers(local.dispatchers);
           } else {setWeeks([mkWeek(new Date().toLocaleDateString("en-US",{month:"numeric",day:"numeric",year:"numeric"}))]);}
         }catch(e){setWeeks([mkWeek(new Date().toLocaleDateString("en-US",{month:"numeric",day:"numeric",year:"numeric"}))]);}
         setLoading(false);setSaveStatus("error");
@@ -330,9 +341,9 @@ function App(){
   const saveToSheets=useCallback((w)=>{
     clearTimeout(saveTimer.current);setSaveStatus("saving");
     // Always save to localStorage immediately as backup
-    try{localStorage.setItem(LS_KEY,JSON.stringify({weeks:w,customDrivers,customTrucks,customTrailers,savedAt:Date.now()}));}catch(e){}
+    try{localStorage.setItem(LS_KEY,JSON.stringify({weeks:w,customDrivers,customTrucks,customTrailers,dispatchers,savedAt:Date.now()}));}catch(e){}
     saveTimer.current=setTimeout(async()=>{
-      try{await sheetsSave({weeks:w,customDrivers,customTrucks,customTrailers});setSaveStatus("saved");setTimeout(()=>setSaveStatus("idle"),3000);}
+      try{await sheetsSave({weeks:w,customDrivers,customTrucks,customTrailers,dispatchers});setSaveStatus("saved");setTimeout(()=>setSaveStatus("idle"),3000);}
       catch(err){if(err.name==="TypeError"){setSaveStatus("error");}else{setSaveStatus("saved");setTimeout(()=>setSaveStatus("idle"),3000);}}
     },800);
   },[]);
@@ -380,7 +391,11 @@ function App(){
   const CELL=(bg,ex={})=>({padding:"4px 6px",border:"0.5px solid #e2e8f0",background:bg||"#fff",verticalAlign:"middle",fontSize:"11px",...ex});
   const INCEL=(ex={})=>({width:"100%",border:"none",background:"transparent",fontSize:"11px",padding:"1px 2px",color:"#111",fontFamily:"inherit",outline:"none",...ex});
 
-  if(!appMode)return <LoginScreen onLogin={(mode,disp)=>{setAppMode(mode);setCurrentDispatcher(disp);}}/>;
+  if(!appMode)return <LoginScreen onLogin={(mode,disp)=>{
+    setAppMode(mode);setCurrentDispatcher(disp);
+    const entry={name:mode==="dispatcher"&&disp?disp.name:mode==="admin"?"Admin":"Viewer",role:mode,ts:new Date().toLocaleString("en-US",{month:"2-digit",day:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true})};
+    setLoginLog(prev=>{const next=[entry,...prev].slice(0,200);localStorage.setItem("fcbv2_loginlog",JSON.stringify(next));return next;});
+  }}/>;
 
   if(loading)return(
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#0f1f3d",flexDirection:"column",gap:"16px"}}>
@@ -547,8 +562,23 @@ function App(){
     <div>
       <div style={{background:"#1a2e50",padding:"8px 12px 0",display:"flex",alignItems:"flex-end",gap:"2px",overflowX:"auto"}}>
         {weeks.map((w,i)=>(
-          <div key={w.id} style={{display:"flex",alignItems:"center"}}>
-            <button className={`tab-btn${i===activeWeek?" active":""}`} onClick={()=>setActiveWeek(i)}>{w.label}</button>
+          <div key={w.id}
+            draggable={isAdmin}
+            onDragStart={()=>{setDragWeekIdx(i);}}
+            onDragOver={e=>{e.preventDefault();setDragWeekOverIdx(i);}}
+            onDragEnd={()=>{
+              if(dragWeekIdx!==null&&dragWeekOverIdx!==null&&dragWeekIdx!==dragWeekOverIdx){
+                const next=[...weeks];
+                const [moved]=next.splice(dragWeekIdx,1);
+                next.splice(dragWeekOverIdx,0,moved);
+                const newActive=next.indexOf(weeks[activeWeek]);
+                setWeeksAndSave(next);
+                setActiveWeek(newActive>=0?newActive:0);
+              }
+              setDragWeekIdx(null);setDragWeekOverIdx(null);
+            }}
+            style={{display:"flex",alignItems:"center",opacity:dragWeekIdx===i?0.4:1,cursor:isAdmin?"grab":"default",transition:"opacity .15s",outline:dragWeekOverIdx===i&&dragWeekIdx!==i?"2px solid #a78bfa":"none",borderRadius:"6px 6px 0 0"}}>
+            <button className={`tab-btn${i===activeWeek?" active":""}`} onClick={()=>setActiveWeek(i)} style={{cursor:isAdmin?"grab":"pointer"}}>{w.label}</button>
             {isAdmin&&<button onClick={()=>archiveWeek(i)} title="Archive this week" style={{background:"transparent",border:"none",color:i===activeWeek?"#a78bfa":"rgba(255,255,255,0.25)",fontSize:"12px",padding:"0 2px 6px",cursor:"pointer",lineHeight:1}}>📦</button>}
             {isAdmin&&weeks.length>1&&(<button onClick={()=>removeWeek(i)} style={{background:"transparent",border:"none",color:i===activeWeek?"#dc2626":"rgba(255,255,255,0.3)",fontSize:"14px",padding:"0 4px 6px",cursor:"pointer",lineHeight:1}}>×</button>)}
           </div>
@@ -891,6 +921,38 @@ function App(){
             </div>
           );
         })}
+      </div>
+
+      {/* LOGIN HISTORY */}
+      <div style={{marginTop:"24px",borderTop:"2px solid #e9d5ff",paddingTop:"16px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"12px"}}>
+          <div style={{fontWeight:"700",fontSize:"13px",color:"#5b21b6"}}>📋 Login History</div>
+          <span style={{fontSize:"11px",color:"#94a3b8"}}>{loginLog.length} entries</span>
+          <button onClick={()=>{if(!confirm("Clear login history?"))return;setLoginLog([]);localStorage.removeItem("fcbv2_loginlog");}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"5px",padding:"3px 10px",fontSize:"10px",fontWeight:"700",cursor:"pointer",marginLeft:"auto"}}>Clear</button>
+        </div>
+        {loginLog.length===0
+          ? <div style={{textAlign:"center",padding:"20px",color:"#94a3b8",fontSize:"12px",border:"2px dashed #e9d5ff",borderRadius:"8px"}}>No login history yet</div>
+          : <div style={{maxHeight:"280px",overflowY:"auto",border:"1px solid #e9d5ff",borderRadius:"8px",background:"#faf5ff"}}>
+              <table style={{borderCollapse:"collapse",width:"100%"}}>
+                <thead><tr>
+                  <th style={{padding:"7px 12px",background:"#7c3aed",color:"#fff",fontSize:"10px",fontWeight:"700",textAlign:"left"}}>Name</th>
+                  <th style={{padding:"7px 12px",background:"#7c3aed",color:"#fff",fontSize:"10px",fontWeight:"700",textAlign:"left"}}>Role</th>
+                  <th style={{padding:"7px 12px",background:"#7c3aed",color:"#fff",fontSize:"10px",fontWeight:"700",textAlign:"left"}}>Time</th>
+                </tr></thead>
+                <tbody>
+                  {loginLog.map((entry,i)=>{
+                    const roleColor=entry.role==="admin"?"#1d4ed8":entry.role==="dispatcher"?"#7c3aed":"#059669";
+                    const roleBg=entry.role==="admin"?"#eff6ff":entry.role==="dispatcher"?"#faf5ff":"#f0fdf4";
+                    return(<tr key={i} style={{borderBottom:"0.5px solid #e9d5ff",background:i%2===0?"#fff":"#faf5ff"}}>
+                      <td style={{padding:"6px 12px",fontSize:"12px",fontWeight:"600",color:"#1e293b"}}>{entry.name}</td>
+                      <td style={{padding:"6px 12px"}}><span style={{fontSize:"10px",fontWeight:"700",padding:"2px 8px",borderRadius:"10px",background:roleBg,color:roleColor,textTransform:"capitalize"}}>{entry.role}</span></td>
+                      <td style={{padding:"6px 12px",fontSize:"11px",color:"#64748b"}}>{entry.ts}</td>
+                    </tr>);
+                  })}
+                </tbody>
+              </table>
+            </div>
+        }
       </div>
     </div>
   )}
