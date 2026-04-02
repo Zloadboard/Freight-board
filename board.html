@@ -688,7 +688,7 @@ function App(){
             {loads.map((load,li)=>{
               const lrc=rowColor(load,today,tomorrow);
               const showBroker=canSeeBroker(group,load);
-              const brokerName=load.broker?(showBroker?load.broker:load.broker.split("&")[0].trim()):"";
+              const brokerName=load.broker?load.broker.split("&")[0].trim():"";
               const loadNum=load.broker&&load.broker.includes("&")?load.broker.split("&")[1]?.trim():"";
               return(<div key={load.id} style={{display:"flex",alignItems:"center",gap:"8px",background:"rgba(255,255,255,0.04)",borderRadius:"6px",padding:"6px 10px",border:`1px solid ${lrc.stripe}33`,flexWrap:"wrap",marginBottom:"4px"}}>
                 {loads.length>1&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fbbf24",background:"rgba(251,191,36,0.15)",border:"1px solid rgba(251,191,36,0.4)",borderRadius:"4px",padding:"1px 6px",flexShrink:0}}>Stop {li+1}</span>}
@@ -698,6 +698,8 @@ function App(){
                   ? <span style={{fontSize:"10px",color:"#7dd3fc",fontWeight:"600",background:"rgba(125,211,252,0.1)",border:"1px solid rgba(125,211,252,0.25)",padding:"1px 7px",borderRadius:"4px",whiteSpace:"nowrap"}}>{brokerName}{loadNum&&<span style={{marginLeft:"4px",color:"#fbbf24"}}>#{loadNum}</span>}</span>
                   : <span style={{fontSize:"10px",color:"#475569",fontStyle:"italic"}}>●●● hidden</span>
                 }
+                {/* Local pickup driver */}
+                {load.driver&&<span style={{fontSize:"10px",color:"#86efac",background:"rgba(134,239,172,0.08)",border:"1px solid rgba(134,239,172,0.25)",padding:"1px 7px",borderRadius:"4px",whiteSpace:"nowrap"}}>🧑 {load.driver}</span>}
                 <span style={{fontSize:"10px",color:"#a78bfa",whiteSpace:"nowrap"}}>🛫 {load.pickup||"—"}</span>
                 <span style={{fontSize:"10px",color:"#cbd5e1",whiteSpace:"nowrap"}}>📦 {load.delivery||"—"}</span>
                 {(()=>{const ts=parseTS(load.delivery);if(ts===Infinity)return null;const diff=ts-Date.now();const hrs=Math.abs(Math.round(diff/3600000));const color=diff<0?"#f87171":diff<12*3600000?"#fbbf24":"#34d399";if(Math.abs(diff)>72*3600000)return null;return<span style={{fontSize:"10px",fontWeight:"700",color,background:"rgba(0,0,0,0.25)",padding:"1px 7px",borderRadius:"10px",border:`1px solid ${color}55`,whiteSpace:"nowrap",flexShrink:0}}>⏱ {diff<0?`${hrs}h late`:`${hrs}h left`}</span>;})()}
