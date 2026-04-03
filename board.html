@@ -114,7 +114,13 @@ const mkXDrop=()=>({id:uid(),location:"",trailer:"",truck:"",broker:"",loadNum:"
 const mkAcc=()=>({id:uid(),broker:"",loadNum:"",amount:"",type:"Detention",notes:"",status:""});
 
 function calcGroup(g){
-  const loads=g.loads.map(l=>{const{s,r}=parseSR(l.sr);const am=cityMiles(s);const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;return{...l,shipper:s,receiver:r,pickupMiAuto:am,pickupMiUsed:um,localCharge:l.manualLocalCharge!==""&&l.manualLocalCharge!=null?parseFloat(l.manualLocalCharge):localCharge(um),tripPrice:parseFloat(l.rate)||0};});
+  const loads=g.loads.map(l=>{
+    const{s,r}=parseSR(l.sr);
+    const am=cityMiles(s);
+    const rm=cityMiles(r);
+    const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
+    return{...l,shipper:s,receiver:r,pickupMiAuto:am,pickupMiUsed:um,rcvMiAuto:rm,localCharge:l.manualLocalCharge!==""&&l.manualLocalCharge!=null?parseFloat(l.manualLocalCharge):localCharge(um),tripPrice:parseFloat(l.rate)||0};
+  });
   const sd=[...loads].sort((a,b)=>parseTS(a.delivery)-parseTS(b.delivery));
   const so={};sd.forEach((l,i)=>{so[l.id]=i+1;});
   const rcvrs=sd.map(l=>l.receiver).filter(Boolean);
@@ -123,7 +129,13 @@ function calcGroup(g){
   const loc=loads.reduce((s,l)=>s+(l.localCharge||0),0);
   const rpm=(tm&&tm>0)?+((gross-loc)/tm).toFixed(2):null;
   const autoMi=rcvrs.reduce((mx,r)=>{const m=cityMiles(r);return(m&&m>mx)?m:mx;},0);
-  return{...g,calcTripMi:tm,autoTripMi:autoMi||null,rcvrs,rpm,gross,loc,loads:sd.map(l=>({...l,stop:so[l.id]??null}))};
+  const sdFinal=sd.map((l,i)=>{
+    const prev=i>0?sd[i-1]:null;
+    const prevRm=prev&&prev.rcvMiAuto!=null?prev.rcvMiAuto:0;
+    const legAuto=l.rcvMiAuto!=null?(sd.length>1?Math.max(l.rcvMiAuto-prevRm,15):l.rcvMiAuto):null;
+    return{...l,stop:so[l.id]??null,legMiAuto:legAuto};
+  });
+  return{...g,calcTripMi:tm,autoTripMi:autoMi||null,rcvrs,rpm,gross,loc,loads:sdFinal};
 }
 
 async function sheetsLoad(){const r=await fetch(SHEETS_URL,{redirect:"follow"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}
@@ -768,19 +780,23 @@ function App(){
                         <td style={{padding:0,background:"#93c5fd",width:"4px"}}/>
                         <td style={T(ROW_BG,{padding:"1px 2px",textAlign:"center"})}>{isAdmin&&<button onClick={()=>removeLoad(group.id,load.id)} style={{width:"18px",height:"18px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"3px",fontSize:"11px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
                         <td style={T(ROW_BG,{padding:"1px 2px",textAlign:"center"})}><button onClick={()=>setPhotoModal({...load,groupId:group.id})} style={{width:"22px",height:"22px",border:`1px solid ${(load.photos||[]).length>0?"#3b82f6":"#d1d5db"}`,background:(load.photos||[]).length>0?"#eff6ff":"#f8fafc",color:(load.photos||[]).length>0?"#2563eb":"#9ca3af",borderRadius:"3px",fontSize:"11px",padding:0,lineHeight:1,cursor:"pointer",position:"relative"}} title="Load photos">📷{(load.photos||[]).length>0&&<span style={{position:"absolute",top:"-4px",right:"-4px",background:"#2563eb",color:"#fff",borderRadius:"50%",width:"10px",height:"10px",fontSize:"8px",display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{(load.photos||[]).length}</span>}</button></td>
-                        <td style={T(ROW_BG,{padding:"1px 2px",textAlign:"center"})}>{load.stop!=null&&<span style={{fontSize:"11px",fontWeight:"800",color:"#92400e",background:"#fef9c3",padding:"0 4px",borderRadius:"3px",border:"1px solid #fde68a"}}>{load.stop}</span>}{group.loads.length>1 ? <input value={load.stopMiles||""} type="number" placeholder="mi" onChange={e=>setLoad(group.id,load.id,"stopMiles",e.target.value)} style={{width:"36px",border:"1px solid #cbd5e1",borderRadius:"3px",background:"#f8fafc",textAlign:"center",color:"#374151",fontWeight:"600",padding:"1px 2px",fontSize:"9px",marginTop:"1px",display:"block"}} disabled={!isAdmin} title="Leg miles for this stop"/> : null}</td>
+                        <td style={T(ROW_BG,{padding:"1px 2px",textAlign:"center"})}>{load.stop!=null&&<span style={{fontSize:"11px",fontWeight:"800",color:"#92400e",background:"#fef9c3",padding:"0 4px",borderRadius:"3px",border:"1px solid #fde68a"}}>{load.stop}</span>}
+{load.rcvMiAuto!=null&&<span style={{fontSize:"9px",color:"#0369a1",fontWeight:"600",display:"block",lineHeight:"1.1"}}>{load.rcvMiAuto}mi</span>}
+{group.loads.length>1?(
+  <input value={load.stopMiles||""} type="number" placeholder={load.legMiAuto?"~"+load.legMiAuto:"mi"} onChange={e=>{setLoad(group.id,load.id,"stopMiles",e.target.value);trackField("stopMiles");}} style={{width:"36px",border:load.stopMiles?"1px solid #f97316":"1px solid #cbd5e1",borderRadius:"3px",background:load.stopMiles?"#fff7ed":"#f8fafc",textAlign:"center",color:load.stopMiles?"#c2410c":"#374151",fontWeight:"600",padding:"1px 2px",fontSize:"9px",marginTop:"1px",display:"block"}} disabled={!isAdmin} title={load.legMiAuto?"Auto-estimated: ~"+load.legMiAuto+" mi. Enter actual leg miles.":"Leg miles for this stop"}/>
+):null}</td>
                         <td style={T(ROW_BG)}><input value={load.sr} onChange={e=>{setLoad(group.id,load.id,"sr",e.target.value);trackField("sr");}} style={IN({color:ROW_TEXT})} placeholder="City, ST - City, ST" disabled={!isAdmin}/></td>
                         {(()=>{const show=canSeeBroker(group,load);return(<td style={T(ROW_BG)}>{show?<input value={load.broker} onChange={e=>setLoad(group.id,load.id,"broker",e.target.value)} style={IN({color:ROW_TEXT})} placeholder="Broker & Load #" disabled={!isAdmin}/>:<span style={{fontSize:"11px",color:"#475569",fontStyle:"italic",padding:"2px 4px"}}>●●● hidden</span>}</td>);})()}
-                        <td style={T(ROW_BG)}><input value={load.pickup} onChange={e=>setLoad(group.id,load.id,"pickup",e.target.value)} style={IN({color:ROW_TEXT})} placeholder="3/31/2026 8AM" disabled={!isAdmin}/></td>
-                        <td style={T(ROW_BG)}><input value={load.delivery} onChange={e=>setLoad(group.id,load.id,"delivery",e.target.value)} style={IN({color:ROW_TEXT})} placeholder="4/2/2026 9AM" disabled={!isAdmin}/></td>
-                        <td style={T(ROW_BG)}><input value={load.product} onChange={e=>setLoad(group.id,load.id,"product",e.target.value)} style={IN({color:ROW_TEXT})} placeholder="Product" disabled={!isAdmin}/></td>
+                        <td style={T(ROW_BG)}><input value={load.pickup} onChange={e=>{setLoad(group.id,load.id,"pickup",e.target.value);trackField("pickup");}} style={IN({color:ROW_TEXT})} placeholder="3/31/2026 8AM" disabled={!isAdmin}/></td>
+                        <td style={T(ROW_BG)}><input value={load.delivery} onChange={e=>{setLoad(group.id,load.id,"delivery",e.target.value);trackField("delivery");}} style={IN({color:ROW_TEXT})} placeholder="4/2/2026 9AM" disabled={!isAdmin}/></td>
+                        <td style={T(ROW_BG)}><input value={load.product} onChange={e=>{setLoad(group.id,load.id,"product",e.target.value);trackField("product");}} style={IN({color:ROW_TEXT})} placeholder="Product" disabled={!isAdmin}/></td>
                         <td style={T(ROW_BG)}><input value={load.pallets} onChange={e=>setLoad(group.id,load.id,"pallets",e.target.value)} style={IN({color:ROW_TEXT})} placeholder="—" disabled={!isAdmin}/></td>
                         <td style={T(ROW_BG)}><input value={load.weight} onChange={e=>setLoad(group.id,load.id,"weight",e.target.value)} style={IN({color:ROW_TEXT})} placeholder="Lbs" disabled={!isAdmin}/></td>
                         <td style={T(ROW_BG,{padding:"1px 6px",textAlign:"right"})}>{isViewer?<span style={{fontWeight:"700",color:"#374151",fontSize:"11px"}}>{load.rate?`$${parseFloat(load.rate).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:2})}`:"—"}</span>:<span style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:"1px"}}><span style={{fontSize:"10px",color:"#6b7280",fontWeight:"700",opacity:.7}}>$</span><input value={load.rate} type="number" onChange={e=>{setLoad(group.id,load.id,"rate",e.target.value);trackField("rate");}} style={IN({textAlign:"right",color:ROW_TEXT,fontWeight:"700",width:"60px"})} placeholder="0" disabled={!isAdmin}/></span>}</td>
-                        <td style={T(ROW_BG)}><select value={load.driver||""} onChange={e=>setLoad(group.id,load.id,"driver",e.target.value)} style={IN({color:load.driver?"#c2410c":"#9ca3af",cursor:"pointer"})}><option value="">— Driver —</option>{[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}>{d}</option>))}</select></td>
-                        <td style={T(ROW_BG,{padding:"1px 2px"})}><select value={load.truck||""} onChange={e=>setLoad(group.id,load.id,"truck",e.target.value)} style={IN({color:load.truck?"#1e40af":"#9ca3af",cursor:"pointer",fontWeight:load.truck?"700":"400",fontSize:"11px"})}><option value="">—</option>{[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
-                        <td style={T(ROW_BG,{padding:"1px 2px"})}><select value={load.trailer||""} onChange={e=>setLoad(group.id,load.id,"trailer",e.target.value)} style={IN({color:load.trailer?"#7c3aed":"#9ca3af",cursor:"pointer",fontWeight:load.trailer?"700":"400",fontSize:"11px"})}><option value="">—</option>{[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
-                        <td style={T(ROW_BG,{padding:"4px 6px",minWidth:"180px"})}><div style={{display:"flex",flexDirection:"column",gap:"4px"}}><div style={{position:"relative"}}><select value={load.status} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{position:"absolute",inset:0,opacity:0,cursor:isAdmin?"pointer":"default",width:"100%",height:"100%",zIndex:2}} disabled={!isAdmin}><option value="">— Not set —</option>{LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}</select>{(()=>{const ST={"Picked Up":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Dispatched":{bg:"#dbeafe",c:"#1e40af",bd:"#3b82f6"},"In Transit":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Dock":{bg:"#ede9fe",c:"#5b21b6",bd:"#a78bfa"},"Yard":{bg:"#ede9fe",c:"#5b21b6",bd:"#a78bfa"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"}};let p;if(load.status){p=ST[load.status]||{bg:"#f1f5f9",c:"#475569",bd:"#94a3b8"};}else{const pd2=parsePickupDate(load.pickup);const pt2=pd2?pd2.getTime():null;if(pt2===today.getTime()){p={bg:"#fef9c3",c:"#713f12",bd:"#eab308"};}else if(pt2&&pt2>today.getTime()){p={bg:"#fee2e2",c:"#991b1b",bd:"#f87171"};}else{p={bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};}}return<span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 10px",borderRadius:"5px",background:p.bg,color:p.c,border:`2px solid ${p.bd}`,whiteSpace:"nowrap",userSelect:"none"}}><span style={{width:"7px",height:"7px",borderRadius:"50%",background:p.bd,flexShrink:0}}/>{load.status||"— Not set —"}</span>;})()}</div><div style={{display:"flex",gap:"2px",flexWrap:"wrap"}}>{[["PU","Picked Up","#ca8a04","#fef9c3"],["IT","In Transit","#c2410c","#fed7aa"],["DK","Dock","#6d28d9","#ede9fe"],["LD","Loaded","#166534","#dcfce7"],["DL","Delivered","#166534","#bbf7d0"]].map((sbItem)=>{const [lbl,val,fg,bg2]=sbItem;return(<button key={val} onClick={()=>isAdmin&&setLoad(group.id,load.id,"status",load.status===val?"":val)} style={{fontSize:"9px",fontWeight:"800",padding:"1px 5px",border:`1px solid ${fg}`,borderRadius:"3px",cursor:isAdmin?"pointer":"default",background:load.status===val?fg:bg2,color:load.status===val?"#fff":fg,transition:"all .1s",opacity:isAdmin?1:0.5}}>{lbl}</button>);})}</div></div></td>
+                        <td style={T(ROW_BG)}><select value={load.driver||""} onChange={e=>{setLoad(group.id,load.id,"driver",e.target.value);trackField("driver");}} style={IN({color:load.driver?"#c2410c":"#9ca3af",cursor:"pointer"})}><option value="">— Driver —</option>{[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}>{d}</option>))}</select></td>
+                        <td style={T(ROW_BG,{padding:"1px 2px"})}><select value={load.truck||""} onChange={e=>{setLoad(group.id,load.id,"truck",e.target.value);trackField("truck");}} style={IN({color:load.truck?"#1e40af":"#9ca3af",cursor:"pointer",fontWeight:load.truck?"700":"400",fontSize:"11px"})}><option value="">—</option>{[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
+                        <td style={T(ROW_BG,{padding:"1px 2px"})}><select value={load.trailer||""} onChange={e=>{setLoad(group.id,load.id,"trailer",e.target.value);trackField("trailer");}} style={IN({color:load.trailer?"#7c3aed":"#9ca3af",cursor:"pointer",fontWeight:load.trailer?"700":"400",fontSize:"11px"})}><option value="">—</option>{[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
+                        <td style={T(ROW_BG,{padding:"4px 6px",minWidth:"180px"})}><div style={{display:"flex",flexDirection:"column",gap:"4px"}}><div style={{position:"relative"}}><select value={load.status} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{position:"absolute",inset:0,opacity:0,cursor:isAdmin?"pointer":"default",width:"100%",height:"100%",zIndex:2}} disabled={!isAdmin}><option value="">— Not set —</option>{LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}</select>{(()=>{const ST={"Picked Up":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Dispatched":{bg:"#dbeafe",c:"#1e40af",bd:"#3b82f6"},"In Transit":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Dock":{bg:"#ede9fe",c:"#5b21b6",bd:"#a78bfa"},"Yard":{bg:"#ede9fe",c:"#5b21b6",bd:"#a78bfa"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"}};let p;if(load.status){p=ST[load.status]||{bg:"#f1f5f9",c:"#475569",bd:"#94a3b8"};}else{const pd2=parsePickupDate(load.pickup);const pt2=pd2?pd2.getTime():null;if(pt2===today.getTime()){p={bg:"#fef9c3",c:"#713f12",bd:"#eab308"};}else if(pt2&&pt2>today.getTime()){p={bg:"#fee2e2",c:"#991b1b",bd:"#f87171"};}else{p={bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};}}return<span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 10px",borderRadius:"5px",background:p.bg,color:p.c,border:`2px solid ${p.bd}`,whiteSpace:"nowrap",userSelect:"none"}}><span style={{width:"7px",height:"7px",borderRadius:"50%",background:p.bd,flexShrink:0}}/>{load.status||"— Not set —"}</span>;})()}</div><div style={{display:"flex",gap:"2px",flexWrap:"wrap"}}>{[["PU","Picked Up","#ca8a04","#fef9c3"],["IT","In Transit","#c2410c","#fed7aa"],["DK","Dock","#6d28d9","#ede9fe"],["LD","Loaded","#166534","#dcfce7"],["DL","Delivered","#166534","#bbf7d0"]].map((sbItem)=>{const [lbl,val,fg,bg2]=sbItem;return(<button key={val} onClick={()=>{if(!isAdmin)return;setLoad(group.id,load.id,"status",load.status===val?"":val);trackField("status");}} style={{fontSize:"9px",fontWeight:"800",padding:"1px 5px",border:`1px solid ${fg}`,borderRadius:"3px",cursor:isAdmin?"pointer":"default",background:load.status===val?fg:bg2,color:load.status===val?"#fff":fg,transition:"all .1s",opacity:isAdmin?1:0.5}}>{lbl}</button>);})}</div></div></td>
                         <td style={T(ROW_BG,{verticalAlign:"middle",padding:"3px 6px"})}><div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
   {load.localCharge!=null?(
     <div style={{display:"flex",alignItems:"center",gap:"2px"}}>
@@ -1228,50 +1244,114 @@ function App(){
 
     {/* INSIGHTS TAB */}
     {activeTab==="insights"&&isAdmin&&(
-      <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
-        <div style={{fontWeight:"700",fontSize:"14px",color:"#0891b2",marginBottom:"16px"}}>🧠 Workflow Insights</div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"20px"}}>
+      <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}> 
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"20px",marginBottom:"20px"}}>
           <div>
-            <div style={{fontWeight:"700",fontSize:"12px",color:"#374151",marginBottom:"10px"}}>⏱ Time by Section</div>
-            {Object.entries(sectionTime.current).sort((a,b)=>b[1]-a[1]).map((item)=>{
-              const total=Object.values(sectionTime.current).reduce((s,v)=>s+v,0)||1;
-              const pct=Math.round(item[1]/total*100);
-              const mins=Math.round(item[1]/60000);
-              return(
-                <div key={item[0]} style={{marginBottom:"8px"}}>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:"11px",marginBottom:"2px"}}>
-                    <span style={{fontWeight:"600",textTransform:"capitalize"}}>{item[0]}</span>
-                    <span style={{color:"#64748b"}}>{mins}m · {pct}%</span>
-                  </div>
-                  <div style={{height:"6px",background:"#e2e8f0",borderRadius:"3px"}}>
-                    <div style={{height:"100%",width:pct+"%",background:"#0891b2",borderRadius:"3px"}}/>
-                  </div>
-                </div>
-              );
-            })}
-            {Object.keys(sectionTime.current).length===0&&<div style={{color:"#94a3b8",fontSize:"12px"}}>Navigate tabs to start tracking</div>}
+            <div style={{fontWeight:"700",fontSize:"13px",color:"#0891b2",marginBottom:"12px",display:"flex",alignItems:"center",gap:"6px"}}>
+              <span>⏱</span> Time by Section
+            </div>
+            {Object.keys(sectionTime.current).length===0?(
+              <div style={{color:"#94a3b8",fontSize:"12px",padding:"12px",background:"#f8fafc",borderRadius:"8px",textAlign:"center"}}>
+                Navigate between tabs to start tracking
+              </div>
+            ):(
+              <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
+                {Object.entries(sectionTime.current).sort((a,b)=>b[1]-a[1]).map((entry)=>{
+                  const total=Object.values(sectionTime.current).reduce((s,v)=>s+v,0)||1;
+                  const pct=Math.round(entry[1]/total*100);
+                  const mins=Math.round(entry[1]/60000);
+                  const labels={"weeks":"Board","stats":"Stats","roster":"Roster","insights":"Insights","equipment":"Equipment","archive":"Archive","xdock":"Crossdock"};
+                  return(
+                    <div key={entry[0]}>
+                      <div style={{display:"flex",justifyContent:"space-between",fontSize:"11px",marginBottom:"3px"}}>
+                        <span style={{fontWeight:"600",textTransform:"capitalize"}}>{labels[entry[0]]||entry[0]}</span>
+                        <span style={{color:"#64748b"}}>{mins}m · {pct}%</span>
+                      </div>
+                      <div style={{height:"8px",background:"#e2e8f0",borderRadius:"4px",overflow:"hidden"}}>
+                        <div style={{height:"100%",width:pct+"%",background:"#0891b2",borderRadius:"4px",transition:"width .3s"}}/>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div>
-            <div style={{fontWeight:"700",fontSize:"12px",color:"#374151",marginBottom:"10px"}}>✏️ Most Edited Fields</div>
-            {Object.entries(fieldCounts.current).sort((a,b)=>b[1]-a[1]).slice(0,8).map((item)=>{
-              const maxVal=Math.max(...Object.values(fieldCounts.current))||1;
-              const labels={"sr":"Shipper/Receiver","rate":"Rate","driver":"Driver","status":"Status","pickup":"Pickup","delivery":"Delivery","product":"Product","broker":"Broker"};
-              return(
-                <div key={item[0]} style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"6px"}}>
-                  <span style={{fontSize:"11px",minWidth:"120px"}}>{labels[item[0]]||item[0]}</span>
-                  <div style={{flex:1,height:"6px",background:"#e2e8f0",borderRadius:"3px"}}>
-                    <div style={{height:"100%",width:Math.round(item[1]/maxVal*100)+"%",background:"#7c3aed",borderRadius:"3px"}}/>
-                  </div>
-                  <span style={{fontSize:"11px",color:"#64748b"}}>{item[1]}</span>
-                </div>
-              );
-            })}
-            {Object.keys(fieldCounts.current).length===0&&<div style={{color:"#94a3b8",fontSize:"12px"}}>Edit fields to start tracking</div>}
+            <div style={{fontWeight:"700",fontSize:"13px",color:"#7c3aed",marginBottom:"12px",display:"flex",alignItems:"center",gap:"6px"}}>
+              <span>✏️</span> Field Edit Heatmap
+            </div>
+            {Object.keys(fieldCounts.current).length===0?(
+              <div style={{color:"#94a3b8",fontSize:"12px",padding:"12px",background:"#f8fafc",borderRadius:"8px",textAlign:"center"}}>
+                Edit load fields to start tracking
+              </div>
+            ):(
+              <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+                {Object.entries(fieldCounts.current).sort((a,b)=>b[1]-a[1]).map((entry)=>{
+                  const maxVal=Math.max(...Object.values(fieldCounts.current))||1;
+                  const pct=Math.round(entry[1]/maxVal*100);
+                  const fieldLabels={"sr":"Shipper/Receiver","rate":"Rate $","driver":"Driver","status":"Status","pickup":"Pickup Date","delivery":"Delivery Date","product":"Product","broker":"Broker/Load#","truck":"Truck","trailer":"Trailer","stopMiles":"Stop Miles","manualPickupMi":"Manual Miles","manualLocalCharge":"Local Charge"};
+                  const colors={"sr":"#2563eb","rate":"#059669","driver":"#c2410c","status":"#7c3aed","pickup":"#0891b2","delivery":"#0891b2","product":"#64748b","broker":"#374151","truck":"#0f766e","trailer":"#7c3aed","stopMiles":"#d97706","manualPickupMi":"#d97706","manualLocalCharge":"#d97706"};
+                  const clr=colors[entry[0]]||"#475569";
+                  return(
+                    <div key={entry[0]} style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                      <span style={{fontSize:"11px",minWidth:"110px",color:"#374151"}}>{fieldLabels[entry[0]]||entry[0]}</span>
+                      <div style={{flex:1,height:"8px",background:"#e2e8f0",borderRadius:"4px",overflow:"hidden"}}>
+                        <div style={{height:"100%",width:pct+"%",background:clr,borderRadius:"4px"}}/>
+                      </div>
+                      <span style={{fontSize:"11px",color:"#64748b",minWidth:"24px",textAlign:"right"}}>{entry[1]}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
-        <div style={{marginTop:"14px",fontSize:"11px",color:"#64748b",textAlign:"center"}}>
-          Session: {Math.round((Date.now()-sessionStart.current)/60000)}m · {activityLog.current.length} edits
-          <button onClick={()=>{activityLog.current=[];fieldCounts.current={};sectionTime.current={};try{localStorage.removeItem("fcbv2_activity");}catch(e){}}} style={{marginLeft:"12px",background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",cursor:"pointer"}}>Clear</button>
+        <div style={{borderTop:"1px solid #e2e8f0",paddingTop:"16px",marginBottom:"16px"}}>
+          <div style={{fontWeight:"700",fontSize:"13px",color:"#059669",marginBottom:"12px",display:"flex",alignItems:"center",gap:"6px"}}>
+            <span>💡</span> Workflow Insights
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"10px",marginBottom:"12px"}}>
+            <div style={{background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:"8px",padding:"10px",textAlign:"center"}}>
+              <div style={{fontSize:"22px",fontWeight:"800",color:"#059669"}}>{activityLog.current.length}</div>
+              <div style={{fontSize:"10px",color:"#64748b",fontWeight:"600"}}>Total Edits</div>
+            </div>
+            <div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:"8px",padding:"10px",textAlign:"center"}}>
+              <div style={{fontSize:"22px",fontWeight:"800",color:"#2563eb"}}>{Math.round((Date.now()-sessionStart.current)/60000)}m</div>
+              <div style={{fontSize:"10px",color:"#64748b",fontWeight:"600"}}>Session Time</div>
+            </div>
+            <div style={{background:"#fdf4ff",border:"1px solid #e9d5ff",borderRadius:"8px",padding:"10px",textAlign:"center"}}>
+              <div style={{fontSize:"22px",fontWeight:"800",color:"#7c3aed"}}>{activityLog.current.length>0?Math.round(activityLog.current.length/Math.max((Date.now()-sessionStart.current)/60000,1)*10)/10:0}</div>
+              <div style={{fontSize:"10px",color:"#64748b",fontWeight:"600"}}>Edits/min</div>
+            </div>
+          </div>
+          <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:"8px",padding:"12px"}}>
+            <div style={{fontWeight:"700",fontSize:"11px",color:"#92400e",marginBottom:"8px"}}>🔍 Smart Recommendations</div>
+            <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+              {(()=>{
+                const recs=[];
+                const fc=fieldCounts.current;
+                const total=Object.values(fc).reduce((s,v)=>s+v,0)||1;
+                const topField=Object.entries(fc).sort((a,b)=>b[1]-a[1])[0];
+                if(topField&&topField[1]/total>0.3){recs.push("🎯 You edit '"+topField[0]+"' most often ("+Math.round(topField[1]/total*100)+"%). Consider using Rate Con AI scan to auto-fill.");}
+                const srRate=fc["sr"]||0;const rateRate=fc["rate"]||0;
+                if(srRate>0&&rateRate===0){recs.push("💰 You're entering routes but not rates. Don't forget to fill in the Rate $ field for financial tracking.");}
+                if((fc["status"]||0)<(fc["sr"]||0)*0.3&&(fc["sr"]||0)>3){recs.push("📋 Status is rarely updated. Try using the quick PU/IT/DL buttons to track load progress faster.");}
+                if((fc["stopMiles"]||0)===0&&(fc["sr"]||0)>0){recs.push("📍 No stop miles entered. For multi-stop trailers, enter leg miles for accurate RPM calculations.");}
+                const stKeys=Object.keys(sectionTime.current);
+                const weeksTime=sectionTime.current["weeks"]||0;
+                const totalTime=Object.values(sectionTime.current).reduce((s,v)=>s+v,0)||1;
+                if(weeksTime/totalTime>0.8&&stKeys.length>1){recs.push("⚡ You spend "+Math.round(weeksTime/totalTime*100)+"% on the main board - very focused workflow!");}
+                if(recs.length===0){recs.push("✅ Not enough data yet. Keep using the board and insights will appear automatically.");}
+                return recs.map((rec,i)=>(
+                  <div key={i} style={{fontSize:"11px",color:"#78350f",lineHeight:"1.4"}}>{rec}</div>
+                ));
+              })()}
+            </div>
+          </div>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:"11px",color:"#94a3b8",borderTop:"1px solid #e2e8f0",paddingTop:"12px"}}>
+          <span>Tracking since session start · Saves automatically</span>
+          <button onClick={()=>{activityLog.current=[];fieldCounts.current={};sectionTime.current={};try{localStorage.removeItem("fcbv2_activity");}catch(e){}}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"5px",padding:"3px 10px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>Reset Tracking</button>
         </div>
       </div>
     )}
