@@ -242,6 +242,7 @@ function App(){
   const[weeks,setWeeks]=useState([]);
   const[activeWeek,setActiveWeek]=useState(0);
   const[activeTab,setActiveTab]=useState("dashboard");
+  const[boardFilter,setBoardFilter]=useState("all"); // all | today | tomorrow | active | pending | done
   const[dashCurIdx,setDashCurIdx]=useState(-1);  // -1 = auto (latest week)
   const[dashPrevIdx,setDashPrevIdx]=useState(-2); // -2 = auto (second latest)
   const[saveStatus,setSaveStatus]=useState("idle");
@@ -474,8 +475,10 @@ function App(){
   const totGross=computed.reduce((s,g)=>s+g.gross,0);
   const totLocal=computed.reduce((s,g)=>s+g.loc,0);
   const totAcc=(week?.accessorials||[]).reduce((s,a)=>s+(parseFloat(a.amount)||0),0);
-  const pendingGroups=[...computed.filter(g=>g.groupStatus!=="In Transit"&&g.groupStatus!=="Delivered")].sort((a,b)=>Math.min(...a.loads.map(l=>parseTS(l.pickup)))-Math.min(...b.loads.map(l=>parseTS(l.pickup))));
-  const otrGroups=computed.filter(g=>g.groupStatus==="In Transit"||g.groupStatus==="Delivered");
+  const tomorrowDay=useMemo(()=>{const d=new Date(today);d.setDate(d.getDate()+1);return d;},[today]);
+  const allPendingGroups=[...computed.filter(g=>g.groupStatus!=="In Transit"&&g.groupStatus!=="Delivered")].sort((a,b)=>Math.min(...a.loads.map(l=>parseTS(l.pickup)))-Math.min(...b.loads.map(l=>parseTS(l.pickup))));
+  const pendingGroups=boardFilter==="all"?allPendingGroups:boardFilter==="today"?computed.filter(g=>g.loads.some(l=>{const d=parsePickupDate(l.pickup);return d&&d.getTime()===today.getTime();})||g.loads.some(l=>{const d=parsePickupDate(l.delivery);return d&&d.getTime()===today.getTime();})):boardFilter==="tomorrow"?computed.filter(g=>g.loads.some(l=>{const d=parsePickupDate(l.pickup);return d&&d.getTime()===tomorrowDay.getTime();})):boardFilter==="active"?computed.filter(g=>g.groupStatus==="In Transit"||g.groupStatus==="Dispatched"||g.groupStatus==="Driver assigned"):boardFilter==="pending"?computed.filter(g=>g.groupStatus==="Pending"||g.groupStatus==="Loaded"):boardFilter==="done"?computed.filter(g=>g.groupStatus==="Delivered"):allPendingGroups;
+  const otrGroups=boardFilter==="all"?computed.filter(g=>g.groupStatus==="In Transit"||g.groupStatus==="Delivered"):[];
   const cToday=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);return pd&&pd.getTime()===today.getTime()&&!l.status;}).length;
   const cTomorrow=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);return pd&&pd.getTime()===tomorrow.getTime()&&!l.status;}).length;
   const cFuture=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);return pd&&pd.getTime()>tomorrow.getTime()&&!l.status;}).length;
@@ -852,6 +855,22 @@ function App(){
       <div className="section-header" style={{background:"#1a2e50",marginTop:0,borderRadius:0}} onClick={()=>toggleSection("main")}>
         <span>{week.openSections?.main?"▼":"▶"}</span>
         <span style={{fontWeight:"700",fontSize:"13px"}}>Planned Shipments — {pendingGroups.length} trailers</span>
+        <div style={{display:"flex",gap:"4px",flexWrap:"wrap",alignItems:"center",marginLeft:"auto"}}>
+          {["all","today","tomorrow","active","pending","done"].map(f=>{
+            const labels={all:"All",today:"🔴 Today",tomorrow:"🟡 Tomorrow",active:"🚛 Active",pending:"⏳ Pending",done:"✅ Done"};
+            const cnt={
+              all:computed.length,
+              today:computed.filter(g=>g.loads.some(l=>{const d=parsePickupDate(l.pickup);return d&&d.getTime()===today.getTime();})||g.loads.some(l=>{const d=parsePickupDate(l.delivery);return d&&d.getTime()===today.getTime();})).length,
+              tomorrow:computed.filter(g=>g.loads.some(l=>{const d=parsePickupDate(l.pickup);const t=new Date(today);t.setDate(t.getDate()+1);return d&&d.getTime()===t.getTime();})).length,
+              active:computed.filter(g=>g.groupStatus==="In Transit"||g.groupStatus==="Dispatched"||g.groupStatus==="Driver assigned").length,
+              pending:computed.filter(g=>g.groupStatus==="Pending"||g.groupStatus==="Loaded").length,
+              done:computed.filter(g=>g.groupStatus==="Delivered").length,
+            }[f]||0;
+            const isActive=boardFilter===f;
+            return(<button key={f} onClick={()=>setBoardFilter(f)} style={{fontSize:"10px",fontWeight:isActive?"800":"600",padding:"3px 8px",border:"1px solid "+(isActive?"#2563eb":"#d1d5db"),borderRadius:"5px",cursor:"pointer",background:isActive?"#2563eb":"#fff",color:isActive?"#fff":"#374151",transition:"all .1s",whiteSpace:"nowrap"}}>{labels[f]} {cnt>0&&<span style={{background:isActive?"rgba(255,255,255,0.3)":"#f1f5f9",borderRadius:"8px",padding:"0 4px",fontSize:"9px",marginLeft:"2px"}}>{cnt}</span>}</button>);
+          })}
+          {isAdmin&&<button onClick={()=>{const sorted=[...computed].sort((a,b)=>Math.min(...a.loads.map(l=>parseTS(l.pickup)))-Math.min(...b.loads.map(l=>parseTS(l.pickup))));setW("groups",sorted);}} style={{fontSize:"10px",fontWeight:"600",padding:"3px 8px",border:"1px solid #7c3aed",borderRadius:"5px",cursor:"pointer",background:"#faf5ff",color:"#7c3aed",whiteSpace:"nowrap"}} title="Sort trailers by earliest pickup date">⇅ Sort by Date</button>}
+        </div>
       </div>
       {week.openSections?.main&&(
       <div style={{border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}>
@@ -869,13 +888,23 @@ function App(){
             {pendingGroups.map((group,gi)=>{
               const rc2=group.loads.length;
               const gsSt=GSS[group.groupStatus]||GSS["Pending"];
+              // Urgency: based on earliest pickup across all loads
+              const earliestPU=Math.min(...group.loads.map(l=>parseTS(l.pickup)));
+              const earliestDel=Math.min(...group.loads.map(l=>parseTS(l.delivery)));
+              const puDate=isFinite(earliestPU)?new Date(earliestPU):null;
+              const puDay=puDate?new Date(puDate.getFullYear(),puDate.getMonth(),puDate.getDate()):null;
+              const delDate=isFinite(earliestDel)?new Date(earliestDel):null;
+              const delDay=delDate?new Date(delDate.getFullYear(),delDate.getMonth(),delDate.getDate()):null;
+              const isDelivered=group.groupStatus==="Delivered";
+              const urgencyBorder=isDelivered?"4px solid #16a34a":puDay&&puDay.getTime()<today.getTime()?"4px solid #dc2626":puDay&&puDay.getTime()===today.getTime()?"4px solid #ef4444":delDay&&delDay.getTime()===today.getTime()?"4px solid #f97316":puDay&&puDay.getTime()===tomorrowDay.getTime()?"4px solid #eab308":"none";
+              const urgencyGlow=isDelivered?"":puDay&&puDay.getTime()<=today.getTime()?"0 0 0 2px rgba(220,38,38,0.25)":puDay&&puDay.getTime()===tomorrowDay.getTime()?"0 0 0 2px rgba(234,179,8,0.2)":"";
               const hasDriver=group.groupDriver&&group.groupDriver.trim();
               return(
                 <Fragment key={group.id}>
-                  <tr draggable={!isViewer} onDragStart={()=>{dragGroupIdx.current=gi;}} onDragOver={e=>{e.preventDefault();setDragOverIdx(gi);}} onDragLeave={()=>setDragOverIdx(null)} onDrop={()=>{const from=dragGroupIdx.current;const to=gi;if(from==null||from===to){setDragOverIdx(null);return;}setW("groups",(()=>{const arr=[...week.groups];const[moved]=arr.splice(from,1);arr.splice(to,0,moved);return arr;})());dragGroupIdx.current=null;setDragOverIdx(null);}} style={{borderTop:gi>0?"3px solid #1a2e50":"none",outline:dragOverIdx===gi?"3px solid #fbbf24":"none",cursor:isViewer?"default":"grab"}}>
+                  <tr draggable={!isViewer} onDragStart={()=>{dragGroupIdx.current=gi;}} onDragOver={e=>{e.preventDefault();setDragOverIdx(gi);}} onDragLeave={()=>setDragOverIdx(null)} onDrop={()=>{const from=dragGroupIdx.current;const to=gi;if(from==null||from===to){setDragOverIdx(null);return;}setW("groups",(()=>{const arr=[...week.groups];const[moved]=arr.splice(from,1);arr.splice(to,0,moved);return arr;})());dragGroupIdx.current=null;setDragOverIdx(null);}} style={{borderTop:gi>0?"3px solid #1a2e50":"none",outline:dragOverIdx===gi?"3px solid #fbbf24":urgencyBorder!=="none"?urgencyBorder:"none",boxShadow:urgencyGlow,cursor:isViewer?"default":"grab"}}>
                     <td colSpan={17} style={{padding:0}}>
                       <div style={{background:"linear-gradient(90deg,#1a2e50,#1e3a5f)",padding:"5px 10px",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}}>
-                        <span style={{fontSize:"13px",fontWeight:"800",color:"#fff",background:"#2563eb",padding:"2px 10px",borderRadius:"5px",flexShrink:0}}>T{gi+1}</span>
+                        <span style={{fontSize:"13px",fontWeight:"800",color:"#fff",background:"#2563eb",padding:"2px 10px",borderRadius:"5px",flexShrink:0}}>T{gi+1}</span>{urgencyBorder!=="none"&&!isDelivered&&(<span style={{fontSize:"9px",fontWeight:"800",padding:"1px 5px",borderRadius:"8px",background:puDay&&puDay.getTime()<today.getTime()?"#dc2626":puDay&&puDay.getTime()===today.getTime()?"#ef4444":delDay&&delDay.getTime()===today.getTime()?"#f97316":"#eab308",color:"#fff",marginLeft:"4px",flexShrink:0}}>{puDay&&puDay.getTime()<today.getTime()?"OVERDUE":puDay&&puDay.getTime()===today.getTime()?"PU TODAY":delDay&&delDay.getTime()===today.getTime()?"DEL TODAY":"TOMORROW"}</span>)}
                         {isAdmin&&<button onClick={()=>addLoad(group.id)} style={{background:"#3b82f6",color:"#fff",border:"none",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>+ Load</button>}
                         {isAdmin&&(<div onDragOver={e=>{e.preventDefault();e.currentTarget.style.background="rgba(251,191,36,0.25)";e.currentTarget.style.borderColor="#fbbf24";}} onDragLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,0.05)";e.currentTarget.style.borderColor="rgba(255,255,255,0.2)";}} onDrop={e=>{e.preventDefault();e.currentTarget.style.background="rgba(255,255,255,0.05)";e.currentTarget.style.borderColor="rgba(255,255,255,0.2)";const f=e.dataTransfer.files[0];if(f)handleRateCon(f,group.id);}} onClick={()=>{const inp=document.createElement("input");inp.type="file";inp.accept=".pdf,image/*";inp.onchange=ev=>{const f=ev.target.files[0];if(f)handleRateCon(f,group.id);};inp.click();}} style={{display:"flex",alignItems:"center",gap:"5px",background:"rgba(255,255,255,0.05)",border:"1px dashed rgba(255,255,255,0.2)",borderRadius:"5px",padding:"2px 10px",cursor:"pointer",flexShrink:0,transition:"all .15s"}}>{rcLoading[group.id]?<><span className="spinning" style={{display:"inline-block",fontSize:"12px"}}>↻</span><span style={{fontSize:"10px",color:"#fbbf24",fontWeight:"600"}}>Reading...</span></>:<><span style={{fontSize:"12px"}}>📄</span><span style={{fontSize:"10px",color:"rgba(255,255,255,0.6)",fontWeight:"600"}}>Drop Rate Con</span></>}</div>)}
                         <div style={{display:"flex",alignItems:"center",gap:"5px",background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:"5px",padding:"2px 8px",flexShrink:0}}>
