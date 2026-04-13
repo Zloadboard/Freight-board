@@ -639,14 +639,36 @@ function App(){
             <div style={{background:"#f8fafc",borderRadius:"10px",padding:"12px",border:"1px solid #e2e8f0"}}>
               <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"8px"}}>Load Info</div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
-                {[["Broker",detLoad.broker],["Product",detLoad.product],["Pallets",detLoad.pallets],["Weight",detLoad.weight?detLoad.weight+" lbs":""],["Rate",detLoad.rate?"$"+parseFloat(detLoad.rate).toLocaleString():""],["Status",detLoad.status],["Driver",detLoad.driver||detGrp.groupDriver],["Truck",detLoad.truck||detGrp.groupTruck],["Trailer #",detLoad.trailer||detGrp.groupTrailer]].filter(([k,v])=>v&&v.toString().trim()).map(([k,v])=>(
+                {(()=>{
+                    const showBrokerInPanel=canSeeBroker(detGrp,detLoad);
+                    return[
+                      showBrokerInPanel?["Broker",detLoad.broker]:null,
+                      ["Product",detLoad.product],
+                      ["Pallets",detLoad.pallets],
+                      ["Weight",detLoad.weight?detLoad.weight+" lbs":""],
+                      isAdmin?["Rate",detLoad.rate?"$"+parseFloat(detLoad.rate).toLocaleString():""]:(isDispatcher&&(detGrp.permissions||{}).canSeeRates!==false)?["Rate",detLoad.rate?"$"+parseFloat(detLoad.rate).toLocaleString():""]  :null,
+                      ["Status",detLoad.status],
+                      ["Driver",detLoad.driver||detGrp.groupDriver],
+                      ["Truck",detLoad.truck||detGrp.groupTruck],
+                      ["Trailer #",detLoad.trailer||detGrp.groupTrailer],
+                    ].filter(item=>item&&item[1]&&item[1].toString().trim()).map(([k,v])=>(
                   <div key={k} style={{padding:"6px 8px",background:"#fff",borderRadius:"6px",border:"1px solid #e2e8f0"}}>
                     <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em"}}>{k}</div>
                     <div style={{fontSize:"11px",fontWeight:"700",color:"#0f1f3d",marginTop:"2px",wordBreak:"break-word"}}>{v}</div>
                   </div>
-                ))}
+                ));
+                  })()} 
               </div>
             </div>
+            {isDispatcher&&!canSeeBroker(detGrp,detLoad)&&detLoad.broker&&(
+              <div style={{background:"#f8fafc",borderRadius:"10px",padding:"10px 12px",border:"1px solid #e2e8f0",display:"flex",alignItems:"center",gap:"8px"}}>
+                <span style={{fontSize:"14px"}}>🔒</span>
+                <div>
+                  <div style={{fontSize:"11px",fontWeight:"700",color:"#64748b"}}>Broker & Load # — Hidden</div>
+                  <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"1px"}}>You don't have permission to view this load's broker information</div>
+                </div>
+              </div>
+            )}
             {(detLoad.notes||detGrp.groupNotes)&&(<div style={{background:"#fefce8",borderRadius:"10px",padding:"12px",border:"1px solid #fde68a"}}>
               <div style={{fontSize:"9px",fontWeight:"700",color:"#92400e",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"6px"}}>📝 Notes</div>
               {detLoad.notes&&<div style={{fontSize:"12px",color:"#78350f",lineHeight:"1.5",marginBottom:detGrp.groupNotes?"6px":"0"}}>{detLoad.notes}</div>}
