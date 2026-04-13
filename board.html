@@ -246,8 +246,10 @@ function App(){
   const[activeTab,setActiveTab]=useState(()=>localStorage.getItem("fcbv2_lastTab")||"dashboard");
   const[boardFilter,setBoardFilter]=useState("all");
   useEffect(()=>{if(activeTab&&appMode)localStorage.setItem("fcbv2_lastTab",activeTab);},[activeTab,appMode]); // all | today | tomorrow | active | pending | done
-  const[dashCurIdx,setDashCurIdx]=useState(-1);  // -1 = auto (latest week)
-  const[dashPrevIdx,setDashPrevIdx]=useState(-2); // -2 = auto (second latest)
+  const[dashCurIdx,setDashCurIdx]=useState(-1);
+  const[dashPrevIdx,setDashPrevIdx]=useState(-2);
+  const[driverDateFrom,setDriverDateFrom]=useState("");
+  const[driverDateTo,setDriverDateTo]=useState("");
   const[saveStatus,setSaveStatus]=useState("idle");
   const[loading,setLoading]=useState(true);
   const[apiKey,setApiKey]=useState(()=>localStorage.getItem("fcbv2_apikey")||"");
@@ -280,6 +282,7 @@ function App(){
   const lastSectionStart=React.useRef(Date.now());
   const [selectedDriver,setSelectedDriver]=useState(null);
   const [photoModal,setPhotoModal]=useState(null);
+  const [loadDetailId,setLoadDetailId]=useState(null);  // {loadId, weekId} for slide-in detail panel
   const [photoViewer,setPhotoViewer]=useState(null);
   const apiKeyRef=useRef(apiKey);
   useEffect(()=>{apiKeyRef.current=apiKey;},[apiKey]);
@@ -315,6 +318,24 @@ function App(){
   const[searchResults,setSearchResults]=useState([]);
   const[searchIdx,setSearchIdx]=useState(0);
   const searchRef=useRef(null);
+  // Helper: navigate to a specific load and highlight it
+  const goToLoad=(weekId,loadId,highlight=true)=>{
+    const wIdx=weeks.findIndex(w=>w.id===weekId);
+    if(wIdx>=0)setActiveWeek(wIdx);
+    setActiveTab("weeks");
+    setTimeout(()=>{
+      const el=document.getElementById(`load-${loadId}`);
+      if(el){
+        el.scrollIntoView({behavior:"smooth",block:"center"});
+        if(highlight){
+          el.style.outline="3px solid #2563eb";
+          el.style.outlineOffset="2px";
+          el.style.background="#eff6ff";
+          setTimeout(()=>{el.style.outline="";el.style.outlineOffset="";el.style.background="";},3000);
+        }
+      }
+    },150);
+  };
   const[showLegend,setShowLegend]=useState(false);
   const[showSummary,setShowSummary]=useState(false);
   const[showHdrMenu,setShowHdrMenu]=useState(false);
@@ -565,6 +586,86 @@ function App(){
   return(
   <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",padding:"12px"}} onClick={()=>setShowHdrMenu(false)}>
 
+    {/* ── LOAD DETAIL PANEL ── */}
+    {loadDetailId&&(()=>{
+      const detWk=weeks.find(w=>w.id===loadDetailId.weekId);
+      const detGrp=detWk&&(detWk.groups||[]).find(g=>g.loads.some(l=>l.id===loadDetailId.loadId));
+      const detLoad=detGrp&&detGrp.loads.find(l=>l.id===loadDetailId.loadId);
+      if(!detLoad||!detGrp)return null;
+      const{s:shipper,r:receiver}=parseSR(detLoad.sr||"");
+      const stopNum=detGrp.loads.findIndex(l=>l.id===loadDetailId.loadId)+1;
+      const totalStops=detGrp.loads.length;
+      const hasPhotos=(detLoad.photos||[]).filter(p=>p&&!p.startsWith("__")).length>0;
+      return(
+        <div onClick={e=>e.stopPropagation()} style={{position:"fixed",top:0,right:0,bottom:0,width:"380px",background:"#fff",boxShadow:"-4px 0 32px rgba(0,0,0,0.2)",zIndex:3000,display:"flex",flexDirection:"column"}}>
+          <div style={{background:"#0f1f3d",padding:"14px 16px",display:"flex",alignItems:"center",gap:"10px",flexShrink:0}}>
+            <div style={{flex:1}}>
+              <div style={{color:"#fff",fontWeight:"800",fontSize:"13px"}}>📋 Load Detail</div>
+              <div style={{color:"#93c5fd",fontSize:"11px",marginTop:"2px"}}>{detWk?.label||""} · Stop {stopNum}/{totalStops}</div>
+            </div>
+            <button onClick={()=>goToLoad(loadDetailId.weekId,loadDetailId.loadId)} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:"7px",padding:"6px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>→ Go to Load</button>
+            <button onClick={()=>setLoadDetailId(null)} style={{background:"rgba(255,255,255,0.12)",color:"#fff",border:"none",borderRadius:"7px",width:"30px",height:"30px",cursor:"pointer",fontSize:"18px",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+          </div>
+          <div style={{flex:1,overflowY:"auto",padding:"14px",display:"flex",flexDirection:"column",gap:"12px"}}>
+            <div style={{background:"#f8fafc",borderRadius:"10px",padding:"12px",border:"1px solid #e2e8f0"}}>
+              <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"8px"}}>Route</div>
+              <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"6px"}}>
+                <span style={{fontSize:"10px",background:"#fffbeb",color:"#92400e",border:"1px solid #fde68a",borderRadius:"4px",padding:"1px 6px",fontWeight:"800",flexShrink:0}}>FROM</span>
+                <span style={{fontSize:"12px",fontWeight:"600",color:"#374151"}}>{shipper||"—"}</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:totalStops>1?"10px":"0"}}>
+                <span style={{fontSize:"10px",background:"#eff6ff",color:"#1e40af",border:"1px solid #bfdbfe",borderRadius:"4px",padding:"1px 6px",fontWeight:"800",flexShrink:0}}>TO</span>
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#2563eb"}}>{receiver||"—"}</span>
+              </div>
+              {totalStops>1&&(<div style={{borderTop:"1px solid #e2e8f0",paddingTop:"10px"}}>
+                <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",marginBottom:"6px",textTransform:"uppercase",letterSpacing:".06em"}}>All stops on this trailer:</div>
+                {detGrp.loads.map((l,i)=>{const{r:rcv}=parseSR(l.sr||"");const isThis=l.id===loadDetailId.loadId;return(<div key={l.id} onClick={()=>setLoadDetailId({loadId:l.id,weekId:loadDetailId.weekId})} style={{display:"flex",alignItems:"center",gap:"6px",padding:"5px 7px",borderRadius:"6px",cursor:"pointer",background:isThis?"#eff6ff":"transparent",marginBottom:"3px",border:isThis?"1px solid #bfdbfe":"1px solid transparent"}}>
+                  <span style={{fontSize:"10px",fontWeight:"800",background:isThis?"#2563eb":"#f1f5f9",color:isThis?"#fff":"#64748b",borderRadius:"4px",padding:"1px 6px",flexShrink:0}}>S{i+1}</span>
+                  <span style={{fontSize:"11px",color:isThis?"#1e40af":"#374151",fontWeight:isThis?"700":"400",flex:1}}>{rcv||"—"}</span>
+                  {isThis&&<span style={{fontSize:"9px",color:"#93c5fd"}}>◀</span>}
+                </div>);})}
+              </div>)}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
+              <div style={{background:"#fffbeb",borderRadius:"10px",padding:"10px",border:"1px solid #fde68a"}}>
+                <div style={{fontSize:"9px",fontWeight:"700",color:"#92400e",textTransform:"uppercase",letterSpacing:".06em",marginBottom:"4px"}}>🛫 Pickup</div>
+                <div style={{fontSize:"12px",fontWeight:"700",color:"#92400e"}}>{detLoad.pickup||"—"}</div>
+              </div>
+              <div style={{background:"#f0fdf4",borderRadius:"10px",padding:"10px",border:"1px solid #86efac"}}>
+                <div style={{fontSize:"9px",fontWeight:"700",color:"#166534",textTransform:"uppercase",letterSpacing:".06em",marginBottom:"4px"}}>🛬 Delivery</div>
+                <div style={{fontSize:"12px",fontWeight:"700",color:"#166534"}}>{detLoad.delivery||"—"}</div>
+              </div>
+            </div>
+            <div style={{background:"#f8fafc",borderRadius:"10px",padding:"12px",border:"1px solid #e2e8f0"}}>
+              <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"8px"}}>Load Info</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
+                {[["Broker",detLoad.broker],["Product",detLoad.product],["Pallets",detLoad.pallets],["Weight",detLoad.weight?detLoad.weight+" lbs":""],["Rate",detLoad.rate?"$"+parseFloat(detLoad.rate).toLocaleString():""],["Status",detLoad.status],["Driver",detLoad.driver||detGrp.groupDriver],["Truck",detLoad.truck||detGrp.groupTruck],["Trailer #",detLoad.trailer||detGrp.groupTrailer]].filter(([k,v])=>v&&v.toString().trim()).map(([k,v])=>(
+                  <div key={k} style={{padding:"6px 8px",background:"#fff",borderRadius:"6px",border:"1px solid #e2e8f0"}}>
+                    <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em"}}>{k}</div>
+                    <div style={{fontSize:"11px",fontWeight:"700",color:"#0f1f3d",marginTop:"2px",wordBreak:"break-word"}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {(detLoad.notes||detGrp.groupNotes)&&(<div style={{background:"#fefce8",borderRadius:"10px",padding:"12px",border:"1px solid #fde68a"}}>
+              <div style={{fontSize:"9px",fontWeight:"700",color:"#92400e",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"6px"}}>📝 Notes</div>
+              {detLoad.notes&&<div style={{fontSize:"12px",color:"#78350f",lineHeight:"1.5",marginBottom:detGrp.groupNotes?"6px":"0"}}>{detLoad.notes}</div>}
+              {detGrp.groupNotes&&<div style={{fontSize:"12px",color:"#78350f",lineHeight:"1.5",fontStyle:"italic"}}>Trailer note: {detGrp.groupNotes}</div>}
+            </div>)}
+            <div style={{borderRadius:"10px",padding:"12px",border:"1px solid #e2e8f0",background:"#f8fafc"}}>
+              <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"8px"}}>📷 Photos {hasPhotos?"("+detLoad.photos.filter(p=>p&&!p.startsWith("__")).length+")":""}</div>
+              {hasPhotos?(<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"6px"}}>
+                {detLoad.photos.filter(p=>p&&!p.startsWith("__")).map((p,i)=>(<img key={i} src={p} onClick={()=>setPhotoViewer({photos:detLoad.photos.filter(ph=>ph&&!ph.startsWith("__")),idx:i})} style={{width:"100%",aspectRatio:"1",objectFit:"cover",borderRadius:"6px",cursor:"pointer",border:"1px solid #e2e8f0"}}/>))}
+              </div>):(<div style={{textAlign:"center",color:"#94a3b8",fontSize:"11px",padding:"10px"}}>
+                No photos yet
+                {isAdmin&&<><br/><button onClick={()=>{setLoadDetailId(null);setPhotoModal({...detLoad,groupId:detGrp.id});}} style={{marginTop:"6px",background:"#2563eb",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>+ Add Photos</button></>}
+              </div>)}
+            </div>
+          </div>
+        </div>
+      );
+    })()}
+
     {/* PHOTO MODAL */}
     {photoModal&&(<div className="modal-bg" onClick={()=>setPhotoModal(null)}><div className="modal" style={{maxWidth:"600px",width:"95%"}} onClick={e=>e.stopPropagation()}>
       <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"16px"}}>
@@ -714,7 +815,7 @@ function App(){
     {showLegend&&(<div style={{position:"fixed",top:"60px",right:"16px",zIndex:2000,background:"#1a2e50",borderRadius:"12px",boxShadow:"0 8px 40px rgba(0,0,0,0.4)",border:"1px solid #2d4a7a",padding:"14px 16px",width:"220px"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}><span style={{color:"#fff",fontWeight:"700",fontSize:"12px"}}>🎨 Color Legend</span><button onClick={()=>setShowLegend(false)} style={{background:"transparent",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:"16px",lineHeight:1}}>×</button></div>{[["#86efac","#16a34a","Delivered / Loaded"],["#fb923c","#c2410c","In Transit / Dispatched"],["#c4b5fd","#6d28d9","Dock / Yard"],["#fde047","#ca8a04","Picked Up / Today Pickup"],["#f87171","#b91c1c","Tomorrow / Future Pickup"],["#dbeafe","#3b82f6","No Date / Past"]].map((lgItem)=>{const [bg,stripe,label]=lgItem;return(<div key={label} style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"6px"}}><div style={{width:"14px",height:"28px",background:stripe,borderRadius:"2px",flexShrink:0}}/><div style={{flex:1,background:bg,borderRadius:"4px",padding:"4px 8px",fontSize:"11px",fontWeight:"600",color:"#000"}}>{label}</div></div>);})}<div style={{marginTop:"10px",paddingTop:"8px",borderTop:"1px solid #2d4a7a"}}><div style={{fontSize:"10px",color:"#94a3b8",fontWeight:"600",marginBottom:"5px"}}>QUICK STATUS BUTTONS</div>{[["PU","Picked Up","#ca8a04"],["IT","In Transit","#c2410c"],["DK","Dock","#6d28d9"],["LD","Loaded","#166534"],["DL","Delivered","#166534"]].map((qbItem)=>{const [lbl,val,fg]=qbItem;return(<div key={lbl} style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"3px"}}><span style={{fontSize:"10px",fontWeight:"800",padding:"1px 6px",border:`1px solid ${fg}`,borderRadius:"3px",background:fg,color:"#fff",minWidth:"24px",textAlign:"center"}}>{lbl}</span><span style={{fontSize:"11px",color:"#cbd5e1"}}>{val}</span></div>);})}</div><div style={{marginTop:"8px",paddingTop:"8px",borderTop:"1px solid #2d4a7a",fontSize:"10px",color:"#64748b"}}>💡 Drag trailer rows to reorder</div></div>)}
 
     {/* SEARCH BAR */}
-    {showSearch&&(<div style={{position:"fixed",top:"60px",left:"50%",transform:"translateX(-50%)",zIndex:2000,background:"#fff",borderRadius:"12px",boxShadow:"0 8px 40px rgba(0,0,0,0.25)",border:"1px solid #e2e8f0",padding:"12px 16px",width:"min(600px,95vw)"}}><div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:searchResults.length>0?"10px":"0"}}><span style={{fontSize:"14px"}}>🔍</span><input ref={searchRef} value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&searchResults.length>0)setSearchIdx(i=>(i+1)%searchResults.length);if(e.key==="Escape"){setShowSearch(false);setSearchQuery("");}}} placeholder="Search routes, drivers, dates, status... (Ctrl+F)" style={{flex:1,border:"none",outline:"none",fontSize:"14px",color:"#1a2e50",fontFamily:"inherit"}}/>{searchQuery&&<span style={{fontSize:"11px",color:"#94a3b8",whiteSpace:"nowrap",fontWeight:"600"}}>{searchResults.length} result{searchResults.length!==1?"s":""}</span>}{searchResults.length>1&&<div style={{display:"flex",gap:"4px"}}><button onClick={()=>setSearchIdx(i=>(i-1+searchResults.length)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↑</button><button onClick={()=>setSearchIdx(i=>(i+1)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↓</button></div>}<button onClick={()=>{setShowSearch(false);setSearchQuery("");}} style={{background:"#fee2e2",border:"none",borderRadius:"6px",padding:"4px 10px",cursor:"pointer",fontSize:"11px",color:"#dc2626",fontWeight:"700"}}>✕ Close</button></div>{searchResults.length>0&&(<div style={{maxHeight:"320px",overflowY:"auto",borderTop:"1px solid #f1f5f9",paddingTop:"8px"}}>{searchResults.map((r,i)=>(<div key={i} onClick={()=>{setSearchIdx(i);setActiveWeek(r.weekIdx);setActiveTab("weeks");setShowSearch(false);setSearchQuery("");setTimeout(()=>{const el=document.getElementById(`load-${r.loadId}`);if(el){el.scrollIntoView({behavior:"smooth",block:"center"});el.style.outline="3px solid #2563eb";el.style.outlineOffset="2px";setTimeout(()=>{el.style.outline="";el.style.outlineOffset="";},2500);}},100);}} style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 10px",borderRadius:"8px",cursor:"pointer",background:i===searchIdx?"#eff6ff":"transparent",border:i===searchIdx?"1px solid #bfdbfe":"1px solid transparent",marginBottom:"3px"}}><div style={{flex:1,minWidth:0}}><div style={{fontSize:"12px",fontWeight:"700",color:"#1a2e50",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r.sr||"—"}</div><div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"2px"}}>{r.broker&&isAdmin&&(<span style={{fontSize:"10px",color:"#2563eb",fontWeight:"600"}}>{r.broker}</span>)}{r.pickup&&<span style={{fontSize:"10px",color:"#64748b"}}>🛫 {r.pickup}</span>}{r.driver&&<span style={{fontSize:"10px",color:"#059669",fontWeight:"600"}}>🧑 {r.driver}</span>}{r.status&&<span style={{fontSize:"10px",color:"#7c3aed",fontWeight:"600"}}>{r.status}</span>}</div></div><div style={{textAlign:"right",flexShrink:0}}><div style={{fontSize:"10px",fontWeight:"700",color:"#1a2e50",background:"#dbeafe",padding:"1px 7px",borderRadius:"8px"}}>{r.weekLabel}</div><div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>{r.delivery}</div></div></div>))}</div>)}{searchQuery&&searchResults.length===0&&(<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"12px 0"}}>No results found across {weeks.length} week{weeks.length!==1?"s":""}</div>)}<div style={{fontSize:"10px",color:"#cbd5e1",marginTop:searchResults.length>0?"8px":"0",textAlign:"center"}}>Press Enter to cycle · Esc to close · Click a result to jump to it</div></div>)}
+    {showSearch&&(<div style={{position:"fixed",top:"60px",left:"50%",transform:"translateX(-50%)",zIndex:2000,background:"#fff",borderRadius:"12px",boxShadow:"0 8px 40px rgba(0,0,0,0.25)",border:"1px solid #e2e8f0",padding:"12px 16px",width:"min(600px,95vw)"}}><div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:searchResults.length>0?"10px":"0"}}><span style={{fontSize:"14px"}}>🔍</span><input ref={searchRef} value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&searchResults.length>0)setSearchIdx(i=>(i+1)%searchResults.length);if(e.key==="Escape"){setShowSearch(false);setSearchQuery("");}}} placeholder="Search routes, drivers, dates, status... (Ctrl+F)" style={{flex:1,border:"none",outline:"none",fontSize:"14px",color:"#1a2e50",fontFamily:"inherit"}}/>{searchQuery&&<span style={{fontSize:"11px",color:"#94a3b8",whiteSpace:"nowrap",fontWeight:"600"}}>{searchResults.length} result{searchResults.length!==1?"s":""}</span>}{searchResults.length>1&&<div style={{display:"flex",gap:"4px"}}><button onClick={()=>setSearchIdx(i=>(i-1+searchResults.length)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↑</button><button onClick={()=>setSearchIdx(i=>(i+1)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↓</button></div>}<button onClick={()=>{setShowSearch(false);setSearchQuery("");}} style={{background:"#fee2e2",border:"none",borderRadius:"6px",padding:"4px 10px",cursor:"pointer",fontSize:"11px",color:"#dc2626",fontWeight:"700"}}>✕ Close</button></div>{searchResults.length>0&&(<div style={{maxHeight:"320px",overflowY:"auto",borderTop:"1px solid #f1f5f9",paddingTop:"8px"}}>{searchResults.map((r,i)=>(<div key={i} onClick={()=>{setSearchIdx(i);setShowSearch(false);setSearchQuery("");goToLoad(weeks[r.weekIdx]?.id,r.loadId);}} style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 10px",borderRadius:"8px",cursor:"pointer",background:i===searchIdx?"#eff6ff":"transparent",border:i===searchIdx?"1px solid #bfdbfe":"1px solid transparent",marginBottom:"3px"}}><div style={{flex:1,minWidth:0}}><div style={{fontSize:"12px",fontWeight:"700",color:"#1a2e50",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r.sr||"—"}</div><div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"2px"}}>{r.broker&&isAdmin&&(<span style={{fontSize:"10px",color:"#2563eb",fontWeight:"600"}}>{r.broker}</span>)}{r.pickup&&<span style={{fontSize:"10px",color:"#64748b"}}>🛫 {r.pickup}</span>}{r.driver&&<span style={{fontSize:"10px",color:"#059669",fontWeight:"600"}}>🧑 {r.driver}</span>}{r.status&&<span style={{fontSize:"10px",color:"#7c3aed",fontWeight:"600"}}>{r.status}</span>}</div></div><div style={{textAlign:"right",flexShrink:0}}><div style={{fontSize:"10px",fontWeight:"700",color:"#1a2e50",background:"#dbeafe",padding:"1px 7px",borderRadius:"8px"}}>{r.weekLabel}</div><div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>{r.delivery}</div></div></div>))}</div>)}{searchQuery&&searchResults.length===0&&(<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"12px 0"}}>No results found across {weeks.length} week{weeks.length!==1?"s":""}</div>)}<div style={{fontSize:"10px",color:"#cbd5e1",marginTop:searchResults.length>0?"8px":"0",textAlign:"center"}}>Press Enter to cycle · Esc to close · Click a result to jump to it</div></div>)}
 
     {/* SAVE INDICATOR */}
     {saveStatus!=="idle"&&(<div className={`save-indicator ${saveStatus==="saving"?"save-saving":saveStatus==="saved"?"save-ok":"save-error"}`}>{saveStatus==="saving"&&<><span className="spinning">↻</span> Saving to Sheets...</>}{saveStatus==="saved"&&<>✓ Saved to Google Sheets</>}{saveStatus==="error"&&<>⚠ Save failed — retrying</>}</div>)}
@@ -1192,8 +1293,8 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
               <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"12px"}}>
                 <div style={{width:"36px",height:"36px",background:"#7c3aed",borderRadius:"8px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"18px",flexShrink:0}}>🎯</div>
                 <div style={{flex:1}}>
-                  <div style={{fontWeight:"700",fontSize:"13px",color:"#4c1d95"}}>{disp.name}</div>
-                  <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"1px"}}>{(disp.drivers||[]).length} driver{(disp.drivers||[]).length!==1?"s":""} assigned</div>
+                  <input defaultValue={disp.name} key={"name-"+disp.id} onBlur={e=>{const v=e.target.value.trim();if(v&&v!==disp.name){saveDispatchers(dispatchers.map(d=>d.id===disp.id?{...d,name:v}:d));}}} style={{fontWeight:"700",fontSize:"13px",color:"#4c1d95",border:"none",outline:"none",background:"transparent",width:"100%",fontFamily:"inherit",padding:"0",cursor:"text"}} placeholder="Dispatcher name" title="Click to edit name"/>
+                  <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"1px"}}>{(disp.drivers||[]).length} driver{(disp.drivers||[]).length!==1?"s":""} · PIN: {disp.pin}</div>
                 </div>
                 <button onClick={()=>{
                   const newPin=prompt(`New PIN for ${disp.name}:`);
@@ -1239,6 +1340,32 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
                   {(disp.drivers||[]).map(d=>(<span key={d} style={{fontSize:"10px",background:"#ede9fe",color:"#5b21b6",padding:"2px 8px",borderRadius:"10px",fontWeight:"600"}}>{d}</span>))}
                 </div>
               )}
+              {/* Permissions */}
+              <div style={{marginTop:"12px",paddingTop:"10px",borderTop:"1px solid #e9d5ff"}}>
+                <div style={{fontSize:"11px",fontWeight:"700",color:"#374151",marginBottom:"8px"}}>⚙ Board Permissions:</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+                  {[
+                    {key:"canSeeRates",label:"See rates ($)"},
+                    {key:"canSeeBroker",label:"See broker & load #"},
+                    {key:"canEditStatus",label:"Update status"},
+                    {key:"canSeeFinancials",label:"See financials"},
+                    {key:"canViewDashboard",label:"Dashboard"},
+                    {key:"canViewRoster",label:"Drivers roster"},
+                  ].map(perm=>{
+                    const isOn=(disp.permissions||{})[perm.key]!==false;
+                    return(
+                      <div key={perm.key} onClick={()=>{
+                        const perms={...(disp.permissions||{}),[perm.key]:!isOn};
+                        saveDispatchers(dispatchers.map(d=>d.id===disp.id?{...d,permissions:perms}:d));
+                      }} style={{display:"flex",alignItems:"center",gap:"5px",cursor:"pointer",background:isOn?"#ede9fe":"#f1f5f9",border:"1px solid "+(isOn?"#c4b5fd":"#e2e8f0"),borderRadius:"20px",padding:"3px 10px",transition:"all .12s"}}>
+                        <div style={{width:"10px",height:"10px",borderRadius:"50%",background:isOn?"#7c3aed":"#cbd5e1",flexShrink:0}}/>
+                        <span style={{fontSize:"10px",color:isOn?"#5b21b6":"#94a3b8",fontWeight:isOn?"700":"500"}}>{perm.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
             </div>
           );
         })}
@@ -1253,7 +1380,7 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
         </div>
         {loginLog.length===0
           ? <div style={{textAlign:"center",padding:"20px",color:"#94a3b8",fontSize:"12px",border:"2px dashed #e9d5ff",borderRadius:"8px"}}>No login history yet</div>
-          : <div style={{maxHeight:"280px",overflowY:"auto",border:"1px solid #e9d5ff",borderRadius:"8px",background:"#faf5ff"}}>
+          : <div style={{maxHeight:"220px",overflowY:"auto",display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:"6px 24px",border:"1px solid #e9d5ff",borderRadius:"8px",background:"#faf5ff"}}>
               <table style={{borderCollapse:"collapse",width:"100%"}}>
                 <thead><tr>
                   <th style={{padding:"7px 12px",background:"#7c3aed",color:"#fff",fontSize:"10px",fontWeight:"700",textAlign:"left"}}>Name</th>
@@ -1620,14 +1747,71 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
             {label:"Local Deliveries",cur:cur.localDel,prev:prev.localDel,icon:"🏙",color:"#0891b2",bg:"#ecfeff",fmt:v=>v},
             {label:"Gross Revenue",cur:cur.gross,prev:prev.gross,icon:"💰",color:"#059669",bg:"#f0fdf4",fmt:v=>"$"+v.toLocaleString()},
             {label:"Local Expenses",cur:cur.loc,prev:prev.loc,icon:"🏠",color:"#d97706",bg:"#fffbeb",fmt:v=>"$"+v.toLocaleString(),rev:true},
-            {label:"Accessorials",cur:cur.acc,prev:prev.acc,icon:"➕",color:"#0891b2",bg:"#ecfeff",fmt:v=>"$"+v.toLocaleString()},
             {label:"Net Revenue",cur:cur.netGross,prev:prev.netGross,icon:"🏆",color:"#166534",bg:"#dcfce7",fmt:v=>"$"+v.toLocaleString()},
             {label:"Avg $/mi",cur:cur.rpm,prev:prev.rpm,icon:"📍",color:"#7c3aed",bg:"#faf5ff",fmt:v=>v?"$"+v+"/mi":"—"},
             {label:"Miles Driven",cur:cur.allMi,prev:prev.allMi,icon:"🛣",color:"#374151",bg:"#f8fafc",fmt:v=>v>0?v.toLocaleString()+" mi":"—"},
           ];
           const allStates=Object.keys({...cur.states,...prev.states});
-          const topDrivers=Object.entries(cur.drivers).sort((a,b)=>b[1]-a[1]).slice(0,8);
+          // Top Drivers — across ALL weeks filtered by date range
+          const drvFrom=driverDateFrom?new Date(driverDateFrom):null;
+          const drvTo=driverDateTo?new Date(driverDateTo):null;
+          if(drvTo)drvTo.setHours(23,59,59,999);
+          const allDriverGross={};
+          weeks.forEach(w=>{
+            (w.groups||[]).forEach(g=>{
+              // groupDriver = OTR driver who owns and delivers the trailer
+              const gDrv=(g.groupDriver||"").trim();
+              if(!gDrv||LOCAL_DRV.has(gDrv))return;
+              const grpStatus=(g.groupStatus||"").trim();
+              const isDelivered=grpStatus==="Delivered";
+              if(!isDelivered)return;
+              (g.loads||[]).forEach(l=>{
+                const rate=parseFloat(l.rate)||0;
+                if(!rate)return;
+                if(drvFrom||drvTo){
+                  const pd=parsePickupDate(l.delivery||l.pickup);
+                  if(!pd)return;
+                  if(drvFrom&&pd<drvFrom)return;
+                  if(drvTo&&pd>drvTo)return;
+                }
+                allDriverGross[gDrv]=(allDriverGross[gDrv]||0)+rate;
+              });
+            });
+          });
+          const topDrivers=Object.entries(allDriverGross).sort((a,b)=>b[1]-a[1]).slice(0,10);
           const maxDriverGross=topDrivers.length>0?topDrivers[0][1]:1;
+          // Top Dispatchers — sum gross for each dispatcher's drivers
+          const dispGross={};
+          dispatchers.forEach(disp=>{
+            const dSet=new Set(disp.drivers||[]);
+            let total=0;
+            weeks.forEach(w=>{
+              (w.groups||[]).forEach(g=>{
+                // Use ONLY groupDriver — that's the OTR driver assigned to the trailer
+                // who actually delivers it. l.driver = local pickup driver, not relevant here.
+                const gDrv=(g.groupDriver||"").trim();
+                if(!gDrv||!dSet.has(gDrv))return;
+                const grpStatus=(g.groupStatus||"").trim();
+                const isDelivered=grpStatus==="Delivered";
+                if(!isDelivered)return;
+                // Sum all loads on this trailer
+                (g.loads||[]).forEach(l=>{
+                  const rate=parseFloat(l.rate)||0;
+                  if(!rate)return;
+                  if(drvFrom||drvTo){
+                    const pd=parsePickupDate(l.delivery||l.pickup);
+                    if(!pd)return;
+                    if(drvFrom&&pd<drvFrom)return;
+                    if(drvTo&&pd>drvTo)return;
+                  }
+                  total+=rate;
+                });
+              });
+            });
+            if(total>0)dispGross[disp.name]=total;
+          });
+          const topDispatchers=Object.entries(dispGross).sort((a,b)=>b[1]-a[1]);
+          const maxDispGross=topDispatchers.length>0?topDispatchers[0][1]:1;
           const maxStat=Math.max(...statCards.map(s=>Math.max(s.cur,s.prev)),1);
           return(
             <div style={{maxWidth:"1400px",margin:"0 auto",padding:"16px"}}>
@@ -1642,7 +1826,7 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
                 const hasSomething=pickupsToday.length>0||deliveriesToday.length>0||pickupsTomorrow.length>0;
                 const statusColors={"Picked Up":"#ca8a04","Dispatched":"#2563eb","In Transit":"#c2410c","Dock":"#7c3aed","Loaded":"#16a34a","Delivered":"#16a34a"};
                 const LoadCard=({load,type})=>(
-                  <div onClick={()=>{setActiveWeek(weeks.findIndex(w=>w.id===load.weekId));setActiveTab("weeks");}} style={{background:"#fff",border:"2px solid "+(type==="pickup"?"#fde68a":type==="delivery"?"#86efac":"#bfdbfe"),borderRadius:"10px",padding:"10px 14px",cursor:"pointer",transition:"box-shadow .1s",display:"flex",gap:"12px",alignItems:"center"}} onMouseEnter={e=>e.currentTarget.style.boxShadow="0 4px 12px rgba(0,0,0,0.1)"} onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
+                  <div onClick={()=>{setLoadDetailId({loadId:load.id,weekId:load.weekId});goToLoad(load.weekId,load.id);}} style={{background:"#fff",border:"2px solid "+(type==="pickup"?"#fde68a":type==="delivery"?"#86efac":"#bfdbfe"),borderRadius:"10px",padding:"10px 14px",cursor:"pointer",transition:"box-shadow .1s",display:"flex",gap:"12px",alignItems:"center"}} onMouseEnter={e=>e.currentTarget.style.boxShadow="0 4px 12px rgba(0,0,0,0.1)"} onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
                     <div style={{fontSize:"22px",flexShrink:0}}>{type==="pickup"?"🛫":type==="delivery"?"🛬":"🕐"}</div>
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{fontSize:"12px",fontWeight:"700",color:"#0f1f3d",marginBottom:"2px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{load.sr||"—"}</div>
@@ -1759,10 +1943,25 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
                 ))}
               </div>
 
+              {/* Date Range Picker for Drivers/Dispatchers */}
+              <div style={{background:"#fff",borderRadius:"12px",padding:"14px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #e2e8f0",marginBottom:"16px",display:"flex",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#374151"}}>📅 Driver & Dispatcher stats period:</span>
+                <div style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                  <span style={{fontSize:"11px",color:"#64748b"}}>From</span>
+                  <input type="date" value={driverDateFrom} onChange={e=>setDriverDateFrom(e.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:"6px",padding:"4px 8px",fontSize:"11px",color:"#0f1f3d",fontFamily:"inherit",outline:"none"}}/>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                  <span style={{fontSize:"11px",color:"#64748b"}}>To</span>
+                  <input type="date" value={driverDateTo} onChange={e=>setDriverDateTo(e.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:"6px",padding:"4px 8px",fontSize:"11px",color:"#0f1f3d",fontFamily:"inherit",outline:"none"}}/>
+                </div>
+                {(driverDateFrom||driverDateTo)&&<button onClick={()=>{setDriverDateFrom("");setDriverDateTo("");}} style={{background:"#f1f5f9",border:"none",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",color:"#64748b",cursor:"pointer",fontWeight:"600"}}>Clear</button>}
+                <span style={{fontSize:"11px",color:"#94a3b8",marginLeft:"auto"}}>{driverDateFrom||driverDateTo?"Custom range":"All time (all weeks)"}</span>
+              </div>
+
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"16px",marginBottom:"16px"}}>
                 {/* Top Drivers */}
                 <div style={{background:"#fff",borderRadius:"12px",padding:"16px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #e2e8f0"}}>
-                  <div style={{fontWeight:"700",fontSize:"14px",color:"#0f1f3d",marginBottom:"14px"}}>🧑 Top Drivers — {curLabel}</div>
+                  <div style={{fontWeight:"700",fontSize:"14px",color:"#0f1f3d",marginBottom:"14px"}}>🧑 Top Drivers{driverDateFrom||driverDateTo?" — Custom Range":" — All Time"}</div>
                   {topDrivers.length===0?(<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"20px"}}>No driver data yet</div>):(
                     <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
                       {topDrivers.map((dr,i)=>(
@@ -1779,6 +1978,27 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
                   )}
                 </div>
 
+                {/* Top Dispatchers */}
+                <div style={{background:"#fff",borderRadius:"12px",padding:"16px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #e2e8f0"}}>
+                  <div style={{fontWeight:"700",fontSize:"14px",color:"#0f1f3d",marginBottom:"14px"}}>🎯 Top Dispatchers{driverDateFrom||driverDateTo?" — Custom Range":" — All Time"}</div>
+                  {topDispatchers.length===0?(<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"20px"}}>No dispatcher data yet — assign drivers to dispatchers in the Dispatchers tab</div>):(
+                    <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
+                      {topDispatchers.map((dp,i)=>(
+                        <div key={dp[0]} style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                          <span style={{fontSize:"13px",fontWeight:"800",color:i===0?"#f59e0b":i===1?"#94a3b8":i===2?"#d97706":"#cbd5e1",minWidth:"20px"}}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":"#"+(i+1)}</span>
+                          <span style={{fontSize:"12px",fontWeight:"600",color:"#5b21b6",minWidth:"100px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{dp[0]}</span>
+                          <div style={{flex:1,height:"8px",background:"#f1f5f9",borderRadius:"4px",overflow:"hidden"}}>
+                            <div style={{height:"100%",width:Math.round(dp[1]/maxDispGross*100)+"%",background:i===0?"#f59e0b":"#7c3aed",borderRadius:"4px"}}/>
+                          </div>
+                          <span style={{fontSize:"11px",fontWeight:"700",color:"#7c3aed",minWidth:"60px",textAlign:"right"}}>${dp[1].toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div style={{marginBottom:"16px"}}>
                 {/* States Map */}
                 <div style={{background:"#fff",borderRadius:"12px",padding:"16px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #e2e8f0"}}>
                   <div style={{fontWeight:"700",fontSize:"14px",color:"#0f1f3d",marginBottom:"14px"}}>🗺 Deliveries by State</div>
