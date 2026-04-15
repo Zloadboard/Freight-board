@@ -672,6 +672,7 @@ function App(){
   const setW=(f,v)=>setWeeksAndSave(p=>p.map((w,i)=>i!==activeWeek?w:{...w,[f]:v}));
   const toggleSection=k=>setW("openSections",{...week.openSections,[k]:!week.openSections?.[k]});
   const setLoad=(gid,lid,f,v)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:g.loads.map(l=>l.id!==lid?l:{...l,[f]:v})}));
+  const setLoadFields=(gid,lid,fields)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:g.loads.map(l=>l.id!==lid?l:{...l,...fields})}));
   const setGroup=(gid,f,v)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,[f]:v}));
   const addLoad=gid=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:[...g.loads,mkLoad()]}));
   const removeLoad=(gid,lid)=>setW("groups",week.groups.map(g=>{if(g.id!==gid)return g;const ls=g.loads.filter(l=>l.id!==lid);return{...g,loads:ls.length?ls:[mkLoad()]};}));
@@ -1158,11 +1159,10 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
                         <td style={T(ROW_BG,{padding:"1px 6px",textAlign:"right"})}>{isViewer?<span style={{fontWeight:"700",color:"#374151",fontSize:"11px"}}>{load.rate?`$${parseFloat(load.rate).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:2})}`:"—"}</span>:<span style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:"1px"}}><span style={{fontSize:"10px",color:"#6b7280",fontWeight:"700",opacity:.7}}>$</span><input value={load.rate} type="number" onChange={e=>{setLoad(group.id,load.id,"rate",e.target.value);trackField("rate");}} style={IN({textAlign:"right",color:ROW_TEXT,fontWeight:"700",width:"60px"})} placeholder="0" disabled={!isAdmin}/></span>}</td>
                         <td style={T(ROW_BG,{padding:"1px 2px"})}><select value={load.truck||""} onChange={e=>{
   const tk=e.target.value;
-  setLoad(group.id,load.id,"truck",tk);
+  const fields={truck:tk};
+  if(tk&&truckAssignments[tk])fields.driver=truckAssignments[tk];
+  setLoadFields(group.id,load.id,fields);
   trackField("truck");
-  if(tk&&truckAssignments[tk]){
-    setLoad(group.id,load.id,"driver",truckAssignments[tk]);
-  }
 }} style={IN({color:load.truck?"#1e40af":"#9ca3af",cursor:"pointer",fontWeight:load.truck?"700":"400",fontSize:"11px"})}><option value="">—</option>{[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
                         <td style={T(ROW_BG)}><select value={load.driver||""} onChange={e=>{setLoad(group.id,load.id,"driver",e.target.value);trackField("driver");}} style={IN({color:load.driver?"#c2410c":"#9ca3af",cursor:"pointer"})}><option value="">— Driver —</option>{[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}>{d}</option>))}</select></td>
                         <td style={T(ROW_BG,{padding:"1px 2px"})}><select value={load.trailer||""} onChange={e=>{setLoad(group.id,load.id,"trailer",e.target.value);trackField("trailer");}} style={IN({color:load.trailer?"#7c3aed":"#9ca3af",cursor:"pointer",fontWeight:load.trailer?"700":"400",fontSize:"11px"})}><option value="">—</option>{[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
