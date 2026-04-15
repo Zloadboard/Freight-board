@@ -615,12 +615,12 @@ function App(){
     {/* ── LOAD DETAIL PANEL ── */}
     {loadDetailId&&(()=>{
       const detWk=weeks.find(w=>w.id===loadDetailId.weekId);
-      const detGrp=detWk&&(detWk.groups||[]).find(g=>g.loads.some(l=>l.id===loadDetailId.loadId));
-      const detLoad=detGrp&&detGrp.loads.find(l=>l.id===loadDetailId.loadId);
-      if(!detLoad||!detGrp)return null;
+      const detGrp=detWk&&(detWk.groups||[]).find(g=>(g.loads||[]).some(l=>l.id===loadDetailId.loadId));
+      const detLoad=detGrp&&(detGrp.loads||[]).find(l=>l.id===loadDetailId.loadId);
+      if(!detLoad||!detGrp||!detGrp.loads)return null;
       const{s:shipper,r:receiver}=parseSR(detLoad.sr||"");
-      const stopNum=detGrp.loads.findIndex(l=>l.id===loadDetailId.loadId)+1;
-      const totalStops=detGrp.loads.length;
+      const stopNum=(detGrp.loads||[]).findIndex(l=>l.id===loadDetailId.loadId)+1;
+      const totalStops=(detGrp.loads||[]).length;
       const realPhotos=(detLoad.photos||[]).filter(p=>p&&p.length>10&&!p.startsWith("__"));
       const hasPhotos=realPhotos.length>0;
       const placeholderPhotos=(detLoad.photos||[]).filter(p=>p&&p.startsWith("__"));
@@ -647,7 +647,7 @@ function App(){
               </div>
               {totalStops>1&&(<div style={{borderTop:"1px solid #e2e8f0",paddingTop:"10px"}}>
                 <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",marginBottom:"6px",textTransform:"uppercase",letterSpacing:".06em"}}>All stops on this trailer:</div>
-                {detGrp.loads.map((l,i)=>{const{r:rcv}=parseSR(l.sr||"");const isThis=l.id===loadDetailId.loadId;return(<div key={l.id} onClick={()=>setLoadDetailId({loadId:l.id,weekId:loadDetailId.weekId})} style={{display:"flex",alignItems:"center",gap:"6px",padding:"5px 7px",borderRadius:"6px",cursor:"pointer",background:isThis?"#eff6ff":"transparent",marginBottom:"3px",border:isThis?"1px solid #bfdbfe":"1px solid transparent"}}>
+                {(detGrp.loads||[]).map((l,i)=>{const{r:rcv}=parseSR(l.sr||"");const isThis=l.id===loadDetailId.loadId;return(<div key={l.id} onClick={()=>setLoadDetailId({loadId:l.id,weekId:loadDetailId.weekId})} style={{display:"flex",alignItems:"center",gap:"6px",padding:"5px 7px",borderRadius:"6px",cursor:"pointer",background:isThis?"#eff6ff":"transparent",marginBottom:"3px",border:isThis?"1px solid #bfdbfe":"1px solid transparent"}}>
                   <span style={{fontSize:"10px",fontWeight:"800",background:isThis?"#2563eb":"#f1f5f9",color:isThis?"#fff":"#64748b",borderRadius:"4px",padding:"1px 6px",flexShrink:0}}>S{i+1}</span>
                   <span style={{fontSize:"11px",color:isThis?"#1e40af":"#374151",fontWeight:isThis?"700":"400",flex:1}}>{rcv||"—"}</span>
                   {isThis&&<span style={{fontSize:"9px",color:"#93c5fd"}}>◀</span>}
