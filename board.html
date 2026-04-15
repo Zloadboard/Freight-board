@@ -366,9 +366,25 @@ function App(){
         let local={};try{local=JSON.parse(localStorage.getItem("fcbv2_localdata")||"{}");}catch(e){}
         const localSavedAt=local.savedAt||0;
         const useLocalData=local.weeks&&local.weeks.length>0&&localSavedAt>sheetsSavedAt+5000;
-        if(useLocalData){if(local.customDrivers)setCustomDrivers(local.customDrivers);if(local.customTrucks)setCustomTrucks(local.customTrucks);if(local.customTrailers)setCustomTrailers(local.customTrailers);if(local.dispatchers)setDispatchers(local.dispatchers);setWeeks(local.weeks);setLoading(false);setTimeout(()=>sheetsSave({weeks:local.weeks,customDrivers:local.customDrivers||[],customTrucks:local.customTrucks||[],customTrailers:local.customTrailers||[],dispatchers:local.dispatchers||[]}),2000);return;}
+        if(useLocalData){if(local.customDrivers)setCustomDrivers(local.customDrivers);if(local.customTrucks)setCustomTrucks(local.customTrucks);if(local.customTrailers)setCustomTrailers(local.customTrailers);if(local.dispatchers)setDispatchers(local.dispatchers);const storedPhotosL=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");const localWithPhotos=(local.weeks||[]).map(function(wk){
+            return {...wk,groups:(wk.groups||[]).map(function(g){
+              return {...g,loads:(g.loads||[]).map(function(l){
+                const ph=storedPhotosL[l.id];
+                return ph&&ph.length>0?{...l,photos:ph}:l;
+              })};
+            })};
+          });setWeeks(localWithPhotos);setLoading(false);setTimeout(()=>sheetsSave({weeks:local.weeks,customDrivers:local.customDrivers||[],customTrucks:local.customTrucks||[],customTrailers:local.customTrailers||[],dispatchers:local.dispatchers||[]}),2000);return;}
         if(rawWeeks.length>0){
-          setWeeks(rawWeeks);
+          const storedPhotos=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");
+          const rawWithPhotos=rawWeeks.map(function(wk){
+            return {...wk,groups:(wk.groups||[]).map(function(g){
+              return {...g,loads:(g.loads||[]).map(function(l){
+                const ph=storedPhotos[l.id];
+                return ph&&ph.length>0?{...l,photos:ph}:l;
+              })};
+            })};
+          });
+          setWeeks(rawWithPhotos);
           if(data.customDrivers)setCustomDrivers(data.customDrivers);
           if(data.customTrucks)setCustomTrucks(data.customTrucks);
           if(data.customTrailers)setCustomTrailers(data.customTrailers);
@@ -475,8 +491,18 @@ function App(){
     saveTimer.current=setTimeout(async()=>{
       // Always save localStorage first — data is safe regardless of Sheets result
       try{
-        // Strip photos for localStorage too (keep photos in memory only during session)
-        const wNoPhotos=w.map(wk=>({...wk,groups:(wk.groups||[]).map(g=>({...g,loads:(g.loads||[]).map(l=>({...l,photos:l.photos&&l.photos.length?["__has_"+l.photos.length]:[]}))}))  }));
+        // Save real photos to a separate localStorage key (photos are too big for Sheets)
+        const photoStore={};
+        const wNoPhotos=w.map(function(wk){
+          return {...wk,groups:(wk.groups||[]).map(function(g){
+            return {...g,loads:(g.loads||[]).map(function(l){
+              const realPhotos=(l.photos||[]).filter(function(p){return p&&!p.startsWith("__");});
+              if(realPhotos.length>0)photoStore[l.id]=realPhotos;
+              return {...l,photos:realPhotos.length>0?["__has_"+realPhotos.length]:[]};
+            })};
+          })};
+        });
+        try{localStorage.setItem("fcbv2_photos",JSON.stringify(photoStore));}catch(e){}
         localStorage.setItem(LS_KEY,JSON.stringify({weeks:wNoPhotos,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,savedAt:Date.now()}));
         localStorage.setItem("fcbv2_truckassign",JSON.stringify(ta));
       }catch(e){}
@@ -595,7 +621,9 @@ function App(){
       const{s:shipper,r:receiver}=parseSR(detLoad.sr||"");
       const stopNum=detGrp.loads.findIndex(l=>l.id===loadDetailId.loadId)+1;
       const totalStops=detGrp.loads.length;
-      const hasPhotos=(detLoad.photos||[]).filter(p=>p&&!p.startsWith("__")).length>0;
+      const realPhotos=(detLoad.photos||[]).filter(p=>p&&p.length>10&&!p.startsWith("__"));
+      const hasPhotos=realPhotos.length>0;
+      const placeholderPhotos=(detLoad.photos||[]).filter(p=>p&&p.startsWith("__"));
       return(
         <div onClick={e=>e.stopPropagation()} style={{position:"fixed",top:0,right:0,bottom:0,width:"380px",background:"#fff",boxShadow:"-4px 0 32px rgba(0,0,0,0.2)",zIndex:3000,display:"flex",flexDirection:"column"}}>
           <div style={{background:"#0f1f3d",padding:"14px 16px",display:"flex",alignItems:"center",gap:"10px",flexShrink:0}}>
@@ -677,9 +705,9 @@ function App(){
             <div style={{borderRadius:"10px",padding:"12px",border:"1px solid #e2e8f0",background:"#f8fafc"}}>
               <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"8px"}}>📷 Photos {hasPhotos?"("+detLoad.photos.filter(p=>p&&!p.startsWith("__")).length+")":""}</div>
               {hasPhotos?(<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"6px"}}>
-                {detLoad.photos.filter(p=>p&&!p.startsWith("__")).map((p,i)=>(<img key={i} src={p} onClick={()=>setPhotoViewer({photos:detLoad.photos.filter(ph=>ph&&!ph.startsWith("__")),idx:i})} style={{width:"100%",aspectRatio:"1",objectFit:"cover",borderRadius:"6px",cursor:"pointer",border:"1px solid #e2e8f0"}}/>))}
+                {realPhotos.map((p,i)=>(<img key={i} src={p} onClick={()=>setPhotoViewer({photos:realPhotos,idx:i})} style={{width:"100%",aspectRatio:"1",objectFit:"cover",borderRadius:"6px",cursor:"pointer",border:"1px solid #e2e8f0"}}/>))}
               </div>):(<div style={{textAlign:"center",color:"#94a3b8",fontSize:"11px",padding:"10px"}}>
-                No photos yet
+                {placeholderPhotos.length>0?`${placeholderPhotos[0].replace('__has_','')} photo(s) saved — reload board to view`:"No photos yet"}
                 {isAdmin&&<><br/><button onClick={()=>{setLoadDetailId(null);setPhotoModal({...detLoad,groupId:detGrp.id});}} style={{marginTop:"6px",background:"#2563eb",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>+ Add Photos</button></>}
               </div>)}
             </div>
