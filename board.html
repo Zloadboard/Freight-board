@@ -172,19 +172,47 @@ function calcGroup(g){
   return{...g,calcTripMi:tm,autoTripMi:bestAutoMi||null,rcvrs,rpm,gross,loc,loads:sdFinal};
 }
 async function sheetsLoad(){const r=await fetch(SHEETS_URL,{redirect:"follow"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}
+async async function compressPhotoForCloud(photo){
+  // Compress to max 400px / 55% quality for cloud storage (~15-30KB per photo)
+  if(!photo||!photo.data)return photo;
+  return new Promise(res=>{
+    const img=new Image();
+    img.onload=()=>{
+      const MAX=400;
+      let w=img.width,h=img.height;
+      if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}
+      if(h>MAX){w=Math.round(w*MAX/h);h=MAX;}
+      const canvas=document.createElement("canvas");
+      canvas.width=w;canvas.height=h;
+      canvas.getContext("2d").drawImage(img,0,0,w,h);
+      res({...photo,data:canvas.toDataURL("image/jpeg",0.55)});
+    };
+    img.onerror=()=>res(photo);
+    img.src=photo.data;
+  });
+}
+
 async function sheetsSave(data){
-  // Strip photos before sending — keep them in localStorage only
-  const stripped={...data,savedAt:Date.now()};
-  if(stripped.weeks){
-    stripped.weeks=stripped.weeks.map(w=>({
+  const savedAt=Date.now();
+  // Compress photos for cloud sync (small enough to fit in Sheets payload)
+  let weeksWithPhotos=data.weeks||[];
+  try{
+    weeksWithPhotos=await Promise.all((data.weeks||[]).map(async w=>({
       ...w,
-      groups:(w.groups||[]).map(g=>({
+      groups:await Promise.all((w.groups||[]).map(async g=>({
         ...g,
-        loads:(g.loads||[]).map(l=>({...l,photos:[]}))
-      }))
-    }));
-  }
-  await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({data:stripped})});
+        loads:await Promise.all((g.loads||[]).map(async l=>{
+          if(!l.photos||!l.photos.length)return l;
+          const realPhotos=l.photos.filter(p=>p&&typeof p==="object"&&p.data);
+          if(!realPhotos.length)return l;
+          const compressed=await Promise.all(realPhotos.map(p=>compressPhotoForCloud(p)));
+          return {...l,photos:compressed};
+        }))
+      })))
+    })));
+  }catch(e){weeksWithPhotos=data.weeks||[];}
+  const payload={...data,weeks:weeksWithPhotos,savedAt};
+  await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({data:payload})});
 }
 </script>
 
@@ -292,7 +320,7 @@ function LoadDetailPanel({loadDetailId,weeks,isAdmin,isDispatcher,canSeeBroker,s
           <div style={{color:"#93c5fd",fontSize:"11px",marginTop:"2px"}}>{detWk.label||""} · Stop {stopNum}/{totalStops}</div>
         </div>
         <button onClick={()=>goToLoad(loadDetailId.weekId,loadDetailId.loadId)} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:"7px",padding:"6px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>→ Go to Load</button>
-        <button onClick={()=>setLoadDetailId(null)} style={{background:"rgba(255,255,255,0.12)",color:"#fff",border:"none",borderRadius:"7px",width:"30px",height:"30px",cursor:"pointer",fontSize:"18px",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+        <button onClick={()=>{setLoadDetailId(null);setShowSectionNav(false);}} style={{background:"rgba(255,255,255,0.12)",color:"#fff",border:"none",borderRadius:"7px",width:"30px",height:"30px",cursor:"pointer",fontSize:"18px",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
       </div>
       <div style={{flex:1,overflowY:"auto",padding:"14px",display:"flex",flexDirection:"column",gap:"12px"}}>
         <div style={{background:"#f8fafc",borderRadius:"10px",padding:"12px",border:"1px solid #e2e8f0"}}>
@@ -466,6 +494,9 @@ function App(){
   };
   const[showLegend,setShowLegend]=useState(false);
   const[showSummary,setShowSummary]=useState(false);
+  const[showSectionNav,setShowSectionNav]=useState(false);
+  const[activeSection,setActiveSection]=useState("all");
+  const[planSort,setPlanSort]=useState("default"); // "default"|"pickup"|"delivery"
   const[showHdrMenu,setShowHdrMenu]=useState(false);
   const dragGroupIdx=useRef(null);
   const[dragOverIdx,setDragOverIdx]=useState(null);
@@ -497,8 +528,10 @@ function App(){
         if(useLocalData){if(local.customDrivers)setCustomDrivers(local.customDrivers);if(local.customTrucks)setCustomTrucks(local.customTrucks);if(local.customTrailers)setCustomTrailers(local.customTrailers);if(local.dispatchers)setDispatchers(local.dispatchers);const storedPhotosL=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");const localWithPhotos=(local.weeks||[]).map(function(wk){
             return {...wk,groups:(wk.groups||[]).map(function(g){
               return {...g,loads:(g.loads||[]).map(function(l){
-                const ph=storedPhotosL[l.id];
-                return ph&&ph.length>0?{...l,photos:ph}:l;
+                const sheetsPhotos=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&p.data;});
+                const localPhotos=storedPhotosL[l.id]||[];
+                const merged=sheetsPhotos.length>0?sheetsPhotos:localPhotos;
+                return merged.length>0?{...l,photos:merged}:l;
               })};
             })};
           });setWeeks(localWithPhotos);setLoading(false);setTimeout(()=>sheetsSave({weeks:local.weeks,customDrivers:local.customDrivers||[],customTrucks:local.customTrucks||[],customTrailers:local.customTrailers||[],dispatchers:local.dispatchers||[]}),2000);return;}
@@ -507,8 +540,11 @@ function App(){
           const rawWithPhotos=rawWeeks.map(function(wk){
             return {...wk,groups:(wk.groups||[]).map(function(g){
               return {...g,loads:(g.loads||[]).map(function(l){
-                const ph=storedPhotos[l.id];
-                return ph&&ph.length>0?{...l,photos:ph}:l;
+                // Photos from Sheets (compressed) take priority; supplement with localStorage (full-res)
+                const sheetsPhotos=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&p.data;});
+                const localPhotos=storedPhotos[l.id]||[];
+                const merged=sheetsPhotos.length>0?sheetsPhotos:localPhotos;
+                return merged.length>0?{...l,photos:merged}:l;
               })};
             })};
           });
@@ -654,7 +690,46 @@ function App(){
   const totLocal=computed.reduce((s,g)=>s+g.loc,0);
   const totAcc=(week?.accessorials||[]).reduce((s,a)=>s+(parseFloat(a.amount)||0),0);
   const tomorrowDay=useMemo(()=>{const d=new Date(today);d.setDate(d.getDate()+1);return d;},[today]);
-  const allPendingGroups=[...computed.filter(g=>g.groupStatus!=="In Transit"&&g.groupStatus!=="Delivered")].sort((a,b)=>Math.min(...a.loads.map(l=>parseTS(l.pickup)))-Math.min(...b.loads.map(l=>parseTS(l.pickup))));
+  const allPendingGroups=(()=>{
+    const todayT=today.getTime();
+    const base=computed.filter(g=>g.groupStatus!=="In Transit"&&g.groupStatus!=="Delivered");
+    const earliestPU=g=>Math.min(...(g.loads||[]).map(l=>parseTS(l.pickup)));
+    const isToday=g=>(g.loads||[]).some(l=>{const d=parsePickupDate(l.pickup);return d&&d.getTime()===todayT;});
+    const isSingle=g=>(g.loads||[]).length===1;
+    // Bucket: 0=single+today, 1=multi+today, 2=single+future, 3=multi+future
+    const bucket=g=>{const t=isToday(g),s=isSingle(g);return t&&s?0:t&&!s?1:!t&&s?2:3;};
+    // planSort override: sort by clicked column using first stop only
+    if(planSort==="pickup"){
+      return [...base].sort((a,b)=>{
+        const fa=(a.loads||[])[0],fb=(b.loads||[])[0];
+        // Compare by date only (strip time) for grouping
+        const da=parsePickupDate(fa?.pickup),db=parsePickupDate(fb?.pickup);
+        const dtA=da?da.getTime():Infinity,dtB=db?db.getTime():Infinity;
+        if(dtA!==dtB)return dtA-dtB; // different dates → sort by date
+        // Same date → singles before doubles
+        const sa=(a.loads||[]).length===1,sb=(b.loads||[]).length===1;
+        if(sa!==sb)return sa?-1:1;
+        // Same date + same type → sort by time
+        return parseTS(fa?.pickup)-parseTS(fb?.pickup);
+      });
+    }
+    if(planSort==="delivery"){
+      return [...base].sort((a,b)=>{
+        const fa=(a.loads||[])[0],fb=(b.loads||[])[0];
+        const da=parsePickupDate(fa?.delivery),db=parsePickupDate(fb?.delivery);
+        const dtA=da?da.getTime():Infinity,dtB=db?db.getTime():Infinity;
+        if(dtA!==dtB)return dtA-dtB;
+        const sa=(a.loads||[]).length===1,sb=(b.loads||[]).length===1;
+        if(sa!==sb)return sa?-1:1;
+        return parseTS(fa?.delivery)-parseTS(fb?.delivery);
+      });
+    }
+    return [...base].sort((a,b)=>{
+      const ba=bucket(a),bb=bucket(b);
+      if(ba!==bb)return ba-bb;
+      return earliestPU(a)-earliestPU(b);
+    });
+  })();
   const pendingGroups=boardFilter==="all"?allPendingGroups:boardFilter==="today"?computed.filter(g=>g.loads.some(l=>{const d=parsePickupDate(l.pickup);return d&&d.getTime()===today.getTime();})||g.loads.some(l=>{const d=parsePickupDate(l.delivery);return d&&d.getTime()===today.getTime();})):boardFilter==="tomorrow"?computed.filter(g=>g.loads.some(l=>{const d=parsePickupDate(l.pickup);return d&&d.getTime()===tomorrowDay.getTime();})):boardFilter==="active"?computed.filter(g=>g.groupStatus==="In Transit"||g.groupStatus==="Dispatched"||g.groupStatus==="Driver assigned"):boardFilter==="pending"?computed.filter(g=>g.groupStatus==="Pending"||g.groupStatus==="Loaded"):boardFilter==="done"?computed.filter(g=>g.groupStatus==="Delivered"):allPendingGroups;
   const otrGroups=boardFilter==="all"?computed.filter(g=>g.groupStatus==="In Transit"||g.groupStatus==="Delivered"):[];
   const cToday=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);return pd&&pd.getTime()===today.getTime()&&!l.status;}).length;
@@ -1012,7 +1087,7 @@ function App(){
               setDragWeekIdx(null);setDragWeekOverIdx(null);
             }}
             style={{display:"flex",alignItems:"center",opacity:dragWeekIdx===i?0.4:1,cursor:isAdmin?"grab":"default",transition:"opacity .15s",outline:dragWeekOverIdx===i&&dragWeekIdx!==i?"2px solid #a78bfa":"none",borderRadius:"6px 6px 0 0"}}>
-            <button className={`tab-btn${i===activeWeek?" active":""}`} onClick={()=>setActiveWeek(i)} style={{cursor:isAdmin?"grab":"pointer"}}>{w.label}</button>
+            <button className={`tab-btn${i===activeWeek?" active":""}`} onClick={()=>{setActiveWeek(i);setPlanSort("default");}} style={{cursor:isAdmin?"grab":"pointer"}}>{w.label}</button>
             {isAdmin&&<button onClick={()=>archiveWeek(i)} title="Archive this week" style={{background:"transparent",border:"none",color:i===activeWeek?"#a78bfa":"rgba(255,255,255,0.25)",fontSize:"12px",padding:"0 2px 6px",cursor:"pointer",lineHeight:1}}>📦</button>}
             {isAdmin&&weeks.length>1&&(<button onClick={()=>removeWeek(i)} style={{background:"transparent",border:"none",color:i===activeWeek?"#dc2626":"rgba(255,255,255,0.3)",fontSize:"14px",padding:"0 4px 6px",cursor:"pointer",lineHeight:1}}>×</button>)}
           </div>
@@ -1045,35 +1120,58 @@ function App(){
         </div>
       </div>
 
+      {/* SECTION TABS */}
+      <div style={{display:"flex",gap:"0",background:"#0d1a30",borderBottom:"2px solid #1a2e50",overflowX:"auto",flexShrink:0}}>
+        {[
+          {key:"otr",   icon:"🚛", label:"OTR",       count:otrGroups.length},
+          {key:"main",  icon:"📦", label:"Planned",   count:pendingGroups.length},
+          {key:"local", icon:"🏙", label:"Local",     count:(week.localDeliveries||[]).length},
+          {key:"xdrop", icon:"🔁", label:"Crossdock", count:(week.crossdockDrops||[]).length},
+          {key:"acc",   icon:"➕", label:"Extras",    count:(week.accessorials||[]).length},
+          {key:"all",   icon:"⊞", label:"All"},
+        ].map(tab=>(
+          <button key={tab.key} onClick={()=>setActiveSection(tab.key)} style={{
+            display:"flex",alignItems:"center",gap:"6px",padding:"9px 16px",
+            background:activeSection===tab.key?"#1a3a6a":"transparent",
+            border:"none",borderBottom:activeSection===tab.key?"2px solid #3b82f6":"2px solid transparent",
+            marginBottom:"-2px",color:activeSection===tab.key?"#fff":"rgba(255,255,255,0.45)",
+            cursor:"pointer",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap",
+            transition:"all .12s",flexShrink:0,
+          }}>
+            <span style={{fontSize:"13px"}}>{tab.icon}</span>
+            {tab.label}
+            {tab.count!==undefined&&<span style={{
+              background:activeSection===tab.key?"rgba(255,255,255,0.2)":"rgba(255,255,255,0.08)",
+              color:activeSection===tab.key?"#fff":"rgba(255,255,255,0.4)",
+              fontSize:"10px",fontWeight:"800",padding:"1px 7px",borderRadius:"10px",
+            }}>{tab.count}</span>}
+          </button>
+        ))}
+      </div>
+
       {/* PLANNED SHIPMENTS */}
-      <div className="section-header" style={{background:"#1a2e50",marginTop:0,borderRadius:0}} onClick={()=>toggleSection("main")}>
+      <div id="section-main" className="section-header" style={{background:"#1a2e50",marginTop:0,borderRadius:0,display:activeSection==="all"||activeSection==="main"?"block":"none"}} onClick={()=>toggleSection("main")}>
         <span>{week.openSections?.main?"▼":"▶"}</span>
         <span style={{fontWeight:"700",fontSize:"13px"}}>Planned Shipments — {pendingGroups.length} trailers</span>
-        <div style={{display:"flex",gap:"4px",flexWrap:"wrap",alignItems:"center",marginLeft:"auto"}}>
-          {["all","today","tomorrow","active","pending","done"].map(f=>{
-            const labels={all:"All",today:"🔴 Today",tomorrow:"🟡 Tomorrow",active:"🚛 Active",pending:"⏳ Pending",done:"✅ Done"};
-            const cnt={
-              all:computed.length,
-              today:computed.filter(g=>g.loads.some(l=>{const d=parsePickupDate(l.pickup);return d&&d.getTime()===today.getTime();})||g.loads.some(l=>{const d=parsePickupDate(l.delivery);return d&&d.getTime()===today.getTime();})).length,
-              tomorrow:computed.filter(g=>g.loads.some(l=>{const d=parsePickupDate(l.pickup);const t=new Date(today);t.setDate(t.getDate()+1);return d&&d.getTime()===t.getTime();})).length,
-              active:computed.filter(g=>g.groupStatus==="In Transit"||g.groupStatus==="Dispatched"||g.groupStatus==="Driver assigned").length,
-              pending:computed.filter(g=>g.groupStatus==="Pending"||g.groupStatus==="Loaded").length,
-              done:computed.filter(g=>g.groupStatus==="Delivered").length,
-            }[f]||0;
-            const isActive=boardFilter===f;
-            return(<button key={f} onClick={()=>setBoardFilter(f)} style={{fontSize:"10px",fontWeight:isActive?"800":"600",padding:"3px 8px",border:"1px solid "+(isActive?"#2563eb":"#d1d5db"),borderRadius:"5px",cursor:"pointer",background:isActive?"#2563eb":"#fff",color:isActive?"#fff":"#374151",transition:"all .1s",whiteSpace:"nowrap"}}>{labels[f]} {cnt>0&&<span style={{background:isActive?"rgba(255,255,255,0.3)":"#f1f5f9",borderRadius:"8px",padding:"0 4px",fontSize:"9px",marginLeft:"2px"}}>{cnt}</span>}</button>);
-          })}
-          {isAdmin&&<button onClick={()=>{const sorted=[...computed].sort((a,b)=>Math.min(...a.loads.map(l=>parseTS(l.pickup)))-Math.min(...b.loads.map(l=>parseTS(l.pickup))));setW("groups",sorted);}} style={{fontSize:"10px",fontWeight:"600",padding:"3px 8px",border:"1px solid #7c3aed",borderRadius:"5px",cursor:"pointer",background:"#faf5ff",color:"#7c3aed",whiteSpace:"nowrap"}} title="Sort trailers by earliest pickup date">⇅ Sort by Date</button>}
-        </div>
+        
       </div>
-      {week.openSections?.main&&(
+      {(activeSection==="all"||activeSection==="main")&&week.openSections?.main&&(
       <div style={{border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}>
         <table style={{borderCollapse:"collapse",width:"100%",minWidth:"1400px"}}>
           <colgroup><col style={{width:"5px"}}/><col style={{width:"18px"}}/><col style={{width:"24px"}}/><col style={{width:"22px"}}/><col style={{width:"165px"}}/><col style={{width:"100px"}}/><col style={{width:"78px"}}/><col style={{width:"78px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"60px"}}/><col style={{width:"130px"}}/><col style={{width:"48px"}}/><col style={{width:"140px"}}/><col style={{width:"90px"}}/><col style={{width:"145px"}}/></colgroup>
           <thead>
             <tr>
               <th style={{background:"#1a2e50",padding:0,border:"none"}}/><th style={{background:"#1a2e50",padding:0,border:"none"}}/><th style={{background:"#1a2e50",padding:0,border:"none"}}/><th style={{background:"#1a2e50",padding:0,border:"none"}}/>
-              {["Shipper / Receiver","Broker & Load #","Pickup","Delivery","Product","Pallets","Weight","Rate ($)","Truck #","Driver","Trailer #","Status"].map(h=>(<th key={h} style={TH("#1a2e50")}>{h}</th>))}
+              {["Shipper / Receiver","Broker & Load #","Pickup","Delivery","Product","Pallets","Weight","Rate ($)","Truck #","Driver","Trailer #","Status"].map(h=>{
+              const isSortable=h==="Pickup"||h==="Delivery";
+              const key=h==="Pickup"?"pickup":h==="Delivery"?"delivery":null;
+              const isActive=planSort===key;
+              return(<th key={h} style={{...TH("#1a2e50"),cursor:isSortable?"pointer":"default",userSelect:"none",background:isActive?"#1e40af":"#1a2e50",transition:"background .1s"}}
+                onClick={isSortable?()=>setPlanSort(p=>p===key?"default":key):undefined}
+                title={isSortable?(isActive?"Click to reset sort":"Click to sort by "+h):undefined}>
+                {h}{isActive?(" ▲"):""}
+              </th>);
+            })}
               <th style={TH("#1d4f9e")}>Financials</th>
               <th style={{...TH("#1d4f9e"),background:"#1d4f9e",color:"#fff"}}>Driver · Truck · Status</th>
             </tr>
@@ -1205,7 +1303,7 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
       )}
 
       {/* OTR */}
-      {otrGroups.length>0&&(<><div className="section-header" style={{background:"linear-gradient(90deg,#4c1d95,#5b21b6)",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("otr")}><span>{week.openSections?.otr!==false?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>🚛 OTR — In Transit & Delivered</span><span style={{fontSize:"11px",opacity:.75,marginLeft:"6px"}}>{otrGroups.filter(g=>g.groupStatus==="In Transit").length} rolling · {otrGroups.filter(g=>g.groupStatus==="Delivered").length} delivered</span></div>{week.openSections?.otr!==false&&(<div style={{border:"1px solid #7c3aed",borderTop:"none",borderRadius:"0 0 8px 8px",background:"#0f0a1e"}}>{[...otrGroups].sort((a,b)=>{const aD=a.groupStatus==="Delivered"?1:0;const bD=b.groupStatus==="Delivered"?1:0;return aD-bD;}).map((group)=>{const loads=[...group.loads].sort((a,b)=>parseTS(a.delivery)-parseTS(b.delivery));const otrNet=group.gross-group.loc;return(<div key={group.id} style={{borderBottom:"1px solid rgba(139,92,246,0.2)",padding:"10px 14px"}}>
+            {(activeSection==="all"||activeSection==="otr")&&otrGroups.length>0&&(<><div id="section-otr" className="section-header" style={{background:"linear-gradient(90deg,#4c1d95,#5b21b6)",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("otr")}><span>{week.openSections?.otr!==false?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>🚛 OTR — In Transit & Delivered</span><span style={{fontSize:"11px",opacity:.75,marginLeft:"6px"}}>{otrGroups.filter(g=>g.groupStatus==="In Transit").length} rolling · {otrGroups.filter(g=>g.groupStatus==="Delivered").length} delivered</span></div>{week.openSections?.otr!==false&&(<div style={{border:"1px solid #7c3aed",borderTop:"none",borderRadius:"0 0 8px 8px",background:"#0f0a1e"}}>{[...otrGroups].sort((a,b)=>{const aD=a.groupStatus==="Delivered"?1:0;const bD=b.groupStatus==="Delivered"?1:0;return aD-bD;}).map((group)=>{const loads=[...group.loads].sort((a,b)=>parseTS(a.delivery)-parseTS(b.delivery));const otrNet=group.gross-group.loc;return(<div key={group.id} style={{borderBottom:"1px solid rgba(139,92,246,0.2)",padding:"10px 14px"}}>
             {/* Group header row */}
             <div style={{display:"flex",alignItems:"center",gap:"10px",flexWrap:"wrap",marginBottom:"8px"}}>
               <span style={{fontSize:"13px",fontWeight:"800",color:"#fff",background:"#7c3aed",padding:"2px 10px",borderRadius:"5px",flexShrink:0}}>T</span>
@@ -1249,8 +1347,8 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
           </div>);})}</div>)}</>)}
 
       {/* LOCAL DELIVERIES */}
-      <div className="section-header" style={{background:"#065f46",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("local")}><span>{week.openSections?.local?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>Local Deliveries</span><span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.localDeliveries||[]).length} entries</span></div>
-      {week.openSections?.local&&(<div style={{border:"1px solid #bfdbfe",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%",minWidth:"900px"}}><colgroup><col style={{width:"160px"}}/><col style={{width:"85px"}}/><col style={{width:"85px"}}/><col style={{width:"100px"}}/><col style={{width:"100px"}}/><col style={{width:"130px"}}/><col style={{width:"130px"}}/><col style={{width:"110px"}}/><col style={{width:"100px"}}/><col style={{width:"28px"}}/></colgroup><thead><tr>{["Destination","Trailer #","Truck #","Broker","Load #","Date / Time","Driver","Notes","Status",""].map((h,i)=>(<th key={i} style={TH("#065f46")}>{h}</th>))}</tr></thead><tbody>{!(week.localDeliveries||[]).length&&<tr><td colSpan={10} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:ROW_BG}}>No local deliveries</td></tr>}{(week.localDeliveries||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#f0fdf4";return(<tr key={row.id} style={{borderBottom:"1px solid rgba(0,0,0,0.06)"}}>
+      {(activeSection==="all"||activeSection==="local")&&<div id="section-local" className="section-header" style={{background:"#065f46",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("local")}><span>{week.openSections?.local?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>Local Deliveries</span><span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.localDeliveries||[]).length} entries</span></div>}
+      {(activeSection==="all"||activeSection==="local")&&week.openSections?.local&&(<div style={{border:"1px solid #bfdbfe",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%",minWidth:"900px"}}><colgroup><col style={{width:"160px"}}/><col style={{width:"85px"}}/><col style={{width:"85px"}}/><col style={{width:"100px"}}/><col style={{width:"100px"}}/><col style={{width:"130px"}}/><col style={{width:"130px"}}/><col style={{width:"110px"}}/><col style={{width:"100px"}}/><col style={{width:"28px"}}/></colgroup><thead><tr>{["Destination","Trailer #","Truck #","Broker","Load #","Date / Time","Driver","Notes","Status",""].map((h,i)=>(<th key={i} style={TH("#065f46")}>{h}</th>))}</tr></thead><tbody>{!(week.localDeliveries||[]).length&&<tr><td colSpan={10} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:ROW_BG}}>No local deliveries</td></tr>}{(week.localDeliveries||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#f0fdf4";return(<tr key={row.id} style={{borderBottom:"1px solid rgba(0,0,0,0.06)"}}>
 <td style={CELL(ROW_BG)}><input value={row.destination||""} onChange={e=>updSub("localDeliveries",row.id,"destination",e.target.value)} style={INCEL()} placeholder="City / Address" disabled={isViewer}/></td>
 <td style={CELL(ROW_BG)}><select value={row.trailer||""} onChange={e=>updSub("localDeliveries",row.id,"trailer",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.trailer?"#7c3aed":"#9ca3af"}} disabled={isViewer}><option value="">—</option>{[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
 <td style={CELL(ROW_BG)}><select value={row.truck||""} onChange={e=>updSub("localDeliveries",row.id,"truck",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.truck?"#1e40af":"#9ca3af"}} disabled={isViewer}><option value="">—</option>{[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
@@ -1288,8 +1386,8 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
 </tr>);})}</tbody></table>{!isViewer&&<div style={{padding:"8px 12px",background:"#eff6ff",borderTop:"1px solid #bfdbfe"}}><button onClick={()=>addSub("localDeliveries",mkLocal)} style={{background:"#059669",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Local Delivery</button></div>}</div>)}
 
       {/* CROSSDOCK */}
-      <div className="section-header" style={{background:"#7c3aed",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("xdrop")}><span>{week.openSections?.xdrop?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>Loads Dropped at Crossdock</span><span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.crossdockDrops||[]).length} entries</span></div>
-      {week.openSections?.xdrop&&(<div style={{border:"1px solid #bfdbfe",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%",minWidth:"900px"}}><colgroup><col style={{width:"160px"}}/><col style={{width:"130px"}}/><col style={{width:"100px"}}/><col style={{width:"100px"}}/><col style={{width:"130px"}}/><col style={{width:"130px"}}/><col style={{width:"110px"}}/><col style={{width:"100px"}}/><col style={{width:"28px"}}/></colgroup><thead><tr>{["Location","Crossdock","Broker","Load #","Date / Time","Driver","Notes","Status",""].map((h,i)=>(<th key={i} style={TH("#7c3aed")}>{h}</th>))}</tr></thead><tbody>{!(week.crossdockDrops||[]).length&&<tr><td colSpan={9} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:ROW_BG}}>No crossdock drops</td></tr>}{(week.crossdockDrops||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#faf5ff";return(<tr key={row.id} style={{borderBottom:"1px solid #d1d5db"}}>
+      {(activeSection==="all"||activeSection==="xdrop")&&<div id="section-xdrop" className="section-header" style={{background:"#7c3aed",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("xdrop")}><span>{week.openSections?.xdrop?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>Loads Dropped at Crossdock</span><span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.crossdockDrops||[]).length} entries</span></div>}
+      {(activeSection==="all"||activeSection==="xdrop")&&week.openSections?.xdrop&&(<div style={{border:"1px solid #bfdbfe",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%",minWidth:"900px"}}><colgroup><col style={{width:"160px"}}/><col style={{width:"130px"}}/><col style={{width:"100px"}}/><col style={{width:"100px"}}/><col style={{width:"130px"}}/><col style={{width:"130px"}}/><col style={{width:"110px"}}/><col style={{width:"100px"}}/><col style={{width:"28px"}}/></colgroup><thead><tr>{["Location","Crossdock","Broker","Load #","Date / Time","Driver","Notes","Status",""].map((h,i)=>(<th key={i} style={TH("#7c3aed")}>{h}</th>))}</tr></thead><tbody>{!(week.crossdockDrops||[]).length&&<tr><td colSpan={9} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:ROW_BG}}>No crossdock drops</td></tr>}{(week.crossdockDrops||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#faf5ff";return(<tr key={row.id} style={{borderBottom:"1px solid #d1d5db"}}>
 <td style={CELL(ROW_BG)}><input value={row.location||""} onChange={e=>updSub("crossdockDrops",row.id,"location",e.target.value)} style={INCEL()} placeholder="Delivery city" disabled={isViewer}/></td>
 <td style={CELL(ROW_BG)}><input value={row.trailer||""} onChange={e=>updSub("crossdockDrops",row.id,"trailer",e.target.value)} style={INCEL()} placeholder="Crossdock name" disabled={isViewer}/></td>
 <td style={CELL(ROW_BG)}><input value={row.broker||""} onChange={e=>updSub("crossdockDrops",row.id,"broker",e.target.value)} style={INCEL()} placeholder="Broker" disabled={isViewer}/></td>
@@ -1319,8 +1417,8 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
 </tr>);})}</tbody></table>{!isViewer&&<div style={{padding:"8px 12px",background:"#eff6ff",borderTop:"1px solid #bfdbfe"}}><button onClick={()=>addSub("crossdockDrops",mkXDrop)} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button></div>}</div>)}
 
       {/* ACCESSORIALS */}
-      <div className="section-header" style={{background:"#b45309",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("acc")}><span>{week.openSections?.acc?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>Accessorials</span><span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.accessorials||[]).length} entries{totAcc>0?` · Total: $${totAcc.toLocaleString()}`:""}</span></div>
-      {week.openSections?.acc&&(<div style={{border:"1px solid #bfdbfe",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%",minWidth:"600px"}}><colgroup><col style={{width:"140px"}}/><col style={{width:"120px"}}/><col style={{width:"110px"}}/><col style={{width:"90px"}}/><col style={{width:"180px"}}/><col style={{width:"110px"}}/><col style={{width:"28px"}}/></colgroup><thead><tr>{["Broker","Load #","Type","Amount ($)","Notes","Status",""].map((h,i)=>(<th key={i} style={TH("#b45309")}>{h}</th>))}</tr></thead><tbody>{!(week.accessorials||[]).length&&<tr><td colSpan={7} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:ROW_BG}}>No accessorials</td></tr>}{(week.accessorials||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#fffbeb";const tFg=row.type==="Detention"?"#b45309":row.type==="Lumper"?"#1e40af":row.type==="Layover"?"#166534":"#7c3aed";return(<tr key={row.id} style={{borderBottom:"1px solid #d1d5db"}}>
+      {(activeSection==="all"||activeSection==="acc")&&<div id="section-acc" className="section-header" style={{background:"#b45309",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("acc")}><span>{week.openSections?.acc?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>Accessorials</span><span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.accessorials||[]).length} entries{totAcc>0?` · Total: $${totAcc.toLocaleString()}`:""}</span></div>}
+      {(activeSection==="all"||activeSection==="acc")&&week.openSections?.acc&&(<div style={{border:"1px solid #bfdbfe",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%",minWidth:"600px"}}><colgroup><col style={{width:"140px"}}/><col style={{width:"120px"}}/><col style={{width:"110px"}}/><col style={{width:"90px"}}/><col style={{width:"180px"}}/><col style={{width:"110px"}}/><col style={{width:"28px"}}/></colgroup><thead><tr>{["Broker","Load #","Type","Amount ($)","Notes","Status",""].map((h,i)=>(<th key={i} style={TH("#b45309")}>{h}</th>))}</tr></thead><tbody>{!(week.accessorials||[]).length&&<tr><td colSpan={7} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:ROW_BG}}>No accessorials</td></tr>}{(week.accessorials||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#fffbeb";const tFg=row.type==="Detention"?"#b45309":row.type==="Lumper"?"#1e40af":row.type==="Layover"?"#166534":"#7c3aed";return(<tr key={row.id} style={{borderBottom:"1px solid #d1d5db"}}>
 <td style={CELL(ROW_BG)}><input value={row.broker||""} onChange={e=>updSub("accessorials",row.id,"broker",e.target.value)} style={INCEL()} placeholder="Broker" disabled={isViewer}/></td>
 <td style={CELL(ROW_BG)}><input value={row.loadNum||""} onChange={e=>updSub("accessorials",row.id,"loadNum",e.target.value)} style={INCEL()} placeholder="Load #" disabled={isViewer}/></td>
 <td style={CELL(ROW_BG,{padding:"3px 4px"})}>{(()=>{
@@ -2167,8 +2265,7 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
         })()}
       </div>
     )}
-
-    {/* STATS TAB */}
+      {/* STATS TAB */}
     {activeTab==="stats"&&(isAdmin||isDispatcher)&&(
       <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
         <div style={{fontWeight:"700",fontSize:"14px",color:"#1a2e50",marginBottom:"16px"}}>📊 Statistics — All Weeks</div>
