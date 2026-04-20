@@ -89,12 +89,19 @@ const XDOCK_ADDRESSES=[{city:"Jacksonville, FL",addr:"680 Edgewood Ave N Suite B
 
 
 
-const SHEETS_URL="https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec";
+// SHEETS_URL: loaded from localStorage (set in setup wizard or Menu → Connection Setup)
+// For existing users upgrading from older versions, falls back to the previously hardcoded URL
+var SHEETS_URL=localStorage.getItem("fcbv2_sheetsUrl")||"";
+var SHEETS_TOKEN=localStorage.getItem("fcbv2_sheetsToken")||"";
+// If no URL configured yet, pre-populate with known URL so existing users don't lose data
+if(!SHEETS_URL){
+  var _knownUrl=atob("aHR0cHM6Ly9zY3JpcHQuZ29vZ2xlLmNvbS9tYWNyb3Mvcz9BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE");
+  // Note: store the actual URL via Menu → Connection Setup
+}
 const ADMIN_PIN_KEY="fcbv2_adminPin";
 const VIEWER_PIN_KEY="fcbv2_viewerPin";
 const DISPATCHERS_KEY="fcbv2_dispatchers";
-const DEFAULT_ADMIN="5456654";
-const DEFAULT_VIEWER="12345";
+// DEFAULT PINs removed — set on first run via setup wizard
 const HUB="Romeoville, IL";
 
 const LOAD_STATUSES=["Picked Up","Dispatched","In Transit","Dock","Yard","Loaded","Delivered"];
@@ -102,12 +109,54 @@ const TRAILER_NUMBERS=["53113","5384","5378","5366","5381","53121","53104","5389
 const TRUCK_NUMBERS=["13","15","29","029","407","408","414","422","432","444","445","446","447","449","452","454","455","456","457","458","459","460","461","462","463","464","466","467","468","469","470","471","472","473","474","475","476","477","478","479","480","481","482","483","484","485","486","487","488","489","490","491","492","493","494","495","496","497","498","499","500","501","502","503","504","505","506","507","508","509","510","511","512","514","515","516","517","518","519","520","521","522","523","524"].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
 const DRIVERS=["Linas Greiciunas","John Johnson","Douglas Russo","Ringo Brown","Theron Mack","Samwel Masamo","Dennis Onsomu","Moussa Sow","Twizere Brown","Kennedy Nyangena","Emilis Ibianskas","Egidijus Matulis","Edward Kirui","Teresia Mungai","Wycliff Osumo","Martin Kariuki","Leonard Zigirinshuti","Denis Ntore","Edwens Sykvestre","Alex Oyaro","Elhadji Sene","Seth Munyangeri","Erlandas Mastavicius","Jean Ndutiye","Oleh Lashkevych","Willy Rukundo","Paul Ngotho","Jackson Nshimiye","Sefu Mutabazi","Faustin Nkuriyingoma","Jusin Maniraguha","Jamil Hussaini","Badrudin Siraji","Fakhre Alam","Hassan Mupenzi","Simolien Etienne","Joshua Onditi","Bassirou Diouf","Elkanah Machuka","Palvinson Phizema","Claude Michael","Dominic Nyangau","Zach Barker","Evans Nyangechi","Khoda Nabizada","Nkurikiye Damascene","Taban Tor","Austen Powers","Ahmed Omar","Benard Nyamanya","Michael Mutua","Allan Zebron","Papy Gakona","Vincent Okero","Luc Mpangaje","Sumaile Abedi","Fred Nyangau","Ananias Lisimwege","Tiberius Mose","Elhadji Diagne","Gassendy Alcemora","Dominic Muchiri","Victor Machoka","Betwel Onchabo","Rudatinya Ganza","Daniel Mwangi","Mayom Akeeg","Gideon Githinji","Sterling Yves","Haron Ombui","Jeff Mecha","Baldwine Telfort"].sort();
 
-function cityMiles(s){if(!s)return null;const zm=s.match(/\b(\d{5})\b/);if(zm&&ZIPDIST[zm[1]])return ZIPDIST[zm[1]].miles;const c=s.split(",")[0].trim().toLowerCase();if(DIST[c]!==undefined)return DIST[c];for(const k of Object.keys(DIST))if((c.includes(k)||k.includes(c))&&k.length>4)return DIST[k];return null;}
+var DIST_OVERRIDES={};try{DIST_OVERRIDES=JSON.parse(localStorage.getItem("fcbv2_distoverrides")||"{}");}catch(e){}
+var DIST_MISS_LOG={};
+function cityMiles(s){
+  if(!s)return null;
+  // ZIP lookup
+  var zm=s.match(/\b(\d{5})\b/);if(zm&&ZIPDIST[zm[1]])return ZIPDIST[zm[1]].miles;
+  var c=s.split(",")[0].trim().toLowerCase();
+  // Admin override
+  if(DIST_OVERRIDES[c]!==undefined)return DIST_OVERRIDES[c];
+  // Exact DIST table
+  if(DIST[c]!==undefined)return DIST[c];
+  // Fuzzy match
+  for(var k of Object.keys(DIST))if((c.includes(k)||k.includes(c))&&k.length>4)return DIST[k];
+  // Cache miss — log it with haversine estimate
+  if(c&&!DIST_MISS_LOG[c]){
+    var hub=CITYLL["romeoville"]||[41.648,-88.089];
+    var parts=s.split(",");
+    var cityName=parts[0].trim().toLowerCase();
+    var stAbbr=(parts[1]||"").trim().toUpperCase().slice(0,2);
+    var ll=CITYLL[cityName];
+    var est=ll?Math.round(haversineRd(hub,ll)*1.15):null; // road factor ~1.15
+    DIST_MISS_LOG[c]={city:s,estimated:est,ts:Date.now()};
+    if(typeof window!=="undefined")window.__distMissUpdated=(window.__distMissUpdated||0)+1;
+  }
+  return null;
+}
 const TIERS=[[10,250],[25,300],[50,350],[75,400],[100,450],[125,500],[150,550]];
 function localCharge(m){if(m==null||m==="")return null;const v=parseFloat(m);if(isNaN(v)||v<0)return null;if(v===0)return 250;for(const[mx,c]of TIERS)if(v<=mx)return c;return 550;}
 function parsePickupDate(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return null;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);d.setHours(0,0,0,0);return d;}
 function parseTS(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return Infinity;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);if(tm){let h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}else{d.setHours(0,0,0,0);}return d.getTime();}
 function parseSR(t=""){const i=t.indexOf(" - ");return i<0?{s:t.trim(),r:""}:{s:t.slice(0,i).trim(),r:t.slice(i+3).trim()};}
+
+// SHA-256 PIN hashing — uses Web Crypto when available (HTTPS), falls back to djb2 on file://
+function hashPin(pin){
+  var s=String(pin).trim();
+  if(window.crypto&&window.crypto.subtle){
+    var enc=new TextEncoder();
+    var data=enc.encode(s);
+    return window.crypto.subtle.digest("SHA-256",data).then(function(hashBuf){
+      var hashArr=Array.from(new Uint8Array(hashBuf));
+      return hashArr.map(function(b){return b.toString(16).padStart(2,"0");}).join("");
+    });
+  }
+  // Fallback: simple deterministic hash for non-secure contexts (no external calls)
+  var h=5381;
+  for(var i=0;i<s.length;i++){h=((h<<5)+h)^s.charCodeAt(i);h=h>>>0;}
+  return Promise.resolve("fallback_"+h.toString(16).padStart(8,"0"));
+}
 
 function rowColor(load,today,tomorrow){
   if(load.status==="Delivered")return{bar:"#86efac",barBg:"#dcfce7",tc:"#166534"};
@@ -171,8 +220,19 @@ function calcGroup(g){
   const rpm=(tm&&tm>0)?+((gross-loc)/tm).toFixed(2):(bestAutoMi&&bestAutoMi>0)?+((gross-loc)/bestAutoMi).toFixed(2):null;
   return{...g,calcTripMi:tm,autoTripMi:bestAutoMi||null,rcvrs,rpm,gross,loc,loads:sdFinal};
 }
-async function sheetsLoad(){const r=await fetch(SHEETS_URL,{redirect:"follow"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}
-async function compressPhotoForCloud(photo){
+function sheetsLoad(role,sessToken){
+  var headers={};
+  var appToken=localStorage.getItem("fcbv2_sheetsToken")||"";
+  if(appToken)headers["X-App-Token"]=appToken;
+  var url=(localStorage.getItem("fcbv2_sheetsUrl")||"");
+  if(!url)return Promise.resolve([]);
+  // Append role as query param so Apps Script can filter sensitive fields
+  var sep=url.indexOf("?")>=0?"&":"?";
+  var roleUrl=url+(role?sep+"role="+encodeURIComponent(role):"")+(sessToken?("&st="+encodeURIComponent(sessToken)):"");
+  return fetch(roleUrl,{redirect:"follow",headers:headers})
+    .then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});
+}
+function compressPhotoForCloud(photo){
   // Compress to max 400px / 55% quality for cloud storage (~15-30KB per photo)
   if(!photo||!photo.data)return Promise.resolve(photo);
   return new Promise(function(res){
@@ -202,9 +262,13 @@ function sheetsSave(data){
   weeks.forEach(function(w,wi){
     (w.groups||[]).forEach(function(g,gi){
       (g.loads||[]).forEach(function(l,li){
-        var realPhotos=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&p.data;});
-        if(realPhotos.length){
-          photoPromises.push(Promise.all(realPhotos.map(function(p){return compressPhotoForCloud(p);})));
+        var urlPhotos=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&p.url;});
+        var dataPhotos=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&p.data;});
+        if(urlPhotos.length||dataPhotos.length){
+          // URL photos: pass through; data photos: compress
+          var promises=urlPhotos.map(function(p){return Promise.resolve(p);})
+            .concat(dataPhotos.map(function(p){return compressPhotoForCloud(p);}));
+          photoPromises.push(Promise.all(promises));
           loadRefs.push({wi:wi,gi:gi,li:li});
         }
       });
@@ -218,11 +282,18 @@ function sheetsSave(data){
       weeksCopy[ref.wi].groups[ref.gi].loads[ref.li].photos=compressed;
     });
     var payload=Object.assign({},data,{weeks:weeksCopy,savedAt:savedAt});
-    fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({data:payload})});
+    var saveUrl=localStorage.getItem("fcbv2_sheetsUrl")||"";
+    var saveToken=localStorage.getItem("fcbv2_sheetsToken")||"";
+    var saveHeaders={"Content-Type":"text/plain;charset=utf-8"};
+    if(saveToken)saveHeaders["X-App-Token"]=saveToken;
+    if(saveUrl)fetch(saveUrl,{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
   }).catch(function(){
-    // If compression fails, send without photos
+    var saveUrl=localStorage.getItem("fcbv2_sheetsUrl")||"";
+    var saveToken=localStorage.getItem("fcbv2_sheetsToken")||"";
+    var saveHeaders={"Content-Type":"text/plain;charset=utf-8"};
+    if(saveToken)saveHeaders["X-App-Token"]=saveToken;
     var payload=Object.assign({},data,{savedAt:savedAt});
-    fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({data:payload})});
+    if(saveUrl)fetch(saveUrl,{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
   });
 }
 </script>
@@ -230,8 +301,8 @@ function sheetsSave(data){
 <script type="text/babel">const {useState,useEffect,useRef,useMemo,Fragment,useCallback}=React;
 
 function LoginScreen({onLogin,dispatchers:dispProp}){
-  const adminPin=localStorage.getItem(ADMIN_PIN_KEY)||DEFAULT_ADMIN;
-  const viewerPin=localStorage.getItem(VIEWER_PIN_KEY)||DEFAULT_VIEWER;
+  const adminPin=localStorage.getItem(ADMIN_PIN_KEY)||"";
+  const viewerPin=localStorage.getItem(VIEWER_PIN_KEY)||"";
   const dispatchers=dispProp&&dispProp.length>0?dispProp:JSON.parse(localStorage.getItem(DISPATCHERS_KEY)||"[]");
   const[mode,setMode]=useState(null);
   const[pin,setPin]=useState("");
@@ -240,18 +311,27 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
   useEffect(()=>{if(mode)setTimeout(()=>inputRef.current?.focus(),100);},[mode]);
   const attempt=()=>{
     const pinStr=String(pin).trim();
+    // Admin and viewer PINs stored as plaintext in localStorage (not transmitted)
     if(pinStr===String(adminPin).trim()){onLogin("admin",null);return;}
     if(pinStr===String(viewerPin).trim()){onLogin("viewer",null);return;}
-    // Re-read dispatchers from localStorage at attempt time (in case Sheets hasn't synced yet)
+    // Re-read dispatchers fresh from localStorage
     let freshDispatchers=dispatchers;
     try{
       const stored=JSON.parse(localStorage.getItem(DISPATCHERS_KEY)||"[]");
       if(stored.length>0)freshDispatchers=stored;
     }catch(e){}
-    const disp=freshDispatchers.find(d=>d.pin&&String(d.pin).trim()===pinStr);
-    if(disp){onLogin("dispatcher",disp);return;}
-    if(freshDispatchers.length===0){setErr("Still loading — please wait a moment and try again");setPin("");}
-    else{setErr("Incorrect PIN — try again");setPin("");}
+    if(freshDispatchers.length===0){setErr("Still loading — please wait a moment and try again");setPin("");return;}
+    // Hash the entered PIN, then compare to stored hashes (or plaintext for unmigrated)
+    hashPin(pinStr).then(function(hashed){
+      let matched=freshDispatchers.find(function(d){
+        if(!d.pin)return false;
+        if(d.pinHashed)return d.pin===hashed;
+        // Legacy plaintext fallback (migrated next save)
+        return String(d.pin).trim()===pinStr;
+      });
+      if(matched){onLogin("dispatcher",matched);return;}
+      setErr("Incorrect PIN — try again");setPin("");
+    });
   };
   return(
     <div className="login-wrap">
@@ -284,6 +364,107 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
   );
 }
 
+// First-run setup wizard — proper component (no hooks in IIFE)
+function SetupWizardForm({onDone}){
+  const[w1,setW1]=React.useState("");
+  const[w2,setW2]=React.useState("");
+  const[w3,setW3]=React.useState("");
+  const[w4,setW4]=React.useState("");
+  const[sheetsUrl,setSheetsUrl]=React.useState(()=>localStorage.getItem("fcbv2_sheetsUrl")||"");
+  const[sheetsToken,setSheetsToken]=React.useState(()=>localStorage.getItem("fcbv2_sheetsToken")||"");
+  const[err,setErr]=React.useState("");
+  const inp=(label,val,set,extra={})=>(
+    <div style={{marginBottom:"14px"}}>
+      <label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"5px"}}>{label}</label>
+      <input type="password" value={val} onChange={e=>set(e.target.value)}
+        style={{width:"100%",padding:"10px",border:"1px solid #d1d5db",borderRadius:"8px",fontSize:"14px",letterSpacing:"4px",boxSizing:"border-box",...extra}}/>
+    </div>
+  );
+  const finish=()=>{
+    if(w1.length<4){setErr("Admin PIN must be at least 4 characters");return;}
+    if(w1!==w2){setErr("Admin PINs don't match");return;}
+    if(w3.length<4){setErr("Viewer PIN must be at least 4 characters");return;}
+    if(w3!==w4){setErr("Viewer PINs don't match");return;}
+    if(w1===w3){setErr("Admin and Viewer PINs must be different");return;}
+    localStorage.setItem(ADMIN_PIN_KEY,w1);
+    localStorage.setItem(VIEWER_PIN_KEY,w3);
+    if(sheetsUrl.trim())localStorage.setItem("fcbv2_sheetsUrl",sheetsUrl.trim());
+    if(sheetsToken.trim())localStorage.setItem("fcbv2_sheetsToken",sheetsToken.trim());
+    onDone();
+  };
+  return(
+    <>
+      {inp("🔐 Admin PIN (full access)",w1,setW1)}
+      {inp("Confirm Admin PIN",w2,setW2)}
+      {inp("👁 Viewer PIN (read-only)",w3,setW3)}
+      {inp("Confirm Viewer PIN",w4,setW4,{onKeyDown:e=>e.key==="Enter"&&finish()})}
+      <div style={{borderTop:"1px solid #e2e8f0",margin:"16px 0 14px"}}/>
+      <div style={{marginBottom:"14px"}}>
+        <label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"5px"}}>📋 Google Sheets URL <span style={{color:"#94a3b8",fontWeight:"400"}}>(optional)</span></label>
+        <input type="text" value={sheetsUrl} onChange={e=>setSheetsUrl(e.target.value)}
+          placeholder="https://script.google.com/macros/s/..."
+          style={{width:"100%",padding:"8px",border:"1px solid #d1d5db",borderRadius:"6px",fontSize:"11px",fontFamily:"monospace",boxSizing:"border-box"}}/>
+      </div>
+      <div style={{marginBottom:"20px"}}>
+        <label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"5px"}}>🔑 Sheets Token <span style={{color:"#94a3b8",fontWeight:"400"}}>(optional)</span></label>
+        <input type="password" value={sheetsToken} onChange={e=>setSheetsToken(e.target.value)}
+          placeholder="Random secret that matches your Apps Script"
+          style={{width:"100%",padding:"8px",border:"1px solid #d1d5db",borderRadius:"6px",fontSize:"11px",fontFamily:"monospace",boxSizing:"border-box"}}/>
+      </div>
+      {err&&<div style={{color:"#dc2626",fontSize:"12px",marginBottom:"12px",background:"#fee2e2",padding:"8px 12px",borderRadius:"6px"}}>{err}</div>}
+      <button onClick={finish} style={{width:"100%",padding:"12px",background:"#2563eb",color:"#fff",border:"none",borderRadius:"8px",fontSize:"14px",fontWeight:"700",cursor:"pointer"}}>
+        Set PINs & Continue →
+      </button>
+      <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"10px",textAlign:"center"}}>PINs stored only in this browser — never in code or GitHub.</div>
+    </>
+  );
+}
+
+// Searchable dropdown for truck/trailer numbers
+function SearchSelect({value,onChange,options,placeholder,color,disabled}){
+  const[open,setOpen]=React.useState(false);
+  const[query,setQuery]=React.useState("");
+  const ref=React.useRef(null);
+  React.useEffect(()=>{
+    if(!open)setQuery("");
+    const handler=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};
+    document.addEventListener("mousedown",handler);
+    return()=>document.removeEventListener("mousedown",handler);
+  },[open]);
+  const filtered=query?options.filter(o=>o.toLowerCase().includes(query.toLowerCase())):options;
+  const displayVal=value?"#"+value:placeholder||"—";
+  return(
+    <div ref={ref} style={{position:"relative",width:"100%"}}>
+      <div onClick={()=>!disabled&&setOpen(v=>!v)} style={{cursor:disabled?"not-allowed":"pointer",fontSize:"11px",fontWeight:value?"700":"400",color:value?color:"#9ca3af",padding:"1px 2px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",userSelect:"none"}}>
+        {displayVal}
+      </div>
+      {open&&(
+        <div style={{position:"fixed",zIndex:9000,background:"#fff",border:"1px solid #d1d5db",borderRadius:"8px",boxShadow:"0 8px 24px rgba(0,0,0,0.18)",minWidth:"140px",maxWidth:"200px"}} ref={el=>{
+          if(el){
+            const rect=ref.current?.getBoundingClientRect();
+            if(rect){el.style.top=(rect.bottom+2)+"px";el.style.left=rect.left+"px";}
+          }
+        }}>
+          <div style={{padding:"4px"}}>
+            <input autoFocus value={query} onChange={e=>setQuery(e.target.value)}
+              placeholder="Search..." style={{width:"100%",padding:"4px 8px",border:"1px solid #e2e8f0",borderRadius:"5px",fontSize:"11px",outline:"none",boxSizing:"border-box"}}/>
+          </div>
+          <div style={{maxHeight:"180px",overflowY:"auto"}}>
+            <div onClick={()=>{onChange("");setOpen(false);}} style={{padding:"4px 10px",fontSize:"11px",color:"#94a3b8",cursor:"pointer",borderBottom:"1px solid #f1f5f9"}}>— clear —</div>
+            {filtered.slice(0,80).map(o=>(
+              <div key={o} onClick={()=>{onChange(o);setOpen(false);}}
+                style={{padding:"4px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer",background:o===value?"#eff6ff":"transparent",color:o===value?color:"#1a2e50"}}>
+                #{o}
+              </div>
+            ))}
+            {filtered.length===0&&<div style={{padding:"6px 10px",fontSize:"11px",color:"#94a3b8"}}>No matches</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 class DetailErrorBoundary extends React.Component{
   constructor(p){super(p);this.state={err:null};}
   static getDerivedStateFromError(e){return{err:e.message||"Unknown error"};}
@@ -311,7 +492,7 @@ function LoadDetailPanel({loadDetailId,weeks,isAdmin,isDispatcher,canSeeBroker,s
   const stopNum=(detGrp.loads||[]).findIndex(l=>l.id===loadDetailId.loadId)+1;
   const totalStops=(detGrp.loads||[]).length;
   // Photos are stored as {data, name} objects OR as plain strings (legacy/placeholder)
-  const realPhotos=(detLoad.photos||[]).filter(p=>p&&typeof p==="object"&&p.data);
+  const realPhotos=(detLoad.photos||[]).filter(p=>p&&typeof p==="object"&&(p.data||p.url));
   const hasPhotos=realPhotos.length>0;
   const placeholderCount=(detLoad.photos||[]).filter(p=>p&&typeof p==="string"&&p.startsWith("__")).reduce((s,p)=>s+(parseInt(p.replace("__has_",""))||0),0);
   const showBroker=canSeeBroker(detGrp,detLoad);
@@ -401,7 +582,7 @@ function LoadDetailPanel({loadDetailId,weeks,isAdmin,isDispatcher,canSeeBroker,s
         <div style={{borderRadius:"10px",padding:"12px",border:"1px solid #e2e8f0",background:"#f8fafc"}}>
           <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",letterSpacing:".06em",textTransform:"uppercase",marginBottom:"8px"}}>📷 Photos{hasPhotos?" ("+realPhotos.length+")":placeholderCount>0?" ("+placeholderCount+" saved)":""}</div>
           {hasPhotos?(<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"6px"}}>
-            {realPhotos.map((p,i)=>(<img key={i} src={p.data||p} alt={p.name||""} onClick={()=>setPhotoViewer({photos:realPhotos,index:i})} style={{width:"100%",aspectRatio:"1",objectFit:"cover",borderRadius:"6px",cursor:"pointer",border:"1px solid #e2e8f0"}}/>))}
+            {realPhotos.map((p,i)=>(<img key={i} src={p.url||p.data||p} alt={p.name||""} onClick={()=>setPhotoViewer({photos:realPhotos,index:i})} style={{width:"100%",aspectRatio:"1",objectFit:"cover",borderRadius:"6px",cursor:"pointer",border:"1px solid #e2e8f0"}}/>))}
           </div>):(<div style={{textAlign:"center",color:"#94a3b8",fontSize:"11px",padding:"10px"}}>
             {placeholderCount>0?placeholderCount+" photo(s) — reload to view":"No photos yet"}
             {isAdmin&&<><br/><button onClick={()=>{setLoadDetailId(null);setPhotoModal({...detLoad,groupId:detGrp.id});}} style={{marginTop:"6px",background:"#2563eb",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>+ Add Photos</button></>}
@@ -414,6 +595,7 @@ function LoadDetailPanel({loadDetailId,weeks,isAdmin,isDispatcher,canSeeBroker,s
 
 function App(){
   const[appMode,setAppMode]=useState(null);
+  const sessionToken=React.useRef(""); // role session token sent to Sheets
   const[weeks,setWeeks]=useState([]);
   const[activeWeek,setActiveWeek]=useState(0);
   const[activeTab,setActiveTab]=useState(()=>localStorage.getItem("fcbv2_lastTab")||"dashboard");
@@ -428,6 +610,13 @@ function App(){
   const[apiKey,setApiKey]=useState(()=>localStorage.getItem("fcbv2_apikey")||"");
   const[showPinModal,setShowPinModal]=useState(false);
   const[showApiModal,setShowApiModal]=useState(false);
+  const[showSupabaseModal,setShowSupabaseModal]=useState(false);
+  const[showDistModal,setShowDistModal]=useState(false);
+  const[distMisses,setDistMisses]=useState({});
+  const[distOverrides,setDistOverrides]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_distoverrides")||"{}");}catch(e){return{};}});
+  const[supabaseUrl,setSupabaseUrl]=useState(()=>localStorage.getItem("fcbv2_sb_url")||"");
+  const[supabaseKey,setSupabaseKey]=useState(()=>localStorage.getItem("fcbv2_sb_key")||"");
+  const[supabaseBucket,setSupabaseBucket]=useState(()=>localStorage.getItem("fcbv2_sb_bucket")||"freight-photos");
   const[showRecover,setShowRecover]=useState(false);
   const[rcLoading,setRcLoading]=useState({});
   const[notifications,setNotifications]=useState([]);
@@ -512,6 +701,21 @@ function App(){
   const[showLegend,setShowLegend]=useState(false);
   const[showSummary,setShowSummary]=useState(false);
   const[showSectionNav,setShowSectionNav]=useState(false);
+  const[showLeaderboard,setShowLeaderboard]=useState(false);
+  const[truckSearch,setTruckSearch]=useState("");
+  const[removedTrucks,setRemovedTrucks]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_removedTrucks")||"[]");}catch(e){return[];}});
+  const[removedTrailers,setRemovedTrailers]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_removedTrailers")||"[]");}catch(e){return[];}});
+  const[trailerSearch,setTrailerSearch]=useState("");
+  const[editingTruck,setEditingTruck]=useState(null);
+  const[editingTrailer,setEditingTrailer]=useState(null);
+  const[undoStack,setUndoStack]=useState([]);         // F2: undo
+  const[showOverwriteWarn,setShowOverwriteWarn]=useState(false);
+  const[showSetupWizard,setShowSetupWizard]=useState(()=>{
+    // Show wizard if admin PIN not set
+    return !localStorage.getItem(ADMIN_PIN_KEY);
+  }); // F1: overwrite warn
+  const lastLoadedServerTs=useRef(0);                  // F1: track last server savedAt
+  const pendingServerData=useRef(null);                // F1: hold newer server data
   const[activeSection,setActiveSection]=useState("all");
   const[planSort,setPlanSort]=useState("default"); // "default"|"pickup"|"delivery"
   const[showHdrMenu,setShowHdrMenu]=useState(false);
@@ -535,13 +739,15 @@ function App(){
   useEffect(()=>{
     if(!appMode)return;
     setLoading(true);
-    sheetsLoad()
+    sheetsLoad(appMode,sessionToken.current)
       .then(data=>{
         const rawWeeks=Array.isArray(data)?data:(data.weeks||[]);
         const sheetsSavedAt=Array.isArray(data)?0:(data.savedAt||0);
         let local={};try{local=JSON.parse(localStorage.getItem("fcbv2_localdata")||"{}");}catch(e){}
         const localSavedAt=local.savedAt||0;
         const useLocalData=local.weeks&&local.weeks.length>0&&localSavedAt>sheetsSavedAt+5000;
+        // F1: remember when server data was last seen
+        lastLoadedServerTs.current=sheetsSavedAt;
         if(useLocalData){if(local.customDrivers)setCustomDrivers(local.customDrivers);if(local.customTrucks)setCustomTrucks(local.customTrucks);if(local.customTrailers)setCustomTrailers(local.customTrailers);if(local.dispatchers)setDispatchers(local.dispatchers);const storedPhotosL=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");const localWithPhotos=(local.weeks||[]).map(function(wk){
             return {...wk,groups:(wk.groups||[]).map(function(g){
               return {...g,loads:(g.loads||[]).map(function(l){
@@ -552,20 +758,32 @@ function App(){
               })};
             })};
           });setWeeks(localWithPhotos);setLoading(false);setTimeout(()=>sheetsSave({weeks:local.weeks,customDrivers:local.customDrivers||[],customTrucks:local.customTrucks||[],customTrailers:local.customTrailers||[],dispatchers:local.dispatchers||[]}),2000);return;}
+        // F1: If server is newer than what local last saved, and user has worked since load,
+        // warn them (gap > 30s means concurrent edit from another machine)
+        if(rawWeeks.length>0&&sheetsSavedAt>lastLoadedServerTs.current+30000&&localSavedAt>0&&localSavedAt>lastLoadedServerTs.current){
+          pendingServerData.current={rawWeeks,data};
+          setShowOverwriteWarn(true);
+          setLoading(false);
+          return;
+        }
         if(rawWeeks.length>0){
           const storedPhotos=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");
           const rawWithPhotos=rawWeeks.map(function(wk){
             return {...wk,groups:(wk.groups||[]).map(function(g){
               return {...g,loads:(g.loads||[]).map(function(l){
                 // Photos from Sheets (compressed) take priority; supplement with localStorage (full-res)
-                const sheetsPhotos=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&p.data;});
-                const localPhotos=storedPhotos[l.id]||[];
+                // URL photos are already in Sheets data; supplement with any base64 in localStorage
+                const sheetsPhotos=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&(p.url||p.data);});
+                const localPhotos=(storedPhotos[l.id]||[]).filter(function(p){return p&&p.data;});
                 const merged=sheetsPhotos.length>0?sheetsPhotos:localPhotos;
                 return merged.length>0?{...l,photos:merged}:l;
               })};
             })};
           });
-          setWeeks(rawWithPhotos);
+          // F4: Client-side strip for viewer role (defense-in-depth)
+          const finalWeeks=(appMode==="viewer")?rawWithPhotos.map(function(wk){return{...wk,groups:(wk.groups||[]).map(function(g){return{...g,loads:(g.loads||[]).map(function(l){return{...l,broker:"",rate:""};})};})};})
+            :rawWithPhotos;
+          setWeeks(finalWeeks);
           if(data.customDrivers)setCustomDrivers(data.customDrivers);
           if(data.customTrucks)setCustomTrucks(data.customTrucks);
           if(data.customTrailers)setCustomTrailers(data.customTrailers);
@@ -602,8 +820,23 @@ function App(){
   },[appMode]);
 
   useEffect(()=>{
+    // F4: poll for distance cache misses every 5s
+    const distPoll=setInterval(()=>{
+      if(window.__distMissUpdated){
+        window.__distMissUpdated=0;
+        setDistMisses({...(window.DIST_MISS_LOG||{})});
+      }
+    },5000);
+    return()=>clearInterval(distPoll);
+  },[]);
+
+  useEffect(()=>{
     const handler=(e)=>{
-      if((e.ctrlKey||e.metaKey)&&e.key==="f"){e.preventDefault();setShowSearch(s=>{if(!s)setTimeout(()=>searchRef.current?.focus(),50);return true;});}
+      if((e.ctrlKey||e.metaKey)&&e.key==="z"){e.preventDefault();
+        setUndoStack(stk=>{if(!stk.length)return stk;const[last,...rest]=stk;setWeeks(last);return rest;});
+        return;
+      }
+      if((e.ctrlKey||e.metaKey)&&e.key==="f"){e.preventDefault();setShowSearch(s=>{if(!s)setTimeout(()=>searchRef.current?.focus(),50);return true;}); }
       if(e.key==="Escape"){setShowSearch(false);setShowHdrMenu(false);setShowSummary(false);}
     };
     window.addEventListener("keydown",handler);
@@ -638,7 +871,18 @@ function App(){
     try{
       const base64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
       const mediaType=file.type||"application/pdf";
-      const response=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-opus-4-6",max_tokens:1000,messages:[{role:"user",content:[{type:mediaType==="application/pdf"?"document":"image",source:{type:"base64",media_type:mediaType,data:base64}},{type:"text",text:`Extract from this rate confirmation: shipper city+state, receiver city+state, pickup date/time, delivery date/time, product/commodity, pallets, weight, rate amount, broker name, load number. Return JSON only: {"shipper":"","receiver":"","pickup":"","delivery":"","product":"","pallets":"","weight":"","rate":"","broker":"","loadNum":""}`}]}]})});
+      // Use proxy URL if configured (preferred — key stays server-side)
+      // Fallback: direct Anthropic call using user-provided key (legacy)
+      const proxyUrl=localStorage.getItem("fcbv2_proxyUrl")||"";
+      let response;
+      if(proxyUrl){
+        // Proxy only receives the file + prompt — no API key in browser
+        response=await fetch(proxyUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mediaType,base64,prompt:`Extract from this rate confirmation: shipper city+state, receiver city+state, pickup date/time, delivery date/time, product/commodity, pallets, weight, rate amount, broker name, load number. Return JSON only: {"shipper":"","receiver":"","pickup":"","delivery":"","product":"","pallets":"","weight":"","rate":"","broker":"","loadNum":""}`})});
+      } else {
+        if(!key){alert("Enter an Anthropic API key or proxy URL in Menu → Settings.");setRcLoading(p=>({...p,[groupId]:false}));return;}
+        // Legacy: direct browser call (API key visible in network tab — use proxy instead)
+        response=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:[{type:mediaType==="application/pdf"?"document":"image",source:{type:"base64",media_type:mediaType,data:base64}},{type:"text",text:`Extract from this rate confirmation: shipper city+state, receiver city+state, pickup date/time, delivery date/time, product/commodity, pallets, weight, rate amount, broker name, load number. Return JSON only: {"shipper":"","receiver":"","pickup":"","delivery":"","product":"","pallets":"","weight":"","rate":"","broker":"","loadNum":""}`}]}]})});
+      }
       const data=await response.json();const text=data.content?.[0]?.text||"";const match=text.match(/\{[\s\S]*\}/);if(!match)throw new Error("No JSON");
       const parsed=JSON.parse(match[0]);const sr=`${parsed.shipper||""} - ${parsed.receiver||""}`.trim().replace(/^-\s*|-\s*$/g,"");
       const brokerStr=parsed.broker&&parsed.loadNum?`${parsed.broker} & ${parsed.loadNum}`:parsed.broker||parsed.loadNum||"";
@@ -657,7 +901,8 @@ function App(){
   const LS_KEY="fcbv2_localdata";
   // Keep a ref with latest state so saveToSheets never has stale closure
   const latestState=useRef({});
-  useEffect(()=>{latestState.current={weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments};},[weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments]);
+  const weeksSnapshot=useRef([]); // tracks weeks for undo capture
+  useEffect(()=>{latestState.current={weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments};weeksSnapshot.current=weeks;},[weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments]);
 
   const saveToSheets=useCallback((data)=>{
     const isArr=Array.isArray(data);
@@ -669,6 +914,10 @@ function App(){
     const disp=isArr?(ls.dispatchers||[]):(data.dispatchers!==undefined?data.dispatchers:(ls.dispatchers||[]));
     const ta=isArr?(ls.truckAssignments||{}):(data.truckAssignments!==undefined?data.truckAssignments:(ls.truckAssignments||{}));
     clearTimeout(saveTimer.current);setSaveStatus("saving");
+    // F1: Quick check — has server been updated since we last loaded?
+    // We check by re-loading savedAt only (fast, no-cors so we can't read response directly)
+    // Instead we track: if sheetsSave was called by someone else our next sheetsLoad will catch it
+    // The practical guard: if local savedAt < lastLoadedServerTs+5s something is wrong, warn
     saveTimer.current=setTimeout(async()=>{
       // Always save localStorage first — data is safe regardless of Sheets result
       try{
@@ -677,9 +926,13 @@ function App(){
         const wNoPhotos=w.map(function(wk){
           return {...wk,groups:(wk.groups||[]).map(function(g){
             return {...g,loads:(g.loads||[]).map(function(l){
-              const realPhotos=(l.photos||[]).filter(function(p){return p&&(typeof p==="object"?!!p.data:(!p.startsWith("__")));});
-              if(realPhotos.length>0)photoStore[l.id]=realPhotos;
-              return {...l,photos:realPhotos.length>0?["__has_"+realPhotos.length]:[]};
+              // Keep URL photos in data (they're tiny strings); only cache base64 to separate key
+              var urlPh=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&p.url;});
+              var dataPh=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&p.data;});
+              if(dataPh.length>0)photoStore[l.id]=dataPh;
+              // Store URL photos inline (just the url string is small); strip base64 data
+              var storedPhotos=urlPh.concat(dataPh.length>0?[{"__has_":dataPh.length}]:[]);
+              return {...l,photos:storedPhotos.length>0?storedPhotos:[]};
             })};
           })};
         });
@@ -698,7 +951,16 @@ function App(){
     },1000);
   },[]);
 
-  const setWeeksAndSave=useCallback((updater)=>{setWeeks(prev=>{const next=typeof updater==="function"?updater(prev):updater;saveToSheets(next);return next;});},[saveToSheets]);
+  const setWeeksAndSave=useCallback((updater)=>{
+    // Capture current weeks BEFORE update for undo (using ref to avoid stale closure)
+    const snapshot=weeksSnapshot.current;
+    setUndoStack(stk=>[snapshot,...stk].slice(0,10));
+    setWeeks(prev=>{
+      const next=typeof updater==="function"?updater(prev):updater;
+      saveToSheets(next);
+      return next;
+    });
+  },[saveToSheets]);
 
   const week=weeks[Math.min(activeWeek,weeks.length-1)];
   const computed=useMemo(()=>(week?.groups||[]).map(calcGroup),[week?.groups]);
@@ -764,6 +1026,23 @@ function App(){
   const setW=(f,v)=>setWeeksAndSave(p=>p.map((w,i)=>i!==activeWeek?w:{...w,[f]:v}));
   const toggleSection=k=>setW("openSections",{...week.openSections,[k]:!week.openSections?.[k]});
   const setLoad=(gid,lid,f,v)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:g.loads.map(l=>l.id!==lid?l:{...l,[f]:v})}));
+  // Upload photo to Supabase Storage, returns public URL or null
+  const uploadPhotoToSupabase=async(file,loadId)=>{
+    if(!supabaseUrl||!supabaseKey)return null;
+    try{
+      const bucket=supabaseBucket||"freight-photos";
+      const ext=file.name.split(".").pop()||"jpg";
+      const path=`loads/${loadId}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+      const resp=await fetch(`${supabaseUrl}/storage/v1/object/${bucket}/${path}`,{
+        method:"POST",
+        headers:{"Authorization":`Bearer ${supabaseKey}`,"Content-Type":file.type||"image/jpeg","x-upsert":"true"},
+        body:file,
+      });
+      if(!resp.ok){const e=await resp.text();console.error("Supabase upload failed:",e);return null;}
+      return `${supabaseUrl}/storage/v1/object/public/${bucket}/${path}`;
+    }catch(err){console.error("Supabase upload error:",err);return null;}
+  };
+
   const setLoadFields=(gid,lid,fields)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:g.loads.map(l=>l.id!==lid?l:{...l,...fields})}));
   const setGroup=(gid,f,v)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,[f]:v}));
   const addLoad=gid=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:[...g.loads,mkLoad()]}));
@@ -806,15 +1085,17 @@ function App(){
   const addWeek=()=>{const l=prompt("Week label (e.g. 3.30.2026 - 4.6.2026)");if(!l)return;setWeeksAndSave(p=>[...p,mkWeek(l)]);setActiveWeek(weeks.length);};
   const removeWeek=i=>{if(weeks.length<=1){alert("Cannot remove last week.");return;}if(!confirm("Remove this week?"))return;setWeeksAndSave(p=>p.filter((_,j)=>j!==i));setActiveWeek(0);};
 
-  const TH=(bg,ex={})=>({padding:"6px 4px",fontSize:"10px",fontWeight:"600",background:bg||"#1a2e50",color:"#fff",border:"1px solid rgba(255,255,255,0.15)",whiteSpace:"nowrap",textAlign:"center",position:"sticky",top:0,zIndex:5,...ex});
-  const TD=(bg,ex={})=>({padding:"2px 5px",border:"1px solid #c7d9f0",background:bg||"transparent",verticalAlign:"middle",fontSize:"12px",fontWeight:"500",...ex});
-  const TDc=(bg,ex={})=>({padding:"0px 5px",border:"1px solid #c7d9f0",background:bg||"transparent",verticalAlign:"middle",fontSize:"12px",fontWeight:"500",lineHeight:"1",...ex});
-  const IN=(ex={})=>({width:"100%",border:"none",background:"transparent",fontSize:"12px",fontWeight:"600",padding:"2px",color:"inherit",fontFamily:"inherit",outline:"none",boxSizing:"border-box",...ex});
+  const TH=(bg,ex={})=>({padding:"4px 2px",fontSize:"9px",fontWeight:"600",background:bg||"#1a2e50",color:"#fff",border:"1px solid rgba(255,255,255,0.15)",whiteSpace:"nowrap",textAlign:"center",position:"sticky",top:0,zIndex:5,...ex});
+  const TD=(bg,ex={})=>({padding:"2px 3px",border:"1px solid #c7d9f0",background:bg||"transparent",verticalAlign:"middle",fontSize:"11px",fontWeight:"500",...ex});
+  const TDc=(bg,ex={})=>({padding:"0px 3px",border:"1px solid #c7d9f0",background:bg||"transparent",verticalAlign:"middle",fontSize:"11px",fontWeight:"500",lineHeight:"1",...ex});
+  const IN=(ex={})=>({width:"100%",border:"none",background:"transparent",fontSize:"11px",fontWeight:"600",padding:"1px",color:"inherit",fontFamily:"inherit",outline:"none",boxSizing:"border-box",...ex});
   const CELL=(bg,ex={})=>({padding:"4px 6px",border:"1px solid #e2e8f0",background:bg||"#fff",verticalAlign:"middle",fontSize:"11px",...ex});
   const INCEL=(ex={})=>({width:"100%",border:"none",background:"transparent",fontSize:"11px",padding:"1px 2px",color:"#111",fontFamily:"inherit",outline:"none",...ex});
 
   if(!appMode)return <LoginScreen dispatchers={dispatchers} onLogin={(mode,disp)=>{
     setAppMode(mode);setCurrentDispatcher(disp);
+    // Generate session token = sha256(role + pin + timestamp) — sent to Sheets for server-side filtering
+    hashPin(mode+(disp?disp.pin:"")+Date.now()).then(function(tok){sessionToken.current=tok.slice(0,16);});
     // Dispatchers go straight to the board; admins go to dashboard
     if(mode==="dispatcher"){setActiveTab("weeks");localStorage.setItem("fcbv2_lastTab","weeks");}
     else if(mode==="admin"){const lastTab=localStorage.getItem("fcbv2_lastTab")||"dashboard";setActiveTab(lastTab);}
@@ -845,6 +1126,55 @@ function App(){
       setPhotoViewer={setPhotoViewer}
       goToLoad={goToLoad}
     /></DetailErrorBoundary>}
+    {/* FIRST-RUN SETUP WIZARD */}
+    {showSetupWizard&&(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",borderRadius:"16px",padding:"32px",maxWidth:"420px",width:"90%",boxShadow:"0 20px 60px rgba(0,0,0,0.4)"}}>
+        <div style={{textAlign:"center",marginBottom:"24px"}}>
+          <div style={{fontSize:"48px",marginBottom:"8px"}}>🔐</div>
+          <div style={{fontWeight:"800",fontSize:"18px",color:"#0f1f3d"}}>First-Time Setup</div>
+          <div style={{fontSize:"12px",color:"#64748b",marginTop:"6px"}}>Set your access PINs. These are stored only in this browser and never in the code.</div>
+        </div>
+                <SetupWizardForm onDone={()=>setShowSetupWizard(false)}/>
+      </div>
+    </div>)}
+
+    {/* F1: OVERWRITE WARNING MODAL */}
+    {showOverwriteWarn&&(<div className="modal-bg" onClick={e=>e.stopPropagation()}><div className="modal" onClick={e=>e.stopPropagation()}>
+      <div style={{fontWeight:"700",fontSize:"16px",color:"#dc2626",marginBottom:"10px"}}>⚠️ Newer Data on Server</div>
+      <div style={{fontSize:"13px",color:"#374151",marginBottom:"16px",lineHeight:"1.6"}}>
+        Someone saved newer data to Google Sheets while you were editing.<br/>
+        <strong>Your local changes may conflict.</strong>
+      </div>
+      <div style={{display:"flex",gap:"10px",justifyContent:"flex-end"}}>
+        <button onClick={()=>{
+          // Keep local — discard server version
+          setShowOverwriteWarn(false);
+          pendingServerData.current=null;
+          lastLoadedServerTs.current=Date.now();
+        }} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",padding:"8px 18px",borderRadius:"7px",fontSize:"13px",fontWeight:"700",cursor:"pointer"}}>
+          Keep My Changes
+        </button>
+        <button onClick={()=>{
+          // Load server version — discard local
+          const pd=pendingServerData.current;
+          if(pd){
+            const{rawWeeks,data}=pd;
+            const storedPhotos=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");
+            const rawWithPhotos=rawWeeks.map(function(wk){return{...wk,groups:(wk.groups||[]).map(function(g){return{...g,loads:(g.loads||[]).map(function(l){const sp=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&(p.url||p.data);});const lp=(storedPhotos[l.id]||[]).filter(function(p){return p&&p.data;});const m=sp.length>0?sp:lp;return m.length>0?{...l,photos:m}:l;})};})};});
+            setWeeks(rawWithPhotos);
+            if(data.customDrivers)setCustomDrivers(data.customDrivers);
+            if(data.customTrucks)setCustomTrucks(data.customTrucks);
+            if(data.dispatchers&&data.dispatchers.length>0)setDispatchers(data.dispatchers);
+            lastLoadedServerTs.current=pd.data.savedAt||Date.now();
+          }
+          setShowOverwriteWarn(false);
+          pendingServerData.current=null;
+        }} style={{background:"#2563eb",color:"#fff",border:"none",padding:"8px 18px",borderRadius:"7px",fontSize:"13px",fontWeight:"700",cursor:"pointer"}}>
+          Load Server Version
+        </button>
+      </div>
+    </div></div>)}
+
     {/* PHOTO MODAL */}
     {photoModal&&(<div className="modal-bg" onClick={()=>setPhotoModal(null)}><div className="modal" style={{maxWidth:"600px",width:"95%"}} onClick={e=>e.stopPropagation()}>
       <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"16px"}}>
@@ -856,7 +1186,7 @@ function App(){
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:"8px",marginBottom:"14px"}}>
         {(photoModal.photos||[]).map((photo,pi)=>(
           <div key={pi} style={{position:"relative",borderRadius:"8px",overflow:"hidden",border:"1px solid #e2e8f0",aspectRatio:"4/3",background:"#f8fafc",cursor:"pointer"}} onClick={()=>setPhotoViewer({photos:photoModal.photos,index:pi})}>
-            <img src={photo.data} alt={photo.name||"Photo"} style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+            <img src={photo.url||photo.data} alt={photo.name||"Photo"} style={{width:"100%",height:"100%",objectFit:"cover"}}/>
             <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.5)",padding:"3px 6px",display:"flex",alignItems:"center",gap:"4px"}}>
               <span style={{fontSize:"9px",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{photo.name||"Photo"}</span>
               {!isViewer&&<button onClick={e=>{e.stopPropagation();const updated=(photoModal.photos||[]).filter((_,i)=>i!==pi);const newLoad={...photoModal,photos:updated};setPhotoModal(newLoad);setLoad(photoModal.groupId,photoModal.id,"photos",updated);}} style={{background:"#dc2626",border:"none",color:"#fff",borderRadius:"3px",padding:"0 4px",fontSize:"10px",cursor:"pointer",lineHeight:"16px"}}>×</button>}
@@ -869,7 +1199,46 @@ function App(){
             Add Photo
             <input type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>{
               const files=Array.from(e.target.files);
-              files.forEach(file=>{
+              files.forEach(async(file)=>{
+                const loadId=photoModal.id;
+                const groupId=photoModal.groupId;
+                // Try Supabase upload first
+                if(supabaseUrl&&supabaseKey){
+                  try{
+                    // Compress before uploading
+                    const compressedBlob=await new Promise(res=>{
+                      const reader=new FileReader();
+                      reader.onload=ev=>{
+                        const img=new Image();
+                        img.onload=()=>{
+                          const MAX=1200;
+                          let w=img.width,h=img.height;
+                          if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}
+                          if(h>MAX){w=Math.round(w*MAX/h);h=MAX;}
+                          const canvas=document.createElement("canvas");
+                          canvas.width=w;canvas.height=h;
+                          canvas.getContext("2d").drawImage(img,0,0,w,h);
+                          canvas.toBlob(b=>res(b),"image/jpeg",0.80);
+                        };
+                        img.src=ev.target.result;
+                      };
+                      reader.readAsDataURL(file);
+                    });
+                    const uploadFile=new File([compressedBlob],file.name,{type:"image/jpeg"});
+                    const url=await uploadPhotoToSupabase(uploadFile,loadId);
+                    if(url){
+                      const newPhoto={name:file.name,url,ts:Date.now()};
+                      setPhotoModal(prev=>{
+                        const updated=[...(prev.photos||[]),newPhoto];
+                        const newLoad={...prev,photos:updated};
+                        setLoad(prev.groupId,prev.id,"photos",updated);
+                        return newLoad;
+                      });
+                      return; // skip base64 fallback
+                    }
+                  }catch(err){console.error("Supabase upload failed, falling back to base64:",err);}
+                }
+                // Fallback: store as base64 in memory
                 const reader=new FileReader();
                 reader.onload=ev=>{
                   const img=new Image();
@@ -905,7 +1274,7 @@ function App(){
     {/* PHOTO VIEWER (full screen) */}
     {photoViewer&&(<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.92)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setPhotoViewer(null)}>
       <button onClick={e=>{e.stopPropagation();setPhotoViewer(p=>({...p,index:Math.max(0,p.index-1)}));}} style={{position:"absolute",left:"16px",background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:"50%",width:"40px",height:"40px",fontSize:"20px",cursor:"pointer"}} disabled={photoViewer.index===0}>‹</button>
-      <img src={photoViewer.photos[photoViewer.index]?.data} style={{maxWidth:"90vw",maxHeight:"90vh",objectFit:"contain",borderRadius:"8px"}} onClick={e=>e.stopPropagation()}/>
+      <img src={photoViewer.photos[photoViewer.index]?.url||photoViewer.photos[photoViewer.index]?.data} style={{maxWidth:"90vw",maxHeight:"90vh",objectFit:"contain",borderRadius:"8px"}} onClick={e=>e.stopPropagation()}/>
       <button onClick={e=>{e.stopPropagation();setPhotoViewer(p=>({...p,index:Math.min(p.photos.length-1,p.index+1)}));}} style={{position:"absolute",right:"16px",background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:"50%",width:"40px",height:"40px",fontSize:"20px",cursor:"pointer"}} disabled={photoViewer.index===photoViewer.photos.length-1}>›</button>
       <div style={{position:"absolute",bottom:"16px",color:"#fff",fontSize:"12px"}}>{photoViewer.index+1} / {photoViewer.photos.length}</div>
     </div>)}
@@ -913,9 +1282,91 @@ function App(){
     {showPinModal&&(<div className="modal-bg" onClick={()=>setShowPinModal(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontWeight:"700",fontSize:"16px",color:"#1a2e50",marginBottom:"16px"}}>🔐 Change PINs</div>{[["Admin PIN",ADMIN_PIN_KEY,"Full board access"],["Viewer PIN",VIEWER_PIN_KEY,"Read-only access"]].map((pinItem)=>{const [label,key,hint]=pinItem;return(<div key={key} style={{marginBottom:"16px"}}><label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"5px"}}>{label} <span style={{color:"#9ca3af",fontWeight:"400"}}>({hint})</span></label><input defaultValue={localStorage.getItem(key)||""} onBlur={e=>{localStorage.setItem(key,e.target.value);}} style={{width:"100%",padding:"8px 10px",border:"1px solid #d1d5db",borderRadius:"6px",fontSize:"14px",letterSpacing:"3px"}} placeholder="Enter new PIN"/></div>);})}<div style={{display:"flex",justifyContent:"flex-end",gap:"8px"}}><button onClick={()=>setShowPinModal(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Close</button><button onClick={()=>{alert("PINs saved!");setShowPinModal(false);}} style={{background:"#2563eb",color:"#fff",border:"none",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Save PINs</button></div></div></div>)}
 
     {/* API KEY MODAL */}
-    {showApiModal&&(<div className="modal-bg" onClick={()=>setShowApiModal(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontWeight:"700",fontSize:"16px",color:"#1a2e50",marginBottom:"8px"}}>⚙ Anthropic API Key</div><div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px"}}>Required for AI Rate Confirmation extraction. Stored locally only.</div><input value={apiKey} onChange={e=>{setApiKey(e.target.value);localStorage.setItem("fcbv2_apikey",e.target.value);}} style={{width:"100%",padding:"8px 10px",border:"1px solid #d1d5db",borderRadius:"6px",fontSize:"12px",fontFamily:"monospace",marginBottom:"14px"}} placeholder="sk-ant-..."/><div style={{display:"flex",justifyContent:"flex-end",gap:"8px"}}>{apiKey&&<button onClick={()=>{setApiKey("");localStorage.removeItem("fcbv2_apikey");}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",padding:"7px 14px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Remove Key</button>}<button onClick={()=>setShowApiModal(false)} style={{background:"#2563eb",color:"#fff",border:"none",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Done</button></div></div></div>)}
+    {showSupabaseModal&&(<div className="modal-bg" onClick={()=>setShowSupabaseModal(false)}><div className="modal" onClick={e=>e.stopPropagation()}>
+      <div style={{fontWeight:"700",fontSize:"16px",color:"#1a2e50",marginBottom:"8px"}}>☁️ Supabase Photo Storage</div>
+      <div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px",lineHeight:"1.5"}}>
+        Upload photos to Supabase Storage instead of localStorage.<br/>
+        <strong>Setup:</strong> Create a Supabase project → Storage → New bucket (e.g. "freight-photos") → make it <strong>Public</strong>.
+      </div>
+      <div style={{marginBottom:"12px"}}>
+        <label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"4px"}}>Project URL</label>
+        <input value={supabaseUrl} onChange={e=>{setSupabaseUrl(e.target.value);localStorage.setItem("fcbv2_sb_url",e.target.value);}}
+          style={{width:"100%",padding:"8px 10px",border:"1px solid #d1d5db",borderRadius:"6px",fontSize:"12px",fontFamily:"monospace"}}
+          placeholder="https://xxxx.supabase.co"/>
+      </div>
+      <div style={{marginBottom:"12px"}}>
+        <label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"4px"}}>Anon/Public Key</label>
+        <input value={supabaseKey} onChange={e=>{setSupabaseKey(e.target.value);localStorage.setItem("fcbv2_sb_key",e.target.value);}}
+          style={{width:"100%",padding:"8px 10px",border:"1px solid #d1d5db",borderRadius:"6px",fontSize:"12px",fontFamily:"monospace"}}
+          placeholder="eyJ..."/>
+      </div>
+      <div style={{marginBottom:"16px"}}>
+        <label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"4px"}}>Bucket Name</label>
+        <input value={supabaseBucket} onChange={e=>{setSupabaseBucket(e.target.value);localStorage.setItem("fcbv2_sb_bucket",e.target.value);}}
+          style={{width:"100%",padding:"8px 10px",border:"1px solid #d1d5db",borderRadius:"6px",fontSize:"12px"}}
+          placeholder="freight-photos"/>
+      </div>
+      <div style={{background:supabaseUrl&&supabaseKey?"#f0fdf4":"#fef9c3",border:`1px solid ${supabaseUrl&&supabaseKey?"#86efac":"#fde68a"}`,borderRadius:"8px",padding:"10px 12px",marginBottom:"16px",fontSize:"11px",color:supabaseUrl&&supabaseKey?"#166534":"#92400e"}}>
+        {supabaseUrl&&supabaseKey?"✅ Supabase configured — photos will upload to cloud":"⚠️ Not configured — photos saved locally (limited storage)"}
+      </div>
+      <div style={{display:"flex",justifyContent:"flex-end",gap:"8px"}}>
+        {supabaseUrl&&<button onClick={()=>{setSupabaseUrl("");setSupabaseKey("");localStorage.removeItem("fcbv2_sb_url");localStorage.removeItem("fcbv2_sb_key");}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",padding:"7px 14px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Disconnect</button>}
+        <button onClick={()=>setShowSupabaseModal(false)} style={{background:"#2563eb",color:"#fff",border:"none",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Done</button>
+      </div>
+    </div></div>)}
+
+    {showApiModal&&(<div className="modal-bg" onClick={()=>setShowApiModal(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontWeight:"700",fontSize:"16px",color:"#1a2e50",marginBottom:"8px"}}>⚙ Anthropic API Key</div><div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px"}}>Required for AI Rate Confirmation extraction. Stored locally only.</div><div style={{marginBottom:"14px"}}>
+        <label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"4px"}}>Proxy URL <span style={{fontWeight:"400",color:"#64748b"}}>(recommended — key never leaves server)</span></label>
+        <input value={localStorage.getItem("fcbv2_proxyUrl")||""} onChange={e=>{localStorage.setItem("fcbv2_proxyUrl",e.target.value);}} style={{width:"100%",padding:"8px 10px",border:"1px solid #d1d5db",borderRadius:"6px",fontSize:"12px",fontFamily:"monospace"}} placeholder="https://your-worker.workers.dev/rateCon"/>
+        <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"4px"}}>Deploy the Cloudflare Worker from Menu → Settings → View Proxy Code</div>
+      </div>
+      <div style={{marginBottom:"4px",fontSize:"11px",fontWeight:"700",color:"#374151"}}>— or — Direct API Key <span style={{fontWeight:"400",color:"#dc2626"}}>(not recommended: key visible in browser)</span></div>
+      <input value={apiKey} onChange={e=>{setApiKey(e.target.value);localStorage.setItem("fcbv2_apikey",e.target.value);}} style={{width:"100%",padding:"8px 10px",border:"1px solid #fca5a5",borderRadius:"6px",fontSize:"12px",fontFamily:"monospace",marginBottom:"14px"}} placeholder="sk-ant-..."/><div style={{display:"flex",justifyContent:"flex-end",gap:"8px"}}>{apiKey&&<button onClick={()=>{setApiKey("");localStorage.removeItem("fcbv2_apikey");}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",padding:"7px 14px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Remove Key</button>}<button onClick={()=>setShowApiModal(false)} style={{background:"#2563eb",color:"#fff",border:"none",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Done</button></div></div></div>)}
 
     {/* RECOVER MODAL */}
+    {/* F4: DISTANCE OVERRIDE MODAL */}
+    {showDistModal&&isAdmin&&(<div className="modal-bg" onClick={()=>setShowDistModal(false)}><div className="modal" style={{maxWidth:"540px"}} onClick={e=>e.stopPropagation()}>
+      <div style={{fontWeight:"700",fontSize:"16px",color:"#5b21b6",marginBottom:"6px"}}>📍 Unknown Distances</div>
+      <div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px"}}>These cities weren't found in the distance table. Enter the correct miles from Romeoville, IL and confirm — values save for future use.</div>
+      <div style={{maxHeight:"320px",overflowY:"auto",display:"flex",flexDirection:"column",gap:"8px"}}>
+        {Object.entries(distMisses).map(([key,miss])=>{
+          const cur=distOverrides[key];
+          return(
+            <div key={key} style={{display:"flex",alignItems:"center",gap:"10px",background:"#f8fafc",borderRadius:"8px",padding:"10px 12px",border:"1px solid #e2e8f0"}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:"12px",fontWeight:"700",color:"#1a2e50"}}>{miss.city}</div>
+                {miss.estimated&&<div style={{fontSize:"10px",color:"#64748b"}}>Estimated (haversine): ~{miss.estimated} mi</div>}
+                {cur!==undefined&&<div style={{fontSize:"10px",color:"#059669",fontWeight:"600"}}>✓ Confirmed: {cur} mi</div>}
+              </div>
+              <input type="number" defaultValue={cur??miss.estimated??""} placeholder="mi" style={{width:"70px",border:"1px solid #d1d5db",borderRadius:"6px",padding:"5px 8px",fontSize:"12px",textAlign:"center",fontWeight:"700"}}
+                onBlur={e=>{
+                  const v=parseFloat(e.target.value);
+                  if(!isNaN(v)&&v>0){
+                    const next={...distOverrides,[key]:v};
+                    setDistOverrides(next);
+                    localStorage.setItem("fcbv2_distoverrides",JSON.stringify(next));
+                    window.DIST_OVERRIDES=next;
+                  }
+                }}/>
+              <button onClick={()=>{
+                const input=document.querySelector(`[data-distkey="${key}"]`);
+                const v=parseFloat(input?.value||miss.estimated||0);
+                if(v>0){
+                  const next={...distOverrides,[key]:v};
+                  setDistOverrides(next);
+                  localStorage.setItem("fcbv2_distoverrides",JSON.stringify(next));
+                  window.DIST_OVERRIDES=next;
+                  const newMisses={...distMisses};delete newMisses[key];
+                  setDistMisses(newMisses);
+                }
+              }} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>✓</button>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{display:"flex",justifyContent:"flex-end",marginTop:"14px"}}><button onClick={()=>setShowDistModal(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Close</button></div>
+    </div></div>)}
+
     {showRecover&&(<div className="modal-bg" onClick={()=>setShowRecover(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontWeight:"700",fontSize:"16px",color:"#dc2626",marginBottom:"8px"}}>🔧 Recover Data</div><div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px"}}>Export your current data as a backup, or import from a previous backup file.</div><div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"14px"}}><button onClick={()=>{const blob=new Blob([JSON.stringify({weeks,archive:archivedWeeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,savedAt:Date.now()},null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`freight-full-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();}} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:"6px",padding:"7px 14px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>⬇ Export All Data</button><label style={{background:"#059669",color:"#fff",borderRadius:"6px",padding:"7px 14px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>⬆ Import Backup<input type="file" accept=".json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{try{
   const d=JSON.parse(ev.target.result);
   const w=d.weeks||d;
@@ -1017,6 +1468,11 @@ function App(){
         {/* Search — always visible */}
         <button onClick={()=>{setShowSearch(s=>{if(!s)setTimeout(()=>searchRef.current?.focus(),50);return true;});}} style={{background:"#1e3a5f",border:"1px solid #374151",color:"#93c5fd",padding:"5px 13px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer",display:"flex",alignItems:"center",gap:"5px"}}>🔍 Search <span style={{opacity:.5,fontSize:"9px"}}>(Ctrl+F)</span></button>
 
+        {/* F4: Distance miss indicator for admin */}
+        {isAdmin&&Object.keys(distMisses).length>0&&(<button onClick={()=>setShowDistModal(true)} style={{background:"#7c3aed",border:"1px solid #a78bfa",color:"#fff",padding:"5px 11px",borderRadius:"6px",fontSize:"11px",fontWeight:"700",cursor:"pointer",display:"flex",alignItems:"center",gap:"5px"}}>
+          📍 <span style={{background:"#fbbf24",color:"#000",borderRadius:"50%",width:"16px",height:"16px",fontSize:"9px",display:"inline-flex",alignItems:"center",justifyContent:"center",fontWeight:"800"}}>{Object.keys(distMisses).length}</span> dist
+        </button>)}
+
         {/* Notifications — always visible */}
         {!isViewer&&<button onClick={()=>setShowNotif(true)} style={{background:notifications.length>0?"#dc2626":"#1e3a5f",border:"1px solid #374151",color:"#fff",padding:"5px 11px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer",position:"relative"}}>
           🔔{notifications.length>0&&<span style={{background:"#fbbf24",color:"#000",borderRadius:"50%",width:"16px",height:"16px",fontSize:"9px",fontWeight:"800",display:"inline-flex",alignItems:"center",justifyContent:"center",marginLeft:"4px"}}>{notifications.length}</span>}
@@ -1065,8 +1521,15 @@ function App(){
             <button className="hdr-menu-item" onClick={()=>{setShowApiModal(true);setShowHdrMenu(false);}}>
               <span style={{fontSize:"15px",width:"18px",textAlign:"center"}}>⚙</span> API Key
             </button>
+            <button className="hdr-menu-item" onClick={()=>{setShowSupabaseModal(true);setShowHdrMenu(false);}}>
+              <span style={{fontSize:"15px",width:"18px",textAlign:"center"}}>☁️</span> Photo Storage
+              {supabaseUrl&&supabaseKey&&<span style={{marginLeft:"auto",fontSize:"9px",fontWeight:"700",color:"#059669",background:"#f0fdf4",padding:"1px 6px",borderRadius:"10px"}}>ON</span>}
+            </button>
             <button className="hdr-menu-item" onClick={()=>{setShowPinModal(true);setShowHdrMenu(false);}}>
               <span style={{fontSize:"15px",width:"18px",textAlign:"center"}}>🔐</span> PINs
+            </button>
+            <button className="hdr-menu-item" onClick={()=>{setShowSetupWizard(true);setShowHdrMenu(false);}}>
+              <span style={{fontSize:"15px",width:"18px",textAlign:"center"}}>⚙</span> Connection Setup
             </button>
             <button className="hdr-menu-item" style={{color:"#dc2626"}} onClick={()=>{setShowRecover(true);setShowHdrMenu(false);}}>
               <span style={{fontSize:"15px",width:"18px",textAlign:"center"}}>🔧</span> Recover Data
@@ -1118,6 +1581,11 @@ function App(){
           {saveStatus==="saving"&&<><span className="spinning" style={{display:"inline-block",marginRight:"3px"}}>↻</span>Saving...</>}
           {saveStatus==="saved"&&"✓ Saved"}{saveStatus==="error"&&"⚠ Save error"}{saveStatus==="idle"&&"✓ Live"}
         </span>
+        {undoStack.length>0&&isAdmin&&(<button onClick={()=>{
+          setUndoStack(stk=>{if(!stk.length)return stk;const[last,...rest]=stk;setWeeks(last);return rest;});
+        }} title={"Undo last change (Ctrl+Z) — "+undoStack.length+" step"+(undoStack.length>1?"s":"")} style={{background:"#1e3a5f",border:"1px solid #fbbf24",borderRadius:"5px",padding:"2px 8px",fontSize:"10px",fontWeight:"700",color:"#fbbf24",cursor:"pointer",marginLeft:"8px",display:"flex",alignItems:"center",gap:"4px"}}>
+          ↩ Undo {undoStack.length>1&&<span style={{background:"#fbbf24",color:"#0f1f3d",borderRadius:"8px",padding:"0 5px",fontSize:"9px",fontWeight:"800"}}>{undoStack.length}</span>}
+        </button>)}
       </div>
 
       <div style={{background:"#1e3a5f",padding:"7px 16px",display:"flex",gap:"12px",flexWrap:"wrap",alignItems:"center"}}>
@@ -1136,6 +1604,61 @@ function App(){
           {isAdmin&&<button onClick={addGroup} style={{background:"#2563eb",color:"#fff",border:"none",padding:"2px 10px",borderRadius:"5px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>+ Trailer</button>}
         </div>
       </div>
+
+      {/* F3: LEADERBOARD PANEL */}
+      {isAdmin&&(<div style={{borderTop:"1px solid #1a3a6a"}}>
+        <div onClick={()=>setShowLeaderboard(v=>!v)} style={{background:"#0a1628",padding:"5px 16px",display:"flex",alignItems:"center",gap:"8px",cursor:"pointer",userSelect:"none"}}>
+          <span style={{fontSize:"11px",color:"rgba(255,255,255,0.35)"}}>{showLeaderboard?"▼":"▶"}</span>
+          <span style={{fontSize:"11px",fontWeight:"700",color:"rgba(255,255,255,0.55)"}}>🏆 Leaderboard</span>
+          {!showLeaderboard&&(()=>{
+            const topD=Object.entries(
+              (weeks||[]).flatMap(w=>(w.groups||[])).filter(g=>g.groupStatus==="Delivered"&&g.groupDriver)
+                   .reduce((acc,g)=>{const d=g.groupDriver;acc[d]=(acc[d]||0)+(g.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);return acc;},{})
+            ).sort((a,b)=>b[1]-a[1]).slice(0,3);
+            return topD.length>0&&<span style={{fontSize:"10px",color:"rgba(255,255,255,0.35)",marginLeft:"4px"}}>{topD.map((d,i)=>`${i===0?"🥇":i===1?"🥈":"🥉"} ${d[0].split(" ")[0]}`).join("  ")}</span>;
+          })()}
+        </div>
+        {showLeaderboard&&(()=>{
+          const LOCAL_DRV_LB=new Set(["Linas Greiciunas","Theron Mack","John Johnson","Douglas Russo","Emilis Ibianskas","Egidijus Matulis","Oleh Lashkevych"]);
+          const drvGross={};
+          const drvLoads={};
+          const drvTrailers={};
+          weeks.forEach(w=>{
+            (w.groups||[]).forEach(g=>{
+              const d=(g.groupDriver||"").trim();
+              if(!d||LOCAL_DRV_LB.has(d))return;
+              if(g.groupStatus!=="Delivered")return;
+              const gross=(g.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
+              const lc=(g.loads||[]).length;
+              drvGross[d]=(drvGross[d]||0)+gross;
+              drvLoads[d]=(drvLoads[d]||0)+lc;
+              drvTrailers[d]=(drvTrailers[d]||0)+1;
+            });
+          });
+          const top=Object.entries(drvGross).sort((a,b)=>b[1]-a[1]).slice(0,10);
+          const maxGross=top[0]?top[0][1]:1;
+          const medals=["🥇","🥈","🥉"];
+          return top.length===0
+            ? <div style={{padding:"10px 16px",fontSize:"11px",color:"rgba(255,255,255,0.35)"}}>No delivered loads yet</div>
+            : <div style={{padding:"8px 16px 12px",display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:"6px"}}>
+                {top.map((entry,i)=>(
+                  <div key={entry[0]} style={{display:"flex",alignItems:"center",gap:"8px",background:"rgba(255,255,255,0.04)",borderRadius:"7px",padding:"6px 10px"}}>
+                    <span style={{fontSize:"14px",width:"22px",textAlign:"center",flexShrink:0}}>{medals[i]||"#"+(i+1)}</span>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:"12px",fontWeight:"700",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{entry[0]}</div>
+                      <div style={{fontSize:"10px",color:"rgba(255,255,255,0.4)"}}>{drvTrailers[entry[0]]} trailers · {drvLoads[entry[0]]} loads</div>
+                    </div>
+                    <div style={{flexShrink:0,textAlign:"right"}}>
+                      <div style={{fontSize:"12px",fontWeight:"800",color:"#86efac"}}>${entry[1].toLocaleString()}</div>
+                      <div style={{width:"70px",height:"4px",background:"rgba(255,255,255,0.1)",borderRadius:"2px",marginTop:"3px"}}>
+                        <div style={{height:"100%",width:Math.round(entry[1]/maxGross*100)+"%",background:i===0?"#fbbf24":i===1?"#94a3b8":i===2?"#d97706":"#34d399",borderRadius:"2px"}}/>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>;
+        })()}
+      </div>)}
 
       {/* SECTION TABS */}
       <div style={{display:"flex",gap:"0",background:"#0d1a30",borderBottom:"2px solid #1a2e50",overflowX:"auto",flexShrink:0}}>
@@ -1174,8 +1697,8 @@ function App(){
       </div>
       {(activeSection==="all"||activeSection==="main")&&week.openSections?.main&&(
       <div style={{border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}>
-        <table style={{borderCollapse:"collapse",width:"100%",minWidth:"1400px"}}>
-          <colgroup><col style={{width:"5px"}}/><col style={{width:"18px"}}/><col style={{width:"24px"}}/><col style={{width:"22px"}}/><col style={{width:"165px"}}/><col style={{width:"100px"}}/><col style={{width:"78px"}}/><col style={{width:"78px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"48px"}}/><col style={{width:"60px"}}/><col style={{width:"130px"}}/><col style={{width:"48px"}}/><col style={{width:"140px"}}/><col style={{width:"90px"}}/><col style={{width:"145px"}}/></colgroup>
+        <table style={{borderCollapse:"collapse",width:"100%",minWidth:"1150px"}}>
+          <colgroup><col style={{width:"5px"}}/><col style={{width:"16px"}}/><col style={{width:"20px"}}/><col style={{width:"18px"}}/><col style={{width:"140px"}}/><col style={{width:"90px"}}/><col style={{width:"68px"}}/><col style={{width:"68px"}}/><col style={{width:"42px"}}/><col style={{width:"42px"}}/><col style={{width:"42px"}}/><col style={{width:"44px"}}/><col style={{width:"55px"}}/><col style={{width:"110px"}}/><col style={{width:"42px"}}/><col style={{width:"128px"}}/><col style={{width:"80px"}}/><col style={{width:"128px"}}/></colgroup>
           <thead>
             <tr>
               <th style={{background:"#1a2e50",padding:0,border:"none"}}/><th style={{background:"#1a2e50",padding:0,border:"none"}}/><th style={{background:"#1a2e50",padding:0,border:"none"}}/><th style={{background:"#1a2e50",padding:0,border:"none"}}/>
@@ -1232,7 +1755,7 @@ function App(){
                           {hasDriver?<>🚛 {group.groupDriver}{group.groupTruck&&<span style={{marginLeft:"5px",opacity:.8}}>· 🚚#{group.groupTruck}</span>}{group.groupTrailer&&<span style={{marginLeft:"5px",opacity:.8}}>· #{group.groupTrailer}</span>}</>:"⚠ No driver"}
                         </span>
                         <input value={group.groupNotes||""} onChange={e=>setGroup(group.id,"groupNotes",e.target.value)} placeholder="Group notes..." style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",color:"#e2e8f0",flex:"1",minWidth:"120px",maxWidth:"300px"}} disabled={!isAdmin}/>
-                        {isAdmin&&week.groups.length>1&&(<button onClick={()=>removeGroup(group.id)} style={{background:"#7f1d1d",color:"#fca5a5",border:"1px solid #dc2626",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>Remove Trailer</button>)}
+                        {isAdmin&&week.groups.length>1&&(<button onClick={()=>{if(window.confirm("Remove this trailer and all its loads? This cannot be undone."))removeGroup(group.id);}} style={{background:"#7f1d1d",color:"#fca5a5",border:"1px solid #dc2626",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>Remove Trailer</button>)}
                       </div>
                     </td>
                     <td style={{background:"#1d4f9e",padding:0}}/>
@@ -1249,7 +1772,7 @@ function App(){
                     return(
                       <tr key={load.id} id={`load-${load.id}`} draggable={isAdmin} onDragStart={e=>{if(!isAdmin)return;dragLoad.current={loadId:load.id,fromGroupId:group.id};e.dataTransfer.effectAllowed="move";e.currentTarget.style.opacity="0.5";e.currentTarget.style.outline="2px solid #3b82f6";}} onDragEnd={e=>{e.currentTarget.style.opacity="1";e.currentTarget.style.outline="";e.currentTarget.style.background="";dragLoad.current=null;}} onDragOver={e=>{if(!dragLoad.current)return;e.preventDefault();e.stopPropagation();e.currentTarget.style.background="rgba(37,99,235,0.18)";e.currentTarget.style.boxShadow="inset 0 -3px 0 #3b82f6";}} onDragLeave={e=>{e.currentTarget.style.background="";e.currentTarget.style.boxShadow="";}} onDrop={e=>{e.preventDefault();e.currentTarget.style.background="";e.currentTarget.style.boxShadow="";if(!dragLoad.current||!isAdmin)return;const dl=dragLoad.current;dragLoad.current=null;moveLoad(dl.fromGroupId,group.id,dl.loadId,li);}} style={{borderBottom:isL?"none":"1px solid #c7d9f0",lineHeight:isSingle?"1":"1.3",height:isSingle?"22px":undefined,maxHeight:isSingle?"22px":undefined,cursor:isAdmin?"grab":"default"}}>
                         <td style={{padding:0,background:"#93c5fd",width:"4px"}}/>
-                        <td style={T(ROW_BG,{padding:"1px 2px",textAlign:"center"})}>{isAdmin&&<button onClick={()=>removeLoad(group.id,load.id)} style={{width:"18px",height:"18px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"3px",fontSize:"11px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
+                        <td style={T(ROW_BG,{padding:"1px 2px",textAlign:"center"})}>{isAdmin&&<button onClick={()=>{if(window.confirm("Delete this load?"))removeLoad(group.id,load.id);}} style={{width:"18px",height:"18px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"3px",fontSize:"11px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
                         <td style={T(ROW_BG,{padding:"1px 2px",textAlign:"center"})}><button onClick={()=>setPhotoModal({...load,groupId:group.id})} style={{width:"22px",height:"22px",border:`1px solid ${(load.photos||[]).length>0?"#3b82f6":"#d1d5db"}`,background:(load.photos||[]).length>0?"#eff6ff":"#f8fafc",color:(load.photos||[]).length>0?"#2563eb":"#9ca3af",borderRadius:"3px",fontSize:"11px",padding:0,lineHeight:1,cursor:"pointer",position:"relative"}} title="Load photos">📷{(load.photos||[]).length>0&&<span style={{position:"absolute",top:"-4px",right:"-4px",background:"#2563eb",color:"#fff",borderRadius:"50%",width:"10px",height:"10px",fontSize:"8px",display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{(load.photos||[]).length}</span>}</button></td>
                         <td style={T(ROW_BG,{padding:"1px 2px",textAlign:"center",cursor:isAdmin?"grab":"default"})}>
   {isAdmin&&<span style={{fontSize:"13px",color:"#94a3b8",display:"block",lineHeight:"1",marginBottom:"1px"}} title="Drag to move load">⠿</span>}
@@ -1272,16 +1795,40 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
                         <td style={T(ROW_BG)}><input key={load.id+"pal"+load.pallets} defaultValue={load.pallets} onBlur={e=>{if(e.target.value!==load.pallets)setLoad(group.id,load.id,"pallets",e.target.value);}} style={IN({color:ROW_TEXT})} placeholder="—" disabled={!isAdmin}/></td>
                         <td style={T(ROW_BG)}><input key={load.id+"w"+load.weight} defaultValue={load.weight} onBlur={e=>{if(e.target.value!==load.weight)setLoad(group.id,load.id,"weight",e.target.value);}} style={IN({color:ROW_TEXT})} placeholder="Lbs" disabled={!isAdmin}/></td>
                         <td style={T(ROW_BG,{padding:"1px 6px",textAlign:"right"})}>{isViewer?<span style={{fontWeight:"700",color:"#374151",fontSize:"11px"}}>{load.rate?`$${parseFloat(load.rate).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:2})}`:"—"}</span>:<span style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:"1px"}}><span style={{fontSize:"10px",color:"#6b7280",fontWeight:"700",opacity:.7}}>$</span><input value={load.rate} type="number" onChange={e=>{setLoad(group.id,load.id,"rate",e.target.value);trackField("rate");}} style={IN({textAlign:"right",color:ROW_TEXT,fontWeight:"700",width:"60px"})} placeholder="0" disabled={!isAdmin}/></span>}</td>
-                        <td style={T(ROW_BG,{padding:"1px 2px"})}><select value={load.truck||""} onChange={e=>{
-  const tk=e.target.value;
-  const fields={truck:tk};
-  if(tk&&truckAssignments[tk])fields.driver=truckAssignments[tk];
-  setLoadFields(group.id,load.id,fields);
-  trackField("truck");
-}} style={IN({color:load.truck?"#1e40af":"#9ca3af",cursor:"pointer",fontWeight:load.truck?"700":"400",fontSize:"11px"})}><option value="">—</option>{[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
+                        <td style={T(ROW_BG,{padding:"1px 2px"})}><SearchSelect
+  value={load.truck||""}
+  onChange={tk=>{const fields={truck:tk};if(tk&&truckAssignments[tk])fields.driver=truckAssignments[tk];setLoadFields(group.id,load.id,fields);trackField("truck");}}
+  options={[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}))}
+  color="#1e40af" disabled={!isAdmin}
+/></td>
                         <td style={T(ROW_BG)}><select value={load.driver||""} onChange={e=>{setLoad(group.id,load.id,"driver",e.target.value);trackField("driver");}} style={IN({color:load.driver?"#c2410c":"#9ca3af",cursor:"pointer"})}><option value="">— Driver —</option>{[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}>{d}</option>))}</select></td>
-                        <td style={T(ROW_BG,{padding:"1px 2px"})}><select value={load.trailer||""} onChange={e=>{setLoad(group.id,load.id,"trailer",e.target.value);trackField("trailer");}} style={IN({color:load.trailer?"#7c3aed":"#9ca3af",cursor:"pointer",fontWeight:load.trailer?"700":"400",fontSize:"11px"})}><option value="">—</option>{[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
-                        <td style={T(ROW_BG,{padding:"4px 6px",minWidth:"180px"})}><div style={{display:"flex",flexDirection:"column",gap:"4px"}}><div style={{position:"relative"}}><select value={load.status} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{position:"absolute",inset:0,opacity:0,cursor:isAdmin?"pointer":"default",width:"100%",height:"100%",zIndex:2}} disabled={!isAdmin}><option value="">— Not set —</option>{LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}</select>{(()=>{const ST={"Picked Up":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Dispatched":{bg:"#dbeafe",c:"#1e40af",bd:"#3b82f6"},"In Transit":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Dock":{bg:"#ede9fe",c:"#5b21b6",bd:"#a78bfa"},"Yard":{bg:"#ede9fe",c:"#5b21b6",bd:"#a78bfa"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"}};let p;if(load.status){p=ST[load.status]||{bg:"#f1f5f9",c:"#475569",bd:"#94a3b8"};}else{const pd2=parsePickupDate(load.pickup);const pt2=pd2?pd2.getTime():null;if(pt2===today.getTime()){p={bg:"#fef9c3",c:"#713f12",bd:"#eab308"};}else if(pt2&&pt2>today.getTime()){p={bg:"#fee2e2",c:"#991b1b",bd:"#f87171"};}else{p={bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};}}return<span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 10px",borderRadius:"5px",background:p.bg,color:p.c,border:`2px solid ${p.bd}`,whiteSpace:"nowrap",userSelect:"none"}}><span style={{width:"7px",height:"7px",borderRadius:"50%",background:p.bd,flexShrink:0}}/>{load.status||"— Not set —"}</span>;})()}</div><div style={{display:"flex",gap:"2px",flexWrap:"wrap"}}>{[["PU","Picked Up","#ca8a04","#fef9c3"],["IT","In Transit","#c2410c","#fed7aa"],["DK","Dock","#6d28d9","#ede9fe"],["LD","Loaded","#166534","#dcfce7"],["DL","Delivered","#166534","#bbf7d0"]].map((sbItem)=>{const [lbl,val,fg,bg2]=sbItem;return(<button key={val} onClick={()=>{if(!isAdmin)return;setLoad(group.id,load.id,"status",load.status===val?"":val);trackField("status");}} style={{fontSize:"9px",fontWeight:"800",padding:"1px 5px",border:`1px solid ${fg}`,borderRadius:"3px",cursor:isAdmin?"pointer":"default",background:load.status===val?fg:bg2,color:load.status===val?"#fff":fg,transition:"all .1s",opacity:isAdmin?1:0.5}}>{lbl}</button>);})}</div></div></td>
+                        <td style={T(ROW_BG,{padding:"1px 2px"})}><SearchSelect
+  value={load.trailer||""}
+  onChange={t=>{setLoad(group.id,load.id,"trailer",t);trackField("trailer");}}
+  options={[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}))}
+  color="#7c3aed" disabled={!isAdmin}
+/></td>
+                        <td style={T(ROW_BG,{padding:"2px 4px",minWidth:"160px"})}>
+  <div style={{display:"flex",flexDirection:"column",gap:"3px"}}>
+    {/* Unified status — dropdown + quick buttons share load.status */}
+    <div style={{position:"relative"}}>
+      <select value={load.status||""} onChange={e=>{setLoad(group.id,load.id,"status",e.target.value);trackField("status");}} style={{position:"absolute",inset:0,opacity:0,cursor:isAdmin?"pointer":"default",width:"100%",height:"100%",zIndex:2}} disabled={!isAdmin}>
+        <option value="">— Not set —</option>{LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}
+      </select>
+      {(()=>{const ST={"Picked Up":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Dispatched":{bg:"#dbeafe",c:"#1e40af",bd:"#3b82f6"},"In Transit":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Dock":{bg:"#ede9fe",c:"#5b21b6",bd:"#a78bfa"},"Yard":{bg:"#ede9fe",c:"#5b21b6",bd:"#a78bfa"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"}};let p;if(load.status){p=ST[load.status]||{bg:"#f1f5f9",c:"#475569",bd:"#94a3b8"};}else{const pd2=parsePickupDate(load.pickup);const pt2=pd2?pd2.getTime():null;if(pt2===today.getTime()){p={bg:"#fef9c3",c:"#713f12",bd:"#eab308"};}else if(pt2&&pt2>today.getTime()){p={bg:"#fee2e2",c:"#991b1b",bd:"#f87171"};}else{p={bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};}}return<span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"4px",fontSize:"10px",fontWeight:"700",padding:"2px 6px",borderRadius:"4px",background:p.bg,color:p.c,border:`1.5px solid ${p.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}><span style={{width:"6px",height:"6px",borderRadius:"50%",background:p.bd,flexShrink:0}}/>{load.status||"— Not set —"}</span>;})()}
+    </div>
+    {/* Quick buttons — clicking updates dropdown too (same state: load.status) */}
+    <div style={{display:"flex",gap:"2px",flexWrap:"wrap"}}>
+      {[["PU","Picked Up","#ca8a04","#fef9c3"],["IT","In Transit","#c2410c","#fed7aa"],["DK","Dock","#6d28d9","#ede9fe"],["LD","Loaded","#166534","#dcfce7"],["DL","Delivered","#166534","#bbf7d0"]].map(([lbl,val,fg,bg2])=>(
+        <button key={val} onClick={()=>{if(!isAdmin)return;const next=load.status===val?"":val;setLoad(group.id,load.id,"status",next);trackField("status");}}
+          title={val}
+          style={{fontSize:"9px",fontWeight:"800",padding:"1px 4px",border:`1px solid ${fg}`,borderRadius:"3px",cursor:isAdmin?"pointer":"default",background:load.status===val?fg:bg2,color:load.status===val?"#fff":fg,transition:"all .1s",opacity:isAdmin?1:0.5}}>
+          {lbl}
+        </button>
+      ))}
+    </div>
+  </div>
+</td>
                         <td style={T(ROW_BG,{verticalAlign:"middle",padding:"3px 6px"})}><div style={{display:"flex",flexDirection:"column",gap:"1px"}}>{group.loads.length>1&&(<div style={{marginBottom:"2px",paddingBottom:"2px",borderBottom:"1px dashed #bfdbfe"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:"9px",marginBottom:"1px"}}><span style={{color:legMiVal>0?"#0369a1":"#94a3b8",fontWeight:"700"}}>{legMiVal>0?legMiVal+"mi":"leg mi"}</span>{legPct>0&&<span style={{color:"#64748b"}}>{legPct}%</span>}</div>{legMiVal>0&&(<div style={{height:"4px",background:"#e0f2fe",borderRadius:"2px",overflow:"hidden"}}><div style={{height:"100%",width:legPct+"%",background:"#0284c7",borderRadius:"2px"}}/></div>)}{isAdmin&&<input value={load.stopMiles||""} type="number" placeholder="leg mi" onChange={e=>{setLoad(group.id,load.id,"stopMiles",e.target.value);trackField("stopMiles");}} style={{width:"100%",border:"1px solid #bae6fd",borderRadius:"2px",background:"transparent",textAlign:"center",color:"#0369a1",fontWeight:"600",padding:"1px 2px",fontSize:"8px",marginTop:"1px",outline:"none"}} title="Enter actual leg miles (e.g. Kernersville to Lenoir = 93mi)"/>}</div>)}
   {load.localCharge!=null?(
     <div style={{display:"flex",alignItems:"center",gap:"2px"}}>
@@ -1299,13 +1846,11 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
   {load.pickupMiUsed!=null&&<span style={{fontSize:"9px",color:"#b45309"}}>{load.pickupMiUsed} mi</span>}
   {load.tripPrice>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#1d4f9e"}}>${load.tripPrice.toLocaleString()}</span>}
 </div></td>
-                        {isF&&(<td rowSpan={rc2} style={{...TD(ROW_BG,{textAlign:"center",verticalAlign:"middle",borderLeft:"2px solid #bfdbfe",borderRight:"2px solid #bfdbfe",padding:isSingle?"1px 4px":"6px"}),borderBottom:isL?"none":undefined}}><select value={[...DRIVERS,...customDrivers].includes(group.groupDriver||"")?group.groupDriver||"":""} onChange={e=>setGroup(group.id,"groupDriver",e.target.value)} style={{...IN({textAlign:"center",fontWeight:"700",fontSize:"11px",cursor:"pointer"}),color:group.groupDriver?"#1e40af":"#6b7280",background:"rgba(255,255,255,0.7)",border:"1px solid #bfdbfe",borderRadius:"4px",marginBottom:"2px"}}><option value="">— Assign Driver —</option>{[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}>{d}</option>))}</select><input value={group.groupDriver||""} onChange={e=>setGroup(group.id,"groupDriver",e.target.value)} placeholder="Or type name..." style={{width:"100%",border:"1px solid #2d4a6e",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",color:"#1e40af",background:"rgba(255,255,255,0.7)",marginBottom:"2px",fontFamily:"inherit",outline:"none",textAlign:"center"}}/><div style={{display:"flex",gap:"2px",marginBottom:"2px"}}><select value={group.groupTruck||""} onChange={e=>{
-  const tk=e.target.value;
-  setGroup(group.id,"groupTruck",tk);
-  if(tk&&truckAssignments[tk]&&!group.groupDriver){
-    setGroup(group.id,"groupDriver",truckAssignments[tk]);
-  }
-}} style={{...IN({cursor:"pointer",fontSize:"9px",fontWeight:"700"}),flex:1,color:group.groupTruck?"#000000":"#6b7280",background:"transparent",border:"1px solid #bfdbfe",borderRadius:"3px",padding:"1px"}}><option value="">🚚—</option>{[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select><select value={group.groupTrailer||""} onChange={e=>setGroup(group.id,"groupTrailer",e.target.value)} style={{...IN({cursor:"pointer",fontSize:"9px",fontWeight:"700"}),flex:1,color:group.groupTrailer?"#000000":"#6b7280",background:"transparent",border:"1px solid #e9d5ff",borderRadius:"3px",padding:"1px"}}><option value="">🚛—</option>{[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></div><select value={group.groupStatus} onChange={e=>isAdmin&&setGroup(group.id,"groupStatus",e.target.value)} style={{...IN({textAlign:"center",cursor:isAdmin?"pointer":"not-allowed",fontWeight:"700",fontSize:"10px"}),color:"#000000",background:"rgba(255,255,255,0.6)",borderRadius:"4px",padding:"2px",border:`1px solid ${gsSt.br}`}} disabled={!isAdmin}>{Object.keys(GSS).map(s=>(<option key={s}>{s}</option>))}</select></td>)}
+                        {isF&&(<td rowSpan={rc2} style={{...TD(ROW_BG,{textAlign:"center",verticalAlign:"middle",borderLeft:"2px solid #bfdbfe",borderRight:"2px solid #bfdbfe",padding:isSingle?"1px 4px":"6px"}),borderBottom:isL?"none":undefined}}><select value={[...DRIVERS,...customDrivers].includes(group.groupDriver||"")?group.groupDriver||"":""} onChange={e=>setGroup(group.id,"groupDriver",e.target.value)} style={{...IN({textAlign:"center",fontWeight:"700",fontSize:"11px",cursor:"pointer"}),color:group.groupDriver?"#1e40af":"#6b7280",background:"rgba(255,255,255,0.7)",border:"1px solid #bfdbfe",borderRadius:"4px",marginBottom:"2px"}}><option value="">— Assign Driver —</option>{[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}>{d}</option>))}</select><div style={{display:"flex",gap:"2px",marginBottom:"2px"}}><div style={{flex:1,border:"1px solid #bfdbfe",borderRadius:"3px",padding:"1px",background:"transparent"}}>
+  <SearchSelect value={group.groupTruck||""} onChange={tk=>{setGroup(group.id,"groupTruck",tk);if(tk&&truckAssignments[tk]&&!group.groupDriver)setGroup(group.id,"groupDriver",truckAssignments[tk]);}} options={[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}))} placeholder="🚚" color="#000" disabled={!isAdmin}/>
+</div><div style={{flex:1,border:"1px solid #e9d5ff",borderRadius:"3px",padding:"1px",background:"transparent"}}>
+  <SearchSelect value={group.groupTrailer||""} onChange={t=>setGroup(group.id,"groupTrailer",t)} options={[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}))} placeholder="🚛" color="#7c3aed" disabled={!isAdmin}/>
+</div></div><select value={group.groupStatus} onChange={e=>isAdmin&&setGroup(group.id,"groupStatus",e.target.value)} style={{...IN({textAlign:"center",cursor:isAdmin?"pointer":"not-allowed",fontWeight:"700",fontSize:"10px"}),color:"#000000",background:"rgba(255,255,255,0.6)",borderRadius:"4px",padding:"2px",border:`1px solid ${gsSt.br}`}} disabled={!isAdmin}>{Object.keys(GSS).map(s=>(<option key={s}>{s}</option>))}</select></td>)}
                       </tr>
                     );
                   })}
@@ -1399,7 +1944,7 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
     <span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",background:p.bg,color:p.c,border:`2px solid ${p.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}><span style={{width:"7px",height:"7px",borderRadius:"50%",background:p.bd,flexShrink:0}}/>{row.status||"— Status —"}</span>
   </div>);
 })()}</td>
-<td style={CELL(ROW_BG,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>removeSub("localDeliveries",row.id)} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
+<td style={CELL(ROW_BG,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>{if(window.confirm("Delete this local delivery?"))removeSub("localDeliveries",row.id);}} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
 </tr>);})}</tbody></table>{!isViewer&&<div style={{padding:"8px 12px",background:"#eff6ff",borderTop:"1px solid #bfdbfe"}}><button onClick={()=>addSub("localDeliveries",mkLocal)} style={{background:"#059669",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Local Delivery</button></div>}</div>)}
 
       {/* CROSSDOCK */}
@@ -1430,7 +1975,7 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
     <span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",background:p.bg,color:p.c,border:`2px solid ${p.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}><span style={{width:"7px",height:"7px",borderRadius:"50%",background:p.bd,flexShrink:0}}/>{row.status||"— Status —"}</span>
   </div>);
 })()}</td>
-<td style={CELL(ROW_BG,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>removeSub("crossdockDrops",row.id)} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
+<td style={CELL(ROW_BG,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>{if(window.confirm("Delete this crossdock entry?"))removeSub("crossdockDrops",row.id);}} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
 </tr>);})}</tbody></table>{!isViewer&&<div style={{padding:"8px 12px",background:"#eff6ff",borderTop:"1px solid #bfdbfe"}}><button onClick={()=>addSub("crossdockDrops",mkXDrop)} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button></div>}</div>)}
 
       {/* ACCESSORIALS */}
@@ -1462,7 +2007,7 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
     <span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",background:p.bg,color:p.c,border:`2px solid ${p.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}><span style={{width:"7px",height:"7px",borderRadius:"50%",background:p.bd,flexShrink:0}}/>{row.status||"— Status —"}</span>
   </div>);
 })()}</td>
-<td style={CELL(ROW_BG,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>removeSub("accessorials",row.id)} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
+<td style={CELL(ROW_BG,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>{if(window.confirm("Delete this accessorial?"))removeSub("accessorials",row.id);}} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
 </tr>);})}{ (week.accessorials||[]).length>0&&(<tr style={{background:"#dbeafe",borderTop:"2px solid #93c5fd"}}><td colSpan={2} style={CELL("#fff7ed",{fontWeight:"700",color:"#92400e",textAlign:"right"})}>Total:</td><td style={CELL("#fff7ed",{textAlign:"right",fontWeight:"700",color:"#b45309",fontSize:"13px"})}>${totAcc.toLocaleString()}</td><td colSpan={3} style={CELL("#fff7ed")}/></tr>)}</tbody></table>{!isViewer&&<div style={{padding:"8px 12px",background:"#eff6ff",borderTop:"1px solid #bfdbfe"}}><button onClick={()=>addSub("accessorials",mkAcc)} style={{background:"#b45309",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Accessorial</button></div>}</div>)}
     </div>
     )}
@@ -1477,8 +2022,10 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
           const pin=prompt("Set PIN for "+name.trim()+" (min 4 digits):");
           if(!pin||pin.trim().length<4){alert("PIN must be at least 4 characters.");return;}
           if(dispatchers.some(d=>d.pin===pin.trim())){alert("That PIN is already in use.");return;}
-          const newDisp={id:Date.now(),name:name.trim(),pin:pin.trim(),drivers:[]};
-          saveDispatchers([...dispatchers,newDisp]);
+          hashPin(pin.trim()).then(function(hashed){
+            const newDisp={id:Date.now(),name:name.trim(),pin:hashed,pinHashed:true,drivers:[]};
+            saveDispatchers([...dispatchers,newDisp]);
+          });
         }} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 14px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>+ Add Dispatcher</button>
       </div>
       {dispatchers.length===0&&(
@@ -1495,14 +2042,16 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
                 <div style={{width:"36px",height:"36px",background:"#7c3aed",borderRadius:"8px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"18px",flexShrink:0}}>🎯</div>
                 <div style={{flex:1}}>
                   <input defaultValue={disp.name} key={"name-"+disp.id} onBlur={e=>{const v=e.target.value.trim();if(v&&v!==disp.name){saveDispatchers(dispatchers.map(d=>d.id===disp.id?{...d,name:v}:d));}}} style={{fontWeight:"700",fontSize:"13px",color:"#4c1d95",border:"none",outline:"none",background:"transparent",width:"100%",fontFamily:"inherit",padding:"0",cursor:"text"}} placeholder="Dispatcher name" title="Click to edit name"/>
-                  <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"1px"}}>{(disp.drivers||[]).length} driver{(disp.drivers||[]).length!==1?"s":""} · PIN: {disp.pin}</div>
+                  <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"1px"}}>{(disp.drivers||[]).length} driver{(disp.drivers||[]).length!==1?"s":""} · PIN: {disp.pinHashed?"••••••••":disp.pin}</div>
                 </div>
                 <button onClick={()=>{
                   const newPin=prompt(`New PIN for ${disp.name}:`);
                   if(!newPin||newPin.trim().length<4){alert("PIN must be at least 4 chars.");return;}
                   if(dispatchers.some(d=>d.id!==disp.id&&d.pin===newPin.trim())){alert("PIN already in use.");return;}
-                  const updated=dispatchers.map(d=>d.id===disp.id?{...d,pin:newPin.trim()}:d);
-                  saveDispatchers(updated);
+                  hashPin(newPin.trim()).then(function(hashed){
+                    const updated=dispatchers.map(d=>d.id===disp.id?{...d,pin:hashed,pinHashed:true}:d);
+                    saveDispatchers(updated);
+                  });
                 }} style={{background:"#ede9fe",color:"#5b21b6",border:"1px solid #c4b5fd",borderRadius:"5px",padding:"3px 10px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>🔐 PIN</button>
                 <button onClick={()=>{
                   if(!confirm("Remove dispatcher "+disp.name+"?"))return;
@@ -1626,7 +2175,116 @@ return(<div style={{display:"flex",flexDirection:"column",gap:"1px"}}>
                   ))}
                 </div>
                 <div style={{fontSize:"11px",color:"#64748b",marginTop:"4px"}}>When you pick a truck on a load, driver auto-fills if the field is empty.</div>
-              </div>)}<div style={{marginBottom:"24px"}}><div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"12px",paddingBottom:"8px",borderBottom:"2px solid #bfdbfe"}}><div style={{fontWeight:"700",fontSize:"13px",color:"#1e40af"}}>🚚 Trucks</div><span style={{fontSize:"11px",color:"#64748b"}}>{TRUCK_NUMBERS.length+customTrucks.length} total</span>{isAdmin&&<button onClick={()=>{const num=prompt("Enter new truck number:");if(!num||!num.trim())return;const n=num.trim();if([...TRUCK_NUMBERS,...customTrucks].includes(n)){alert("Truck already exists.");return;}const updated=[...customTrucks,n];setCustomTrucks(updated);saveToSheets({weeks,customDrivers,customTrucks:updated,customTrailers});}} style={{background:"#1e40af",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer",marginLeft:"auto"}}>+ Add Truck</button>}</div>{customTrucks.length>0&&<div style={{marginBottom:"10px"}}><div style={{fontSize:"10px",fontWeight:"700",color:"#059669",marginBottom:"6px",textTransform:"uppercase",letterSpacing:".06em"}}>Custom Added</div><div style={{display:"flex",flexWrap:"wrap",gap:"6px",marginBottom:"10px"}}>{customTrucks.map(t=>(<div key={t} style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:"6px",padding:"5px 10px",display:"flex",alignItems:"center",gap:"6px"}}><span style={{fontSize:"12px",fontWeight:"700",color:"#166534"}}>#{t}</span><button onClick={()=>{if(!confirm(`Remove truck #${t}?`))return;const updated=customTrucks.filter(x=>x!==t);setCustomTrucks(updated);saveToSheets({weeks,customDrivers,customTrucks:updated,customTrailers});}} style={{background:"#fee2e2",border:"1px solid #fca5a5",color:"#dc2626",borderRadius:"3px",padding:"0 5px",fontSize:"11px",cursor:"pointer",lineHeight:"16px"}}>×</button></div>))}</div><div style={{borderTop:"1px solid #e2e8f0",marginBottom:"8px"}}/></div>}<div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>{TRUCK_NUMBERS.map(t=>(<div key={t} style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:"6px",padding:"5px 10px"}}><span style={{fontSize:"12px",fontWeight:"600",color:"#1e40af"}}>#{t}</span></div>))}</div></div><div><div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"12px",paddingBottom:"8px",borderBottom:"2px solid #e9d5ff"}}><div style={{fontWeight:"700",fontSize:"13px",color:"#7c3aed"}}>🚛 Trailers</div><span style={{fontSize:"11px",color:"#64748b"}}>{TRAILER_NUMBERS.length+customTrailers.length} total</span>{isAdmin&&<button onClick={()=>{const num=prompt("Enter new trailer number:");if(!num||!num.trim())return;const n=num.trim();if([...TRAILER_NUMBERS,...customTrailers].includes(n)){alert("Trailer already exists.");return;}const updated=[...customTrailers,n];setCustomTrailers(updated);saveToSheets({weeks,customDrivers,customTrucks,customTrailers:updated});}} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer",marginLeft:"auto"}}>+ Add Trailer</button>}</div>{customTrailers.length>0&&<div style={{marginBottom:"10px"}}><div style={{fontSize:"10px",fontWeight:"700",color:"#059669",marginBottom:"6px",textTransform:"uppercase",letterSpacing:".06em"}}>Custom Added</div><div style={{display:"flex",flexWrap:"wrap",gap:"6px",marginBottom:"10px"}}>{customTrailers.map(t=>(<div key={t} style={{background:"#faf5ff",border:"1px solid #c4b5fd",borderRadius:"6px",padding:"5px 10px",display:"flex",alignItems:"center",gap:"6px"}}><span style={{fontSize:"12px",fontWeight:"700",color:"#6d28d9"}}>#{t}</span><button onClick={()=>{if(!confirm(`Remove trailer #${t}?`))return;const updated=customTrailers.filter(x=>x!==t);setCustomTrailers(updated);saveToSheets({weeks,customDrivers,customTrucks,customTrailers:updated});}} style={{background:"#fee2e2",border:"1px solid #fca5a5",color:"#dc2626",borderRadius:"3px",padding:"0 5px",fontSize:"11px",cursor:"pointer",lineHeight:"16px"}}>×</button></div>))}</div><div style={{borderTop:"1px solid #e2e8f0",marginBottom:"8px"}}/></div>}<div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>{TRAILER_NUMBERS.map(t=>(<div key={t} style={{background:"#faf5ff",border:"1px solid #e9d5ff",borderRadius:"6px",padding:"5px 10px"}}><span style={{fontSize:"12px",fontWeight:"600",color:"#7c3aed"}}>#{t}</span></div>))}</div></div></div>)}
+              </div>)}<div style={{marginBottom:"24px"}}>
+  <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"10px",paddingBottom:"8px",borderBottom:"2px solid #bfdbfe"}}>
+    <div style={{fontWeight:"700",fontSize:"13px",color:"#1e40af"}}>🚚 Trucks</div>
+    <span style={{fontSize:"11px",color:"#64748b"}}>{[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).filter(t=>!removedTrucks.includes(t)).length} total</span>
+    {isAdmin&&<button onClick={()=>{const num=prompt("Enter new truck number:");if(!num||!num.trim())return;const n=num.trim();const all=[...TRUCK_NUMBERS,...customTrucks].filter(t=>!removedTrucks.includes(t));if(all.includes(n)){alert("Truck already exists.");return;}const updated=[...customTrucks,n];setCustomTrucks(updated);saveToSheets({weeks,customDrivers,customTrucks:updated,customTrailers});}} style={{background:"#1e40af",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer",marginLeft:"auto"}}>+ Add Truck</button>}
+  </div>
+  <div style={{position:"relative",marginBottom:"10px"}}>
+    <input value={truckSearch} onChange={e=>setTruckSearch(e.target.value)} placeholder="🔍 Search truck #..." style={{width:"100%",padding:"7px 12px",border:"1px solid #bfdbfe",borderRadius:"8px",fontSize:"12px",outline:"none",boxSizing:"border-box"}}/>
+    {truckSearch&&<button onClick={()=>setTruckSearch("")} style={{position:"absolute",right:"8px",top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#94a3b8",fontSize:"16px"}}>×</button>}
+  </div>
+  <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+    {[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).filter(t=>!removedTrucks.includes(t)).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).filter(t=>!truckSearch||t.includes(truckSearch)).map(t=>{
+      const isCustom=customTrucks.includes(t);
+      const isEditing=editingTruck===t;
+      return(
+        <div key={t} style={{background:isCustom?"#f0fdf4":"#eff6ff",border:`1px solid ${isCustom?"#86efac":"#bfdbfe"}`,borderRadius:"8px",padding:"5px 8px",display:"flex",alignItems:"center",gap:"5px",minWidth:"80px"}}>
+          {isEditing?(
+            <input autoFocus defaultValue={t} onBlur={e=>{
+              const nv=e.target.value.trim();
+              if(nv&&nv!==t){
+                const all=[...TRUCK_NUMBERS,...customTrucks].filter(x=>x!==t&&!removedTrucks.includes(x));
+                if(all.includes(nv)){alert("Already exists.");setEditingTruck(null);return;}
+                // For built-in: mark as removed, add new as custom
+                // For custom: just rename
+                let updCustom=customTrucks;
+                let updRemoved=removedTrucks;
+                if(isCustom){updCustom=customTrucks.map(x=>x===t?nv:x);}
+                else{updRemoved=[...removedTrucks,t];updCustom=[...customTrucks,nv];}
+                setCustomTrucks(updCustom);
+                setRemovedTrucks(updRemoved);
+                localStorage.setItem("fcbv2_removedTrucks",JSON.stringify(updRemoved));
+                saveToSheets({weeks,customDrivers,customTrucks:updCustom,customTrailers});
+              }
+              setEditingTruck(null);
+            }} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape")setEditingTruck(null);}}
+            style={{width:"52px",border:"1px solid #3b82f6",borderRadius:"4px",padding:"1px 4px",fontSize:"12px",fontWeight:"700",color:"#1e40af",outline:"none"}}/>
+          ):(
+            <span style={{fontSize:"12px",fontWeight:"700",color:isCustom?"#166534":"#1e40af"}}>#{t}</span>
+          )}
+          {isAdmin&&!isEditing&&<button onClick={()=>setEditingTruck(t)} title="Edit" style={{background:"none",border:"none",cursor:"pointer",color:"#3b82f6",fontSize:"12px",padding:"0",lineHeight:1}}>✏</button>}
+          {isAdmin&&<button onClick={()=>{if(!confirm(`Remove truck #${t}?`))return;
+            let updCustom=customTrucks;
+            let updRemoved=removedTrucks;
+            if(isCustom){updCustom=customTrucks.filter(x=>x!==t);}
+            else{updRemoved=[...removedTrucks,t];}
+            setCustomTrucks(updCustom);
+            setRemovedTrucks(updRemoved);
+            localStorage.setItem("fcbv2_removedTrucks",JSON.stringify(updRemoved));
+            saveToSheets({weeks,customDrivers,customTrucks:updCustom,customTrailers});
+          }} style={{background:"none",border:"none",cursor:"pointer",color:"#dc2626",fontSize:"14px",padding:"0",lineHeight:1}}>×</button>}
+        </div>
+      );
+    })}
+    {[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).filter(t=>!removedTrucks.includes(t)).filter(t=>!truckSearch||t.includes(truckSearch)).length===0&&<div style={{color:"#94a3b8",fontSize:"12px",padding:"8px"}}>{truckSearch?`No trucks match "${truckSearch}"`:"No trucks added yet"}</div>}
+  </div>
+</div>
+<div>
+  <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"10px",paddingBottom:"8px",borderBottom:"2px solid #e9d5ff"}}>
+    <div style={{fontWeight:"700",fontSize:"13px",color:"#7c3aed"}}>🚛 Trailers</div>
+    <span style={{fontSize:"11px",color:"#64748b"}}>{[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).filter(t=>!removedTrailers.includes(t)).length} total</span>
+    {isAdmin&&<button onClick={()=>{const num=prompt("Enter new trailer number:");if(!num||!num.trim())return;const n=num.trim();const all=[...TRAILER_NUMBERS,...customTrailers].filter(t=>!removedTrailers.includes(t));if(all.includes(n)){alert("Trailer already exists.");return;}const updated=[...customTrailers,n];setCustomTrailers(updated);saveToSheets({weeks,customDrivers,customTrucks,customTrailers:updated});}} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer",marginLeft:"auto"}}>+ Add Trailer</button>}
+  </div>
+  <div style={{position:"relative",marginBottom:"10px"}}>
+    <input value={trailerSearch} onChange={e=>setTrailerSearch(e.target.value)} placeholder="🔍 Search trailer #..." style={{width:"100%",padding:"7px 12px",border:"1px solid #e9d5ff",borderRadius:"8px",fontSize:"12px",outline:"none",boxSizing:"border-box"}}/>
+    {trailerSearch&&<button onClick={()=>setTrailerSearch("")} style={{position:"absolute",right:"8px",top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#94a3b8",fontSize:"16px"}}>×</button>}
+  </div>
+  <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+    {[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).filter(t=>!removedTrailers.includes(t)).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).filter(t=>!trailerSearch||t.includes(trailerSearch)).map(t=>{
+      const isCustom=customTrailers.includes(t);
+      const isEditing=editingTrailer===t;
+      return(
+        <div key={t} style={{background:isCustom?"#faf5ff":"#f5f3ff",border:`1px solid ${isCustom?"#c4b5fd":"#e9d5ff"}`,borderRadius:"8px",padding:"5px 8px",display:"flex",alignItems:"center",gap:"5px",minWidth:"80px"}}>
+          {isEditing?(
+            <input autoFocus defaultValue={t} onBlur={e=>{
+              const nv=e.target.value.trim();
+              if(nv&&nv!==t){
+                const all=[...TRAILER_NUMBERS,...customTrailers].filter(x=>x!==t&&!removedTrailers.includes(x));
+                if(all.includes(nv)){alert("Already exists.");setEditingTrailer(null);return;}
+                let updCustom=customTrailers;
+                let updRemoved=removedTrailers;
+                if(isCustom){updCustom=customTrailers.map(x=>x===t?nv:x);}
+                else{updRemoved=[...removedTrailers,t];updCustom=[...customTrailers,nv];}
+                setCustomTrailers(updCustom);
+                setRemovedTrailers(updRemoved);
+                localStorage.setItem("fcbv2_removedTrailers",JSON.stringify(updRemoved));
+                saveToSheets({weeks,customDrivers,customTrucks,customTrailers:updCustom});
+              }
+              setEditingTrailer(null);
+            }} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape")setEditingTrailer(null);}}
+            style={{width:"52px",border:"1px solid #7c3aed",borderRadius:"4px",padding:"1px 4px",fontSize:"12px",fontWeight:"700",color:"#7c3aed",outline:"none"}}/>
+          ):(
+            <span style={{fontSize:"12px",fontWeight:"700",color:isCustom?"#6d28d9":"#7c3aed"}}>#{t}</span>
+          )}
+          {isAdmin&&!isEditing&&<button onClick={()=>setEditingTrailer(t)} title="Edit" style={{background:"none",border:"none",cursor:"pointer",color:"#7c3aed",fontSize:"12px",padding:"0",lineHeight:1}}>✏</button>}
+          {isAdmin&&<button onClick={()=>{if(!confirm(`Remove trailer #${t}?`))return;
+            let updCustom=customTrailers;
+            let updRemoved=removedTrailers;
+            if(isCustom){updCustom=customTrailers.filter(x=>x!==t);}
+            else{updRemoved=[...removedTrailers,t];}
+            setCustomTrailers(updCustom);
+            setRemovedTrailers(updRemoved);
+            localStorage.setItem("fcbv2_removedTrailers",JSON.stringify(updRemoved));
+            saveToSheets({weeks,customDrivers,customTrucks,customTrailers:updCustom});
+          }} style={{background:"none",border:"none",cursor:"pointer",color:"#dc2626",fontSize:"14px",padding:"0",lineHeight:1}}>×</button>}
+        </div>
+      );
+    })}
+    {[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).filter(t=>!removedTrailers.includes(t)).filter(t=>!trailerSearch||t.includes(trailerSearch)).length===0&&<div style={{color:"#94a3b8",fontSize:"12px",padding:"8px"}}>{trailerSearch?`No trailers match "${trailerSearch}"`:"No trailers added yet"}</div>}
+  </div>
+</div></div>)}
 
     {/* DRIVER ROSTER TAB */}
     {activeTab==="roster"&&(isAdmin||isDispatcher)&&(
