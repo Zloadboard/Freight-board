@@ -3187,7 +3187,8 @@ ${accRows.length>0?`
               const st=stMatch?stMatch[1]:null;
               if(st)states[st]=(states[st]||0)+1;
             });
-            return{gross,loc,acc,localDel,trailers,loads:loads.length,allMi:Math.round(allMi),netGross,rpm,drivers,states};
+            const extraAdded=grps.filter(g=>(g.loads||[]).length>1).reduce((s,g)=>{const rates=(g.loads||[]).map(l=>parseFloat(l.tripPrice||l.rate)||0).sort((a,b)=>b-a);return s+rates.slice(1).reduce((x,r)=>x+r,0);},0);
+          return{gross,loc,acc,localDel,trailers,loads:loads.length,allMi:Math.round(allMi),netGross,rpm,drivers,states,extraAdded};
           };
           const cur=calcWk(curWk);
           const prev=calcWk(prevWk);
@@ -3204,6 +3205,7 @@ ${accRows.length>0?`
             {label:"Net Revenue",cur:cur.netGross,prev:prev.netGross,icon:"🏆",color:"#166534",bg:"#dcfce7",fmt:v=>"$"+v.toLocaleString()},
             {label:"Avg $/mi",cur:cur.rpm,prev:prev.rpm,icon:"📍",color:"#7c3aed",bg:"#faf5ff",fmt:v=>v?"$"+v+"/mi":"—"},
             {label:"Miles Driven",cur:cur.allMi,prev:prev.allMi,icon:"🛣",color:"#374151",bg:"#f8fafc",fmt:v=>v>0?v.toLocaleString()+" mi":"—"},
+            {label:"Extra Added",cur:cur.extraAdded,prev:prev.extraAdded,icon:"⭐",color:"#b45309",bg:"#fffbeb",fmt:v=>v>0?"$"+v.toLocaleString():"$0"},
           ];
           const allStates=Object.keys({...cur.states,...prev.states});
           // Top Drivers — across ALL weeks filtered by date range
@@ -3364,7 +3366,11 @@ ${accRows.length>0?`
                   </div>
                   <div style={{fontSize:"15px",fontWeight:"800",color:card.textColor,marginBottom:"12px"}}>{(weeks[card.idx]||{}).label||"—"}</div>
                   <div style={{display:"flex",gap:"16px",flexWrap:"wrap"}}>
-                    <div><div style={{fontSize:"22px",fontWeight:"900",color:card.numColors[0]}}>${card.data.netGross.toLocaleString()}</div><div style={{fontSize:"11px",color:card.subColor,fontWeight:"600"}}>Net Revenue</div></div>
+                    <div>
+                      <div style={{fontSize:"22px",fontWeight:"900",color:card.numColors[0]}}>${card.data.netGross.toLocaleString()}</div>
+                      <div style={{fontSize:"11px",color:card.subColor,fontWeight:"600"}}>Net Revenue</div>
+                      <div style={{fontSize:"11px",color:"rgba(255,255,255,.45)",marginTop:"2px"}}>Gross: ${card.data.gross.toLocaleString()}</div>
+                    </div>
                     <div><div style={{fontSize:"22px",fontWeight:"900",color:card.numColors[1]}}>{card.data.loads}</div><div style={{fontSize:"11px",color:card.subColor,fontWeight:"600"}}>Loads</div></div>
                     <div><div style={{fontSize:"22px",fontWeight:"900",color:card.numColors[2]}}>{card.data.trailers}</div><div style={{fontSize:"11px",color:card.subColor,fontWeight:"600"}}>Trailers</div></div>
                     <div><div style={{fontSize:"22px",fontWeight:"900",color:card.numColors[3]}}>{card.data.rpm?("$"+card.data.rpm+"/mi"):"—"}</div><div style={{fontSize:"11px",color:card.subColor,fontWeight:"600"}}>Rate/Mile</div></div>
