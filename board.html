@@ -345,7 +345,7 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
         {!mode?(
           <>
             <button className="mode-btn" onClick={()=>setMode("admin")} style={{justifyContent:"center"}}><div className="mode-icon" style={{background:"#1e3a5f"}}>🔐</div><div style={{textAlign:"center"}}><div style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>Admin Access</div></div></button>
-            <button className="mode-btn" onClick={()=>setMode("dispatcher")} style={{justifyContent:"center"}}><div className="mode-icon" style={{background:"#1e3a5f",fontSize:"15px"}}>🎯</div><div style={{textAlign:"center"}}><div style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>Dispatcher</div></div></button>
+            
             <button className="mode-btn" onClick={()=>onLogin("viewer",null)} style={{justifyContent:"center"}}><div className="mode-icon" style={{background:"#064e3b"}}>👁</div><div style={{textAlign:"center"}}><div style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>View Dashboard</div></div></button>
           </>
         ):(
@@ -595,7 +595,7 @@ function LoadDetailPanel({loadDetailId,weeks,isAdmin,isDispatcher,canSeeBroker,s
 }
 
 function App(){
-  const[appMode,setAppMode]=useState(null);
+  const[appMode,setAppMode]=useState("viewer"); // default: everyone starts as viewer
   const sessionToken=React.useRef(""); // role session token sent to Sheets
   const[weeks,setWeeks]=useState([]);
   const[activeWeek,setActiveWeek]=useState(0);
@@ -2264,14 +2264,14 @@ ${accRows.length>0?`
               <div style={{padding:"8px",display:"flex",flexDirection:"column",gap:"6px"}}>
                 {combined.length===0&&<div style={{fontSize:"11px",color:"#94a3b8",textAlign:"center",padding:"14px 8px",border:"1px dashed #e2e8f0",borderRadius:"6px",lineHeight:"1.5"}}>No combined loads.<br/><span style={{fontSize:"10px"}}>Click → Combined on<br/>any multi-stop trailer.</span></div>}
                 {[...combined].sort((a,b)=>{
-                  const ORDER={Preplanned:0,"Not dispatched":1,Future:2,Ready:3};
+                  const ORDER={Preplanned:0,"Not dispatched":1,Loaded:2,Future:3,Ready:4};
                   return (ORDER[a.combinedStatus||"Preplanned"]||0)-(ORDER[b.combinedStatus||"Preplanned"]||0);
                 }).map((group)=>{
                   const gGross=(group.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
                   const gi=(week.groups||[]).indexOf(group);
-                  const COMBINED_STATUSES=["Preplanned","Future","Not dispatched","Ready"];
+                  const COMBINED_STATUSES=["Preplanned","Future","Not dispatched","Loaded","Ready"];
                   const cSt=group.combinedStatus||"Preplanned";
-                  const cStStyle={Preplanned:{bg:"#f1f5f9",c:"#475569",bd:"#94a3b8"},Future:{bg:"#f5f3ff",c:"#5b21b6",bd:"#a78bfa"},"Not dispatched":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},Ready:{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"}}[cSt]||{bg:"#f1f5f9",c:"#475569",bd:"#94a3b8"};
+                  const cStStyle={Preplanned:{bg:"#f1f5f9",c:"#475569",bd:"#94a3b8"},Future:{bg:"#f5f3ff",c:"#5b21b6",bd:"#a78bfa"},"Not dispatched":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},Loaded:{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},Ready:{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"}}[cSt]||{bg:"#f1f5f9",c:"#475569",bd:"#94a3b8"};
                   return(
                     <div key={group.id} style={{background:cSt==="Ready"?"#f0fdf4":cSt==="Not dispatched"?"#fffbeb":cSt==="Future"?"#faf5ff":"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"7px",padding:"9px 10px",borderLeft:`3px solid ${cStStyle.bd}`}}>
                       {/* Header row: T# · stops · urgency tag */}
@@ -2457,6 +2457,28 @@ ${accRows.length>0?`
                           </div>
                         );
                       })}
+                      {/* Mileage row */}
+                      <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"5px",padding:"5px 7px",background:"rgba(255,255,255,.6)",border:"1px solid #e2e8f0",borderRadius:"5px"}}>
+                        <span style={{fontSize:"9px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em"}}>Miles</span>
+                        {isAdmin?(
+                          <div style={{display:"flex",alignItems:"center",gap:"4px",flex:1}}>
+                            <input
+                              type="number"
+                              value={group.tripMiles!==""&&group.tripMiles!=null?group.tripMiles:""}
+                              placeholder={group.calcTripMi?"~"+Math.round(group.calcTripMi):group.autoTripMi?"~"+Math.round(group.autoTripMi):"—"}
+                              onChange={e=>setGroup(group.id,"tripMiles",e.target.value===""?"":e.target.value)}
+                              style={{flex:1,border:"none",borderBottom:"1px solid #bfdbfe",background:"transparent",fontSize:"12px",fontWeight:"700",color:"#0369a1",outline:"none",fontFamily:"inherit"}}
+                            />
+                            {group.tripMiles!==""&&group.tripMiles!=null&&
+                              <button onClick={()=>setGroup(group.id,"tripMiles","")} style={{background:"none",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:"10px",padding:"0"}}>↺</button>
+                            }
+                          </div>
+                        ):(
+                          <span style={{fontSize:"12px",fontWeight:"700",color:"#0369a1"}}>
+                            {group.tripMiles!==""&&group.tripMiles!=null?Math.round(parseFloat(group.tripMiles)).toLocaleString()+" mi":group.calcTripMi?Math.round(group.calcTripMi).toLocaleString()+" mi":group.autoTripMi?Math.round(group.autoTripMi).toLocaleString()+" mi":"—"}
+                          </span>
+                        )}
+                      </div>
                       {isAdmin&&<button onClick={()=>setGroup(group.id,"isCombined",false)} style={{marginTop:"7px",width:"100%",background:"transparent",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px",fontSize:"9px",fontWeight:"600",color:"#64748b",cursor:"pointer"}}>← Return to Planned</button>}
                     </div>
                   );
@@ -3282,74 +3304,109 @@ ${accRows.length>0?`
           const maxStat=Math.max(...statCards.map(s=>Math.max(s.cur,s.prev)),1);
           return(
             <div style={{maxWidth:"1400px",margin:"0 auto",padding:"16px"}}>
-              {/* TODAY SECTION */}
+              {/* COMBINED LOADS SECTION — replaces Today/Tomorrow pickups */}
               {(()=>{
-                const todayMs=new Date().setHours(0,0,0,0);
-                const tomorrowMs=todayMs+86400000;
-                const allLoadsAllWeeks=weeks.flatMap(w=>(w.groups||[]).flatMap(g=>(g.loads||[]).map(l=>({...l,weekLabel:w.label,trailer:g.groupTrailer||"",groupId:g.id,weekId:w.id}))));
-                const pickupsToday=allLoadsAllWeeks.filter(l=>{const d=parsePickupDate(l.pickup);return d&&d.getTime()===todayMs;}).sort((a,b)=>parseTS(a.pickup)-parseTS(b.pickup));
-                const deliveriesToday=allLoadsAllWeeks.filter(l=>{const d=parsePickupDate(l.delivery);return d&&d.getTime()===todayMs;}).sort((a,b)=>parseTS(a.delivery)-parseTS(b.delivery));
-                const pickupsTomorrow=allLoadsAllWeeks.filter(l=>{const d=parsePickupDate(l.pickup);return d&&d.getTime()===tomorrowMs;}).sort((a,b)=>parseTS(a.pickup)-parseTS(b.pickup));
-                const hasSomething=pickupsToday.length>0||deliveriesToday.length>0||pickupsTomorrow.length>0;
-                const statusColors={"Picked Up":"#ca8a04","Dispatched":"#2563eb","In Transit":"#c2410c","Dock":"#7c3aed","Loaded":"#16a34a","Delivered":"#16a34a"};
-                const LoadCard=({load,type})=>(
-                  <div onClick={()=>{setLoadDetailId({loadId:load.id,weekId:load.weekId});goToLoad(load.weekId,load.id);}} style={{background:"#fff",border:"2px solid "+(type==="pickup"?"#fde68a":type==="delivery"?"#86efac":"#bfdbfe"),borderRadius:"10px",padding:"10px 14px",cursor:"pointer",transition:"box-shadow .1s",display:"flex",gap:"12px",alignItems:"center"}} onMouseEnter={e=>e.currentTarget.style.boxShadow="0 4px 12px rgba(0,0,0,0.1)"} onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
-                    <div style={{fontSize:"22px",flexShrink:0}}>{type==="pickup"?"🛫":type==="delivery"?"🛬":"🕐"}</div>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:"12px",fontWeight:"700",color:"#0f1f3d",marginBottom:"2px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{load.sr||"—"}</div>
-                      <div style={{display:"flex",gap:"6px",flexWrap:"wrap",alignItems:"center"}}>
-                        <span style={{fontSize:"10px",color:"#64748b"}}>{type==="pickup"?load.pickup:type==="delivery"?load.delivery:load.pickup}</span>
-                        {load.driver&&<span style={{fontSize:"10px",fontWeight:"600",color:"#059669"}}>👤 {load.driver}</span>}
-                        {load.trailer&&<span style={{fontSize:"10px",fontWeight:"700",color:"#7c3aed"}}>#{load.trailer}</span>}
-                        {load.broker&&isAdmin&&<span style={{fontSize:"10px",color:"#2563eb"}}>{load.broker.split("&")[0]?.trim()}</span>}
-                        {load.status&&<span style={{fontSize:"9px",fontWeight:"700",padding:"1px 6px",borderRadius:"8px",background:(statusColors[load.status]||"#94a3b8")+"22",color:statusColors[load.status]||"#94a3b8",border:"1px solid "+(statusColors[load.status]||"#94a3b8")+"44"}}>{load.status}</span>}
-                      </div>
-                    </div>
-                    {load.rate&&<div style={{fontSize:"13px",fontWeight:"800",color:"#059669",flexShrink:0}}>${parseFloat(load.rate).toLocaleString()}</div>}
-                  </div>
-                );
-                if(!hasSomething)return(
-                  <div style={{background:"#fff",borderRadius:"12px",padding:"20px",marginBottom:"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #e2e8f0",textAlign:"center",color:"#94a3b8",fontSize:"13px"}}>
-                    ✅ Nothing scheduled for today
-                  </div>
-                );
+                // Gather all combined groups from ALL weeks
+                const allCombined=weeks.flatMap(w=>(w.groups||[]).filter(g=>g.isCombined).map(g=>({...g,weekLabel:w.label,weekId:w.id,weekGroups:w.groups})));
+                if(allCombined.length===0)return null;
+
+                // Status style map
+                const cStMap={Preplanned:{bg:"#f1f5f9",c:"#475569",bd:"#94a3b8",label:"Preplanned"},Future:{bg:"#f5f3ff",c:"#5b21b6",bd:"#a78bfa",label:"Future"},"Not dispatched":{bg:"#fef9c3",c:"#713f12",bd:"#eab308",label:"Not Dispatched"},Loaded:{bg:"#dcfce7",c:"#14532d",bd:"#22c55e",label:"Loaded"},Ready:{bg:"#bbf7d0",c:"#065f46",bd:"#16a34a",label:"Ready"}};
+                const STATUS_ORDER=["Preplanned","Not dispatched","Loaded","Future","Ready"];
+
+                // Group by combinedStatus
+                const byStatus={};
+                STATUS_ORDER.forEach(s=>{byStatus[s]=[];});
+                allCombined.forEach(g=>{
+                  const st=g.combinedStatus||"Preplanned";
+                  if(!byStatus[st])byStatus[st]=[];
+                  byStatus[st].push(g);
+                });
+
                 return(
-                  <div style={{marginBottom:"20px"}}>
-                    <div style={{fontSize:"13px",fontWeight:"700",color:"#64748b",marginBottom:"10px",display:"flex",alignItems:"center",gap:"6px"}}>
-                      <span style={{background:"#fef3c7",color:"#92400e",padding:"2px 10px",borderRadius:"20px",fontWeight:"800",fontSize:"12px"}}>TODAY — {new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})}</span>
+                  <div style={{marginBottom:"24px"}}>
+                    <div style={{fontSize:"16px",fontWeight:"800",color:"#0f1f3d",marginBottom:"14px",display:"flex",alignItems:"center",gap:"8px"}}>
+                      🔄 Combined Loads
+                      <span style={{fontSize:"12px",fontWeight:"600",color:"#64748b",background:"#f1f5f9",padding:"2px 8px",borderRadius:"10px"}}>{allCombined.length} trailers</span>
                     </div>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(340px,1fr))",gap:"16px"}}>
-                      {pickupsToday.length>0&&(
-                        <div style={{background:"#fffbeb",borderRadius:"12px",padding:"14px",border:"1px solid #fde68a"}}>
-                          <div style={{fontWeight:"700",fontSize:"13px",color:"#92400e",marginBottom:"10px",display:"flex",alignItems:"center",gap:"6px"}}>
-                            🛫 Pickups Today <span style={{background:"#f59e0b",color:"#fff",borderRadius:"50%",width:"20px",height:"20px",fontSize:"11px",display:"inline-flex",alignItems:"center",justifyContent:"center",fontWeight:"800"}}>{pickupsToday.length}</span>
+                    {STATUS_ORDER.filter(st=>byStatus[st]&&byStatus[st].length>0).map(st=>{
+                      const stStyle=cStMap[st]||{bg:"#f1f5f9",c:"#475569",bd:"#94a3b8",label:st};
+                      return(
+                        <div key={st} style={{marginBottom:"16px"}}>
+                          {/* Status group header */}
+                          <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"8px"}}>
+                            <span style={{display:"inline-flex",alignItems:"center",gap:"4px",fontSize:"11px",fontWeight:"700",padding:"3px 10px",borderRadius:"12px",background:stStyle.bg,color:stStyle.c,border:`1.5px solid ${stStyle.bd}`}}>
+                              <span style={{width:"6px",height:"6px",borderRadius:"50%",background:stStyle.bd}}/>{stStyle.label}
+                            </span>
+                            <span style={{fontSize:"11px",color:"#94a3b8"}}>{byStatus[st].length} trailer{byStatus[st].length!==1?"s":""}</span>
                           </div>
-                          <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
-                            {pickupsToday.map(l=>(<LoadCard key={l.id} load={l} type="pickup"/>))}
+                          {/* Cards grid */}
+                          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:"10px"}}>
+                            {byStatus[st].map(group=>{
+                              const loads=group.loads||[];
+                              const grossRate=loads.reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
+                              const locCost=loads.reduce((s,l)=>{
+                                if(l.manualLocalCharge!==""&&l.manualLocalCharge!=null)return s+(parseFloat(l.manualLocalCharge)||0);
+                                const{s:shipper}=parseSR(l.sr||"");
+                                const am=cityMiles(shipper);
+                                const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
+                                return s+(um!=null?localCharge(um):0);
+                              },0);
+                              const netRate=grossRate-locCost;
+                              const hasDriver=!!(group.groupDriver&&group.groupDriver.trim());
+                              return(
+                                <div key={group.id} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"10px",overflow:"hidden",borderLeft:`4px solid ${stStyle.bd}`}}>
+                                  {/* Driver bar — Truck | Trailer | Driver on left, Miles | Price on right */}
+                                  <div style={{background:hasDriver?"#0f1f3d":"#fee2e2",padding:"8px 12px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px"}}>
+                                    {/* Left: truck + trailer + driver */}
+                                    <div style={{display:"flex",alignItems:"center",gap:"6px",flex:1,minWidth:0,flexWrap:"wrap"}}>
+                                      {hasDriver?(
+                                        <>
+                                          {group.groupTruck&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.15)",padding:"2px 7px",borderRadius:"5px",flexShrink:0}}>#{group.groupTruck}</span>}
+                                          {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#c4b5fd",background:"rgba(167,139,250,.2)",padding:"2px 7px",borderRadius:"5px",flexShrink:0}}>T{group.groupTrailer}</span>}
+                                          <span style={{fontSize:"11px",fontWeight:"700",color:"#86efac",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{group.groupDriver}</span>
+                                        </>
+                                      ):(
+                                        <>
+                                          <span style={{fontSize:"13px"}}>⚠️</span>
+                                          <span style={{fontSize:"11px",fontWeight:"800",color:"#b91c1c",letterSpacing:".01em"}}>NO DRIVER ASSIGNED</span>
+                                        </>
+                                      )}
+                                    </div>
+                                    {/* Right: miles + price */}
+                                    <div style={{display:"flex",alignItems:"center",gap:"10px",flexShrink:0}}>
+                                      {(()=>{const mi=group.tripMiles!==""&&group.tripMiles!=null?parseFloat(group.tripMiles):group.calcTripMi?parseFloat(group.calcTripMi):group.autoTripMi?parseFloat(group.autoTripMi):null;return mi?<span style={{fontSize:"11px",fontWeight:"700",color:hasDriver?"rgba(255,255,255,.6)":"#fca5a5",background:"rgba(255,255,255,.08)",padding:"2px 7px",borderRadius:"5px"}}>{Math.round(mi).toLocaleString()} mi</span>:null;})()}
+                                      <span style={{fontSize:"13px",fontWeight:"900",color:hasDriver?"#86efac":"#b91c1c"}}>${netRate.toLocaleString()}</span>
+                                    </div>
+                                  </div>
+                                  {/* Stops list */}
+                                  <div style={{padding:"8px 12px",display:"flex",flexDirection:"column",gap:"6px"}}>
+                                    {loads.map((l,li)=>{
+                                      const sr=parseSR(l.sr||"");
+                                      const lSt=l.status||"";
+                                      const lStColor={"Dispatched":"#2563eb","Need to Pickup":"#dc2626","Dock":"#7c3aed","Yard":"#ca8a04","Loaded":"#059669","In Transit":"#c2410c"}[lSt]||"#94a3b8";
+                                      return(
+                                        <div key={l.id} style={{display:"flex",alignItems:"flex-start",gap:"8px",padding:"5px 0",borderBottom:li<loads.length-1?"1px solid #f1f5f9":"none"}}>
+                                          <span style={{width:"16px",height:"16px",borderRadius:"50%",background:"#e2e8f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"9px",fontWeight:"700",color:"#64748b",flexShrink:0,marginTop:"1px"}}>{li+1}</span>
+                                          <div style={{flex:1,minWidth:0}}>
+                                            <div style={{fontSize:"12px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sr.r||sr.s||"—"}</div>
+                                            <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"2px"}}>
+                                              {l.pickup&&<span style={{fontSize:"10px",color:"#475569"}}>🛫 {l.pickup}</span>}
+                                              {l.delivery&&<span style={{fontSize:"10px",color:"#475569"}}>📦 {l.delivery}</span>}
+                                            </div>
+                                          </div>
+                                          {lSt&&<span style={{fontSize:"9px",fontWeight:"700",color:lStColor,background:lStColor+"18",padding:"1px 5px",borderRadius:"4px",flexShrink:0,whiteSpace:"nowrap"}}>{lSt}</span>}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
-                      )}
-                      {deliveriesToday.length>0&&(
-                        <div style={{background:"#f0fdf4",borderRadius:"12px",padding:"14px",border:"1px solid #86efac"}}>
-                          <div style={{fontWeight:"700",fontSize:"13px",color:"#166534",marginBottom:"10px",display:"flex",alignItems:"center",gap:"6px"}}>
-                            🛬 Deliveries Today <span style={{background:"#16a34a",color:"#fff",borderRadius:"50%",width:"20px",height:"20px",fontSize:"11px",display:"inline-flex",alignItems:"center",justifyContent:"center",fontWeight:"800"}}>{deliveriesToday.length}</span>
-                          </div>
-                          <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
-                            {deliveriesToday.map(l=>(<LoadCard key={l.id} load={l} type="delivery"/>))}
-                          </div>
-                        </div>
-                      )}
-                      {pickupsTomorrow.length>0&&(
-                        <div style={{background:"#eff6ff",borderRadius:"12px",padding:"14px",border:"1px solid #bfdbfe"}}>
-                          <div style={{fontWeight:"700",fontSize:"13px",color:"#1e40af",marginBottom:"10px",display:"flex",alignItems:"center",gap:"6px"}}>
-                            🕐 Pickups Tomorrow <span style={{background:"#2563eb",color:"#fff",borderRadius:"50%",width:"20px",height:"20px",fontSize:"11px",display:"inline-flex",alignItems:"center",justifyContent:"center",fontWeight:"800"}}>{pickupsTomorrow.length}</span>
-                          </div>
-                          <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
-                            {pickupsTomorrow.map(l=>(<LoadCard key={l.id} load={l} type="tomorrow"/>))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                      );
+                    })}
                   </div>
                 );
               })()}
