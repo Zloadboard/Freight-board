@@ -99,7 +99,7 @@ const DISPATCHERS_KEY="fcbv2_dispatchers";
 // DEFAULT PINs removed — set on first run via setup wizard
 const HUB="Romeoville, IL";
 
-const LOAD_STATUSES=["Need to pickup","Dispatched","Dock","Yard"];
+const LOAD_STATUSES=["Need to pickup","Dispatched","Dock","Yard","Delivered"];
 const TRAILER_NUMBERS=["53113","5384","5378","5366","5381","53121","53104","5389","5315","5357","5379","53109","5344","5332","53100","5342","5392","5390","5369","53108","5337","5391","5348","53102","5307","5325","5327","53118","5329","5388","53122","5335","5368","5333","5314","53117","53112","5321","5351","5395","5355","5304","5345","53115","5396","5363","5386","5353","53106","5356","5370","5393","53114","5317","5310","5338","53124","53123","53116","5399","5362","5347","5371","5319","53103","53101","5324","5322","5352","5331","5346","5330","53107","5365","5376","5385","53120","5340","5343","53111","5334","5349","5375","5394","5358","5397","53","5350","5359","5305","5373","5374","53110","5361","5367","5364","5383","53119","5354","5312","53105","5323","5398","5387","5306","5336","5303","5326","5380","5313","53125","5372","5382"].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
 const TRUCK_NUMBERS=["13","15","29","029","407","408","414","422","432","444","445","446","447","449","452","454","455","456","457","458","459","460","461","462","463","464","466","467","468","469","470","471","472","473","474","475","476","477","478","479","480","481","482","483","484","485","486","487","488","489","490","491","492","493","494","495","496","497","498","499","500","501","502","503","504","505","506","507","508","509","510","511","512","514","515","516","517","518","519","520","521","522","523","524"].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
 const DRIVERS=["Linas Greiciunas","John Johnson","Douglas Russo","Ringo Brown","Theron Mack","Samwel Masamo","Dennis Onsomu","Moussa Sow","Twizere Brown","Kennedy Nyangena","Emilis Ibianskas","Egidijus Matulis","Edward Kirui","Teresia Mungai","Wycliff Osumo","Martin Kariuki","Leonard Zigirinshuti","Denis Ntore","Edwens Sykvestre","Alex Oyaro","Elhadji Sene","Seth Munyangeri","Erlandas Mastavicius","Jean Ndutiye","Oleh Lashkevych","Willy Rukundo","Paul Ngotho","Jackson Nshimiye","Sefu Mutabazi","Faustin Nkuriyingoma","Jusin Maniraguha","Jamil Hussaini","Badrudin Siraji","Fakhre Alam","Hassan Mupenzi","Simolien Etienne","Joshua Onditi","Bassirou Diouf","Elkanah Machuka","Palvinson Phizema","Claude Michael","Dominic Nyangau","Zach Barker","Evans Nyangechi","Khoda Nabizada","Nkurikiye Damascene","Taban Tor","Austen Powers","Ahmed Omar","Benard Nyamanya","Michael Mutua","Allan Zebron","Papy Gakona","Vincent Okero","Luc Mpangaje","Sumaile Abedi","Fred Nyangau","Ananias Lisimwege","Tiberius Mose","Elhadji Diagne","Gassendy Alcemora","Dominic Muchiri","Victor Machoka","Betwel Onchabo","Rudatinya Ganza","Daniel Mwangi","Mayom Akeeg","Gideon Githinji","Sterling Yves","Haron Ombui","Jeff Mecha","Baldwine Telfort"].sort();
@@ -624,6 +624,33 @@ function App(){
   const[rcLoading,setRcLoading]=useState({});
   const[notifications,setNotifications]=useState([]);
   const[showNotif,setShowNotif]=useState(false);
+  // Pick up claim notifications from localStorage (written by viewer/dashboard Claim button)
+  React.useEffect(()=>{
+    const checkClaims=()=>{
+      try{
+        const raw=localStorage.getItem("fcbv2_claim_notifs");
+        if(!raw)return;
+        const claims=JSON.parse(raw);
+        if(!claims||!claims.length)return;
+        const seenKey="fcbv2_claim_notifs_seen";
+        const seen=parseInt(localStorage.getItem(seenKey)||"0");
+        const newClaims=claims.filter(c=>c.id>seen);
+        if(newClaims.length>0){
+          setNotifications(prev=>{
+            const existingIds=new Set(prev.map(n=>n.id));
+            const fresh=newClaims.filter(c=>!existingIds.has(c.id));
+            return fresh.length>0?[...fresh,...prev]:prev;
+          });
+          localStorage.setItem(seenKey,String(claims[0].id));
+        }
+      }catch(e){}
+    };
+    checkClaims();
+    const iv=setInterval(checkClaims,5000);
+    const onStorage=e=>{if(e.key==="fcbv2_claim_notifs")checkClaims();};
+    window.addEventListener("storage",onStorage);
+    return()=>{clearInterval(iv);window.removeEventListener("storage",onStorage);};
+  },[]);
   const[archivedWeeks,setArchivedWeeks]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_archive")||"[]");}catch{return[];}});
   const[customDrivers,setCustomDrivers]=useState([]);
   const[customTrucks,setCustomTrucks]=useState([]);
@@ -706,7 +733,6 @@ function App(){
       }
     },150);
   };
-  const[showLegend,setShowLegend]=useState(false);
   const[showSummary,setShowSummary]=useState(false);
   const[showSectionNav,setShowSectionNav]=useState(false);
   const[showLeaderboard,setShowLeaderboard]=useState(false);
@@ -1035,9 +1061,9 @@ function App(){
   })();
   const pendingGroups=boardFilter==="all"?allPendingGroups:boardFilter==="today"?computed.filter(g=>g.loads.some(l=>{const d=parsePickupDate(l.pickup);return d&&d.getTime()===today.getTime();})||g.loads.some(l=>{const d=parsePickupDate(l.delivery);return d&&d.getTime()===today.getTime();})):boardFilter==="tomorrow"?computed.filter(g=>g.loads.some(l=>{const d=parsePickupDate(l.pickup);return d&&d.getTime()===tomorrowDay.getTime();})):boardFilter==="active"?computed.filter(g=>g.groupStatus==="In Transit"||g.groupStatus==="Dispatched"||g.groupStatus==="Driver assigned"):boardFilter==="pending"?computed.filter(g=>g.groupStatus==="Pending"||g.groupStatus==="Loaded"):boardFilter==="done"?computed.filter(g=>g.groupStatus==="Delivered"):allPendingGroups;
   const otrGroups=boardFilter==="all"?computed.filter(g=>g.groupStatus==="In Transit"||g.groupStatus==="Delivered"):[];
-  const cToday=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);return pd&&pd.getTime()===today.getTime()&&!l.status;}).length;
-  const cTomorrow=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);return pd&&pd.getTime()===tomorrow.getTime()&&!l.status;}).length;
-  const cFuture=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);return pd&&pd.getTime()>tomorrow.getTime()&&!l.status;}).length;
+  const cToday=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);const done=["Picked Up","In Transit","Loaded","Delivered"].includes(l.status||"");return pd&&pd.getTime()===today.getTime()&&!done;}).length;
+  const cTomorrow=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);const done=["Picked Up","In Transit","Loaded","Delivered"].includes(l.status||"");return pd&&pd.getTime()===tomorrow.getTime()&&!done;}).length;
+  const cFuture=allLoads.filter(l=>{const pd=parsePickupDate(l.pickup);const done=["Picked Up","In Transit","Loaded","Delivered"].includes(l.status||"");return pd&&pd.getTime()>tomorrow.getTime()&&pd.getTime()<new Date("2100-01-01").getTime()&&!done;}).length;
   const cDelToday=allLoads.filter(l=>{const pd=parsePickupDate(l.delivery);return pd&&pd.getTime()===today.getTime();}).length;
   const cDelTomorrow=allLoads.filter(l=>{const pd=parsePickupDate(l.delivery);return pd&&pd.getTime()===tomorrow.getTime();}).length;
   const cDelivered=allLoads.filter(l=>l.status==="Delivered").length;
@@ -1665,7 +1691,7 @@ ${accRows.length>0?`
     )}
 
     {/* COLOR LEGEND */}
-    {showLegend&&(<div style={{position:"fixed",top:"60px",right:"16px",zIndex:2000,background:"#1a2e50",borderRadius:"12px",boxShadow:"0 8px 40px rgba(0,0,0,0.4)",border:"1px solid #2d4a7a",padding:"14px 16px",width:"220px"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}><span style={{color:"#fff",fontWeight:"700",fontSize:"12px"}}>🎨 Color Legend</span><button onClick={()=>setShowLegend(false)} style={{background:"transparent",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:"16px",lineHeight:1}}>×</button></div>{[["#86efac","#16a34a","Delivered / Loaded"],["#fb923c","#c2410c","In Transit / Dispatched"],["#c4b5fd","#6d28d9","Dock / Yard"],["#fde047","#ca8a04","Picked Up / Today Pickup"],["#f87171","#b91c1c","Tomorrow / Future Pickup"],["#dbeafe","#3b82f6","No Date / Past"]].map((lgItem)=>{const [bg,stripe,label]=lgItem;return(<div key={label} style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"6px"}}><div style={{width:"14px",height:"28px",background:stripe,borderRadius:"2px",flexShrink:0}}/><div style={{flex:1,background:bg,borderRadius:"4px",padding:"4px 8px",fontSize:"11px",fontWeight:"600",color:"#000"}}>{label}</div></div>);})}<div style={{marginTop:"10px",paddingTop:"8px",borderTop:"1px solid #2d4a7a"}}><div style={{fontSize:"10px",color:"#94a3b8",fontWeight:"600",marginBottom:"5px"}}>QUICK STATUS BUTTONS</div>{[["PU","Picked Up","#ca8a04"],["IT","In Transit","#c2410c"],["DK","Dock","#6d28d9"],["LD","Loaded","#166534"],["DL","Delivered","#166534"]].map((qbItem)=>{const [lbl,val,fg]=qbItem;return(<div key={lbl} style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"3px"}}><span style={{fontSize:"10px",fontWeight:"800",padding:"1px 6px",border:`1px solid ${fg}`,borderRadius:"3px",background:fg,color:"#fff",minWidth:"24px",textAlign:"center"}}>{lbl}</span><span style={{fontSize:"11px",color:"#cbd5e1"}}>{val}</span></div>);})}</div><div style={{marginTop:"8px",paddingTop:"8px",borderTop:"1px solid #2d4a7a",fontSize:"10px",color:"#64748b"}}>💡 Drag trailer rows to reorder</div></div>)}
+    
 
     {/* SEARCH BAR */}
     {showSearch&&(<div style={{position:"fixed",top:"60px",left:"50%",transform:"translateX(-50%)",zIndex:2000,background:"#fff",borderRadius:"12px",boxShadow:"0 8px 40px rgba(0,0,0,0.25)",border:"1px solid #e2e8f0",padding:"12px 16px",width:"min(600px,95vw)"}}><div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:searchResults.length>0?"10px":"0"}}><span style={{fontSize:"14px"}}>🔍</span><input ref={searchRef} value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&searchResults.length>0)setSearchIdx(i=>(i+1)%searchResults.length);if(e.key==="Escape"){setShowSearch(false);setSearchQuery("");}}} placeholder="Search routes, drivers, dates, status... (Ctrl+F)" style={{flex:1,border:"none",outline:"none",fontSize:"14px",color:"#1a2e50",fontFamily:"inherit"}}/>{searchQuery&&<span style={{fontSize:"11px",color:"#94a3b8",whiteSpace:"nowrap",fontWeight:"600"}}>{searchResults.length} result{searchResults.length!==1?"s":""}</span>}{searchResults.length>1&&<div style={{display:"flex",gap:"4px"}}><button onClick={()=>setSearchIdx(i=>(i-1+searchResults.length)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↑</button><button onClick={()=>setSearchIdx(i=>(i+1)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↓</button></div>}<button onClick={()=>{setShowSearch(false);setSearchQuery("");}} style={{background:"#fee2e2",border:"none",borderRadius:"6px",padding:"4px 10px",cursor:"pointer",fontSize:"11px",color:"#dc2626",fontWeight:"700"}}>✕ Close</button></div>{searchResults.length>0&&(<div style={{maxHeight:"320px",overflowY:"auto",borderTop:"1px solid #f1f5f9",paddingTop:"8px"}}>{searchResults.map((r,i)=>(<div key={i} onClick={()=>{const wId=weeks[r.weekIdx]?.id;setSearchIdx(i);setShowSearch(false);setSearchQuery("");if(wId&&r.loadId)setLoadDetailId({loadId:r.loadId,weekId:wId});goToLoad(wId,r.loadId);}} style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 10px",borderRadius:"8px",cursor:"pointer",background:i===searchIdx?"#eff6ff":"transparent",border:i===searchIdx?"1px solid #bfdbfe":"1px solid transparent",marginBottom:"3px"}}><div style={{flex:1,minWidth:0}}><div style={{fontSize:"12px",fontWeight:"700",color:"#1a2e50",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r.sr||"—"}</div><div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"2px"}}>{r.broker&&isAdmin&&(<span style={{fontSize:"10px",color:"#2563eb",fontWeight:"600"}}>{r.broker}</span>)}{r.pickup&&<span style={{fontSize:"10px",color:"#64748b"}}>🛫 {r.pickup}</span>}{r.driver&&<span style={{fontSize:"10px",color:"#059669",fontWeight:"600"}}>🧑 {r.driver}</span>}{r.status&&<span style={{fontSize:"10px",color:"#7c3aed",fontWeight:"600"}}>{r.status}</span>}</div></div><div style={{textAlign:"right",flexShrink:0}}><div style={{fontSize:"10px",fontWeight:"700",color:"#1a2e50",background:"#dbeafe",padding:"1px 7px",borderRadius:"8px"}}>{r.weekLabel}</div><div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>{r.delivery}</div></div></div>))}</div>)}{searchQuery&&searchResults.length===0&&(<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"12px 0"}}>No results found across {weeks.length} week{weeks.length!==1?"s":""}</div>)}<div style={{fontSize:"10px",color:"#cbd5e1",marginTop:searchResults.length>0?"8px":"0",textAlign:"center"}}>Press Enter to cycle · Esc to close · Click a result to jump to it</div></div>)}
@@ -1701,8 +1727,7 @@ ${accRows.length>0?`
           🔔{notifications.length>0&&<span style={{background:"#fbbf24",color:"#000",borderRadius:"50%",width:"16px",height:"16px",fontSize:"9px",fontWeight:"800",display:"inline-flex",alignItems:"center",justifyContent:"center",marginLeft:"4px"}}>{notifications.length}</span>}
         </button>}
 
-        {/* Legend — always visible */}
-        <button onClick={()=>setShowLegend(l=>!l)} style={{background:showLegend?"#2d4a7a":"#1e3a5f",border:"1px solid #374151",color:"#e2e8f0",padding:"5px 13px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>🎨 Legend</button>
+
 
         {/* ── MENU DROPDOWN ── */}
         <div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
@@ -1983,12 +2008,12 @@ ${accRows.length>0?`
                   setW("groups",(()=>{const arr=[...week.groups];const[moved]=arr.splice(from,1);arr.splice(to,0,moved);return arr;})());
                   dragGroupIdx.current=null;setDragOverIdx(null);
                 }}
-                style={{border:`1px solid ${dragOverIdx===gi?"#fbbf24":"#d1d5db"}`,borderRadius:"8px",overflow:"hidden"}}
+                style={{border:`1px solid ${dragOverIdx===gi?"#fbbf24":"#d1d5db"}`,borderRadius:"8px",overflow:"hidden",outline:dragOverIdx===gi?"2px solid #fbbf24":"none"}}
               >
                 {/* ── BANNER (no group-status dropdown — individual load status shown in rows) ── */}
                 <div style={{background:"linear-gradient(90deg,#0f1f3d,#1e3a5f)",padding:"5px 10px",display:"flex",alignItems:"center",gap:"7px",fontSize:"11px",color:"#fff",flexWrap:"wrap"}}>
                   <span style={{background:"#2563eb",padding:"1px 8px",borderRadius:"4px",fontWeight:"700",flexShrink:0}}>T{gi+1}</span>
-                  {urgTag&&<span style={{background:urgColor,color:"#fff",fontSize:"9px",fontWeight:"800",padding:"1px 5px",borderRadius:"8px",flexShrink:0}}>{urgTag}</span>}
+                  
                   {isAdmin&&<button onClick={()=>addLoad(group.id)} style={{background:"rgba(59,130,246,.25)",color:"#93c5fd",border:"1px solid rgba(59,130,246,.4)",borderRadius:"4px",padding:"1px 5px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>+Load</button>}
                   {isAdmin&&<div onDragOver={e=>{e.preventDefault();e.currentTarget.style.background="rgba(251,191,36,.2)";}} onDragLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.05)";}} onDrop={e=>{e.preventDefault();e.currentTarget.style.background="rgba(255,255,255,.05)";const f=e.dataTransfer.files[0];if(f)handleRateCon(f,group.id);}} onClick={()=>{const inp=document.createElement("input");inp.type="file";inp.accept=".pdf,image/*";inp.onchange=ev=>{const f=ev.target.files[0];if(f)handleRateCon(f,group.id);};inp.click();}} style={{display:"flex",alignItems:"center",gap:"3px",background:"rgba(255,255,255,.05)",border:"1px dashed rgba(255,255,255,.2)",borderRadius:"4px",padding:"1px 7px",cursor:"pointer",flexShrink:0}}>
                     {rcLoading[group.id]?<span style={{fontSize:"9px",color:"#fbbf24"}}>↻ Reading...</span>:<><span style={{fontSize:"10px"}}>📄</span><span style={{fontSize:"9px",color:"rgba(255,255,255,.5)"}}>RC</span></>}
@@ -2007,8 +2032,14 @@ ${accRows.length>0?`
                   {hasDriver&&<span style={{marginLeft:"auto",fontSize:"9px",color:"#86efac",fontWeight:"700",background:"rgba(134,239,172,.1)",border:"1px solid #86efac",padding:"1px 6px",borderRadius:"4px",whiteSpace:"nowrap",flexShrink:0}}>
                     🚛 {group.groupDriver}{group.groupTruck&&<span style={{marginLeft:"3px",opacity:.7}}>·#{group.groupTruck}</span>}{group.groupTrailer&&<span style={{marginLeft:"3px",opacity:.6}}>/ T{group.groupTrailer}</span>}
                   </span>}
-                  {isAdmin&&isMultiStop&&<button onClick={()=>setGroup(group.id,"isCombined",true)} style={{background:"rgba(124,58,237,.3)",color:"#c4b5fd",border:"1px solid rgba(124,58,237,.5)",borderRadius:"4px",padding:"1px 6px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>→ Combined</button>}
-                  {isAdmin&&<input value={group.groupNotes||""} onChange={e=>setGroup(group.id,"groupNotes",e.target.value)} placeholder="Notes..." style={{background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",borderRadius:"4px",padding:"1px 5px",fontSize:"9px",color:"#e2e8f0",width:"120px",minWidth:"40px"}}/>}
+                  {isAdmin&&!hasDriver&&<div style={{display:"flex",alignItems:"center",gap:"3px",flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                    <select value={group.groupDriver||""} onChange={e=>setGroup(group.id,"groupDriver",e.target.value)} style={{border:"1px solid rgba(134,239,172,.3)",borderRadius:"4px",background:"rgba(0,0,0,.3)",color:"#86efac",fontSize:"9px",fontWeight:"600",padding:"1px 4px",cursor:"pointer",outline:"none",maxWidth:"110px"}}>
+                      <option value="" style={{background:"#1e3a5f",color:"#fff"}}>— OTR Driver —</option>
+                      {[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d} style={{background:"#1e3a5f",color:"#fff"}}>{d}</option>))}
+                    </select>
+                  </div>}
+                  {isAdmin&&<button onClick={()=>setGroup(group.id,"isCombined",true)} style={{background:"rgba(124,58,237,.3)",color:"#c4b5fd",border:"1px solid rgba(124,58,237,.5)",borderRadius:"4px",padding:"1px 6px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>→ Combined</button>}
+                  {isAdmin&&<input value={group.groupNotes||""} onChange={e=>setGroup(group.id,"groupNotes",e.target.value)} placeholder="Notes..." style={{background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",borderRadius:"4px",padding:"1px 5px",fontSize:"9px",color:"#e2e8f0",width:"100px",minWidth:"40px"}}/>}
                   {isAdmin&&week.groups.length>1&&<button onClick={()=>{if(window.confirm("Remove this trailer and all its loads?"))removeGroup(group.id);}} style={{background:"#7f1d1d",color:"#fca5a5",border:"1px solid #dc2626",borderRadius:"4px",padding:"1px 6px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>✕</button>}
                 </div>
 
@@ -2021,8 +2052,8 @@ ${accRows.length>0?`
                   <span>Weight</span>
                   <span>Plt</span>
                   <span style={{fontStyle:"italic",color:"#374151"}}>Local Truck</span>
-                  <span style={{fontStyle:"italic",color:"#374151"}}>Local Trailer</span>
                   <span style={{fontStyle:"italic",color:"#374151"}}>Local Driver</span>
+                  <span style={{fontStyle:"italic",color:"#374151"}}>Local Trailer</span>
                   <span style={{color:"#059669"}}>Rate $</span>
                   <span>Status</span>
                   <span/>
@@ -2033,15 +2064,15 @@ ${accRows.length>0?`
                   const isExp=!!expandedLoads[load.id];
                   const srP=parseSR(load.sr||"");
                   const showBroker=canSeeBroker(group,load);
-                  const ST={"Need to pickup":{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"},"Not set":{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"},"Picked Up":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Dispatched":{bg:"#dbeafe",c:"#1e40af",bd:"#3b82f6"},"In Transit":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Dock":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Yard":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"}};
+                  const ST={"Need to pickup":{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"},"Not set":{bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"},"Tomorrow":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Picked Up":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Dispatched":{bg:"#dbeafe",c:"#1e40af",bd:"#3b82f6"},"In Transit":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Dock":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Yard":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"}};
                   // Compute effective status — auto-infer when empty based on pickup date
                   const pd2=parsePickupDate(load.pickup);const pt2=pd2?pd2.getTime():null;
                   const isToday2=pt2===today.getTime();
                   const isTomorrow2=pt2===tomorrowDay.getTime();
                   const isPast2=pt2&&pt2<today.getTime();
                   // Effective status for display
-                  const effectiveSt=load.status||(isToday2||isTomorrow2||isPast2?"Need to pickup":"");
-                  let sp;if(effectiveSt){sp=ST[effectiveSt]||{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"};}else{sp={bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"};}
+                  const effectiveSt=load.status||(isPast2||isToday2?"Need to pickup":isTomorrow2?"Tomorrow":"");
+                  let sp;if(effectiveSt){sp=ST[effectiveSt]||{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"};}else{sp={bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};}
                   const otrDriver=group.groupDriver||"";
                   const localDriver=load.driver||"";
 
@@ -2095,6 +2126,7 @@ ${accRows.length>0?`
                           {isAdmin?(
                             <>
                               <input
+                                key={`ltruck-${load.id}-${load.localTruck||""}`}
                                 list={`ltruck-${load.id}`}
                                 defaultValue={load.localTruck||""}
                                 onBlur={e=>{
@@ -2120,30 +2152,6 @@ ${accRows.length>0?`
                             </>
                           ):<span style={{fontSize:"11px",color:load.localTruck?"#374151":"#94a3b8"}}>{load.localTruck?"#"+load.localTruck:"—"}</span>}
                         </div>
-                        {/* Local Trailer — own column, searchable via datalist */}
-                        <div style={{minWidth:0}} onClick={e=>e.stopPropagation()}>
-                          {isAdmin?(
-                            <>
-                              <input
-                                list={`ltrailer-${load.id}`}
-                                defaultValue={load.localTrailer||""}
-                                onBlur={e=>{
-                                  const val=e.target.value.trim();
-                                  const allTrailers=[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i);
-                                  const matched=allTrailers.find(t=>t===val||"#"+t===val||"T"+t===val);
-                                  const final=matched||val;
-                                  if(final!==load.localTrailer){setLoad(group.id,load.id,"localTrailer",final);trackField("localTrailer");}
-                                }}
-                                placeholder="Search trailer..."
-                                style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"4px",background:"#f8fafc",fontSize:"11px",color:"#7c3aed",padding:"2px 4px",outline:"none",fontFamily:"inherit"}}
-                              />
-                              <datalist id={`ltrailer-${load.id}`}>
-                                {[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}/>))}
-                              </datalist>
-                            </>
-                          ):<span style={{fontSize:"11px",color:load.localTrailer?"#7c3aed":"#94a3b8"}}>{load.localTrailer?"T"+load.localTrailer:"—"}</span>}
-                        </div>
-
                         {/* Local Driver — own column */}
                         <div style={{minWidth:0}} onClick={e=>e.stopPropagation()}>
                           {isAdmin
@@ -2163,6 +2171,31 @@ ${accRows.length>0?`
                             :<div style={{fontSize:"11px",fontStyle:"italic",color:localDriver?"#374151":"#94a3b8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{localDriver||"—"}</div>
                           }
                         </div>
+                        {/* Local Trailer — own column, searchable via datalist */}
+                        <div style={{minWidth:0}} onClick={e=>e.stopPropagation()}>
+                          {isAdmin?(
+                            <>
+                              <input
+                                key={`ltrailer-${load.id}-${load.localTrailer||""}`}
+                                list={`ltrailer-${load.id}`}
+                                defaultValue={load.localTrailer||""}
+                                onBlur={e=>{
+                                  const val=e.target.value.trim();
+                                  const allTrailers=[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i);
+                                  const matched=allTrailers.find(t=>t===val||"#"+t===val||"T"+t===val);
+                                  const final=matched||val;
+                                  if(final!==load.localTrailer){setLoad(group.id,load.id,"localTrailer",final);trackField("localTrailer");}
+                                }}
+                                placeholder="Search trailer..."
+                                style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"4px",background:"#f8fafc",fontSize:"11px",color:"#7c3aed",padding:"2px 4px",outline:"none",fontFamily:"inherit"}}
+                              />
+                              <datalist id={`ltrailer-${load.id}`}>
+                                {[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}/>))}
+                              </datalist>
+                            </>
+                          ):<span style={{fontSize:"11px",color:load.localTrailer?"#7c3aed":"#94a3b8"}}>{load.localTrailer?"T"+load.localTrailer:"—"}</span>}
+                        </div>
+
                         
 
                         {/* RATE — editable inline */}
@@ -2230,6 +2263,32 @@ ${accRows.length>0?`
                               {isAdmin?<select value={load.trailer||""} onChange={e=>{setLoad(group.id,load.id,"trailer",e.target.value);trackField("trailer");}} style={{border:"none",borderBottom:"1px solid #bfdbfe",background:"transparent",fontSize:"12px",fontWeight:"600",color:"#7c3aed",outline:"none",fontFamily:"inherit",cursor:"pointer"}}>
                                 <option value="">—</option>{[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}
                               </select>:<div style={{fontSize:"12px",fontWeight:"600",color:"#7c3aed"}}>{load.trailer?"#"+load.trailer:"—"}</div>}
+                            </div>
+                          {/* Local Charge */}
+                            <div>
+                              <div style={{fontSize:"9px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"2px"}}>Local Charge</div>
+                              {isAdmin?(
+                                <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
+                                  <span style={{fontSize:"11px",color:"#64748b"}}>$</span>
+                                  <input
+                                    type="number"
+                                    value={load.manualLocalCharge!==""&&load.manualLocalCharge!=null?load.manualLocalCharge:""}
+                                    placeholder={(()=>{const{s:shipper}=parseSR(load.sr||"");const am=cityMiles(shipper);const um=(load.manualPickupMi!==""&&load.manualPickupMi!=null)?parseFloat(load.manualPickupMi):am;return um!=null?String(localCharge(um)||0):"auto";})()}
+                                    onChange={e=>setLoad(group.id,load.id,"manualLocalCharge",e.target.value===""?"":e.target.value)}
+                                    style={{border:"none",borderBottom:"1px solid #bfdbfe",background:"transparent",fontSize:"12px",fontWeight:"700",color:"#b45309",outline:"none",fontFamily:"inherit",width:"70px"}}
+                                  />
+                                  {load.manualLocalCharge!==""&&load.manualLocalCharge!=null&&
+                                    <button onClick={()=>setLoad(group.id,load.id,"manualLocalCharge","")} style={{background:"none",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:"10px",padding:"0",lineHeight:1}} title="Reset to auto">↺</button>
+                                  }
+                                </div>
+                              ):(
+                                <div style={{fontSize:"12px",fontWeight:"700",color:"#b45309"}}>
+                                  {load.manualLocalCharge!==""&&load.manualLocalCharge!=null
+                                    ?"$"+parseFloat(load.manualLocalCharge).toLocaleString()
+                                    :(()=>{const{s:shipper}=parseSR(load.sr||"");const am=cityMiles(shipper);const um=(load.manualPickupMi!==""&&load.manualPickupMi!=null)?parseFloat(load.manualPickupMi):am;const lc=um!=null?localCharge(um):null;return lc!=null?"$"+lc.toLocaleString():"—";})()
+                                  }
+                                </div>
+                              )}
                             </div>
                           </div>
                           {/* Action buttons — no status here, status badge is on the row */}
@@ -2354,7 +2413,7 @@ ${accRows.length>0?`
                         </div>
                       </div>
                       {/* Load list — show full pickup+delivery datetime */}
-                      {(group.loads||[]).map((l,li)=>{
+                      {[...(group.loads||[])].sort((a,b)=>{const ta=parseTS(a.pickup)||Infinity;const tb=parseTS(b.pickup)||Infinity;return ta-tb;}).map((l,li)=>{
                         const sr=parseSR(l.sr||"");
                         const lST={"Need to Pickup":{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"},"Dock":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Yard":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Dispatched":{bg:"#dbeafe",c:"#1e40af",bd:"#3b82f6"},"Picked Up":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"In Transit":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"}};
                         const lSp=l.status?lST[l.status]||{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"}:{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"};
@@ -2519,7 +2578,31 @@ ${accRows.length>0?`
                 {group.calcTripMi&&<span style={{fontSize:"10px",color:"#c4b5fd",background:"rgba(196,181,253,0.1)",border:"1px solid rgba(196,181,253,0.3)",padding:"1px 8px",borderRadius:"4px"}}>📍{group.calcTripMi}mi</span>}
                 {group.rpm!=null&&<span style={{fontSize:"11px",fontWeight:"700",padding:"1px 8px",borderRadius:"4px",border:"1px solid",color:group.rpm>=3?"#166534":group.rpm<2.5?"#991b1b":"#92400e",background:group.rpm>=3?"#dcfce7":group.rpm<2.5?"#fee2e2":"#fef9c3",borderColor:group.rpm>=3?"#86efac":group.rpm<2.5?"#fca5a5":"#fde68a"}}>${group.rpm}/mi</span>}
               </div>
-              <select value={group.groupStatus} onChange={e=>isAdmin&&setGroup(group.id,"groupStatus",e.target.value)} style={{fontSize:"11px",fontWeight:"700",color:"#a78bfa",background:"rgba(167,139,250,0.1)",border:"1px solid #7c3aed",borderRadius:"4px",padding:"2px 6px",cursor:isAdmin?"pointer":"not-allowed",outline:"none",marginLeft:"auto"}} disabled={!isAdmin}>{Object.keys(GSS).map(s=>(<option key={s}>{s}</option>))}</select>
+              {(()=>{
+                const gSt=group.groupStatus||"Pending";
+                const statusColors={
+                  "Pending":{bg:"rgba(107,114,128,.15)",c:"#9ca3af",bd:"#6b7280"},
+                  "Driver assigned":{bg:"rgba(194,65,12,.15)",c:"#fb923c",bd:"#c2410c"},
+                  "Loaded":{bg:"rgba(146,64,14,.15)",c:"#fcd34d",bd:"#92400e"},
+                  "In Transit":{bg:"rgba(91,33,182,.15)",c:"#a78bfa",bd:"#7c3aed"},
+                  "Delivered":{bg:"rgba(22,101,52,.2)",c:"#86efac",bd:"#16a34a"},
+                  "Issue":{bg:"rgba(190,18,60,.15)",c:"#fca5a5",bd:"#be123c"}
+                };
+                const sc=statusColors[gSt]||statusColors["Pending"];
+                return(
+                  <div style={{position:"relative",marginLeft:"auto"}}>
+                    <select value={gSt} onChange={e=>isAdmin&&setGroup(group.id,"groupStatus",e.target.value)}
+                      style={{position:"absolute",inset:0,opacity:0,cursor:isAdmin?"pointer":"not-allowed",width:"100%",height:"100%",zIndex:2}}
+                      disabled={!isAdmin}>
+                      {Object.keys(GSS).map(s=>(<option key={s}>{s}</option>))}
+                    </select>
+                    <span style={{display:"inline-flex",alignItems:"center",gap:"4px",fontSize:"11px",fontWeight:"800",padding:"2px 8px",borderRadius:"4px",background:sc.bg,color:sc.c,border:`1.5px solid ${sc.bd}`,userSelect:"none",whiteSpace:"nowrap"}}>
+                      <span style={{width:"6px",height:"6px",borderRadius:"50%",background:sc.bd,flexShrink:0}}/>
+                      {gSt}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
             {/* Load rows */}
             {loads.map((load,li)=>{
@@ -2542,7 +2625,7 @@ ${accRows.length>0?`
                 {(()=>{const ts=parseTS(load.delivery);if(ts===Infinity)return null;const diff=ts-Date.now();const hrs=Math.abs(Math.round(diff/3600000));const color=diff<0?"#f87171":diff<12*3600000?"#fbbf24":"#34d399";if(Math.abs(diff)>72*3600000)return null;return<span style={{fontSize:"10px",fontWeight:"700",color,background:"rgba(0,0,0,0.25)",padding:"1px 7px",borderRadius:"10px",border:`1px solid ${color}55`,whiteSpace:"nowrap",flexShrink:0}}>⏱ {diff<0?`${hrs}h late`:`${hrs}h left`}</span>;})()}
                 {/* Rate per load */}
                 {(parseFloat(load.rate)||0)>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#86efac",background:"rgba(134,239,172,0.1)",border:"1px solid rgba(134,239,172,0.25)",padding:"1px 7px",borderRadius:"4px",whiteSpace:"nowrap"}}>${(parseFloat(load.rate)||0).toLocaleString()}</span>}
-                <select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{fontSize:"10px",fontWeight:"600",color:lrc.tc,background:lrc.bg,border:`1px solid ${lrc.stripe}`,borderRadius:"4px",padding:"1px 4px",cursor:isAdmin?"pointer":"not-allowed",outline:"none",flexShrink:0}} disabled={!isAdmin}><option value="">— Not set —</option>{LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}</select>
+                <select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{fontSize:"10px",fontWeight:"600",color:lrc.tc,background:lrc.barBg,border:`1px solid ${lrc.bar}`,borderRadius:"4px",padding:"1px 4px",cursor:isAdmin?"pointer":"not-allowed",outline:"none",flexShrink:0}} disabled={!isAdmin}><option value="">— Not set —</option>{LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}</select>
               </div>);
             })}
           </div>);})}</div>)}</>)}
@@ -2999,7 +3082,7 @@ ${accRows.length>0?`
                           <span style={{fontSize:"10px",color:"#94a3b8"}}>🛫 {l.pickup||"—"}</span>
                           <span style={{fontSize:"10px",color:"#94a3b8"}}>📦 {l.delivery||"—"}</span>
                           {(parseFloat(l.rate)||0)>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#059669"}}>${(parseFloat(l.rate)||0).toLocaleString()}</span>}
-                          <span style={{fontSize:"10px",fontWeight:"700",padding:"2px 8px",borderRadius:"4px",background:lrc.bg,color:lrc.tc,border:`1px solid ${lrc.stripe}`,whiteSpace:"nowrap"}}>{l.status||l.groupStatus||"—"}</span>
+                          <span style={{fontSize:"10px",fontWeight:"700",padding:"2px 8px",borderRadius:"4px",background:lrc.barBg,color:lrc.tc,border:`1px solid ${lrc.bar}`,whiteSpace:"nowrap"}}>{l.status||l.groupStatus||"—"}</span>
                         </div>
                       );
                     })}
@@ -3380,7 +3463,8 @@ ${accRows.length>0?`
                                       ):(
                                         <>
                                           <span style={{fontSize:"13px"}}>⚠️</span>
-                                          <span style={{fontSize:"11px",fontWeight:"800",color:"#b91c1c",letterSpacing:".01em"}}>NO DRIVER ASSIGNED</span>
+                                          <span style={{fontSize:"11px",fontWeight:"800",color:"#b91c1c",letterSpacing:".01em",flex:1}}>NO DRIVER ASSIGNED</span>
+
                                         </>
                                       )}
                                     </div>
@@ -3390,15 +3474,65 @@ ${accRows.length>0?`
                                       <span style={{fontSize:"13px",fontWeight:"900",color:hasDriver?"#86efac":"#b91c1c"}}>${netRate.toLocaleString()}</span>
                                     </div>
                                   </div>
+                                  {/* CLAIM BAR — visible to everyone when no driver assigned */}
+                                  {!hasDriver&&(
+                                    <div style={{background:"linear-gradient(90deg,#fef3c7,#fde68a)",borderTop:"2px solid #f59e0b",padding:"7px 12px",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}}>
+                                      <span style={{fontSize:"14px",flexShrink:0}}>🙋</span>
+                                      <span style={{fontSize:"11px",fontWeight:"700",color:"#78350f",flex:1,minWidth:"120px"}}>Available — enter your name to claim:</span>
+                                      <input
+                                        id={`claim-${group.id}`}
+                                        type="text"
+                                        placeholder="Your name..."
+                                        onClick={e=>e.stopPropagation()}
+                                        style={{border:"2px solid #f59e0b",borderRadius:"6px",padding:"4px 8px",fontSize:"11px",fontWeight:"600",color:"#78350f",background:"#fff",outline:"none",width:"130px",flexShrink:0}}
+                                      />
+                                      <button
+                                        onClick={e=>{
+                                          e.stopPropagation();
+                                          const inp=document.getElementById(`claim-${group.id}`);
+                                          const name=(inp?inp.value:"").trim();
+                                          if(!name){inp&&inp.focus();return;}
+                                          const wkIdx=weeks.findIndex(w=>(w.groups||[]).some(g=>g.id===group.id));
+                                          if(wkIdx>=0){
+                                            const wk=weeks[wkIdx];
+                                            const grp=(wk.groups||[]).find(g=>g.id===group.id);
+                                            const updated=weeks.map((w,i)=>i!==wkIdx?w:{...w,groups:(w.groups||[]).map(g=>g.id!==group.id?g:{...g,groupDriver:name,securedBy:name,securedAt:Date.now()})});
+                                            setWeeksAndSave(updated);
+                                            // Write claim notification to localStorage so admin board tab picks it up
+                                            const claimNotif={
+                                              id:Date.now(),
+                                              type:"claim",
+                                              claimedBy:name,
+                                              claimedAt:new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}),
+                                              trailer:grp?.groupTrailer||grp?.groupTruck||"",
+                                              stops:(grp?.loads||[]).length,
+                                              routes:(grp?.loads||[]).map(l=>{const p=l.sr?l.sr.split(" - "):[];return p[1]||p[0]||"";}).filter(Boolean).join(" → "),
+                                              weekLabel:wk.label||""
+                                            };
+                                            try{
+                                              const existing=JSON.parse(localStorage.getItem("fcbv2_claim_notifs")||"[]");
+                                              existing.unshift(claimNotif);
+                                              localStorage.setItem("fcbv2_claim_notifs",JSON.stringify(existing.slice(0,20)));
+                                            }catch(e){}
+                                          }
+                                        }}
+                                        style={{background:"#d97706",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",fontSize:"11px",fontWeight:"800",cursor:"pointer",flexShrink:0}}
+                                      >✓ Claim</button>
+                                    </div>
+                                  )}
                                   {/* Stops list */}
                                   <div style={{padding:"8px 12px",display:"flex",flexDirection:"column",gap:"6px"}}>
-                                    {loads.map((l,li)=>{
+                                    {[...loads].sort((a,b)=>{
+                                        const ta=new Date(a.pickup||'').getTime()||Infinity;
+                                        const tb=new Date(b.pickup||'').getTime()||Infinity;
+                                        return ta-tb;
+                                      }).map((l,li)=>{
                                       const sr=parseSR(l.sr||"");
                                       const lSt=l.status||"";
                                       const lStColor={"Dispatched":"#2563eb","Need to Pickup":"#dc2626","Dock":"#7c3aed","Yard":"#ca8a04","Loaded":"#059669","In Transit":"#c2410c"}[lSt]||"#94a3b8";
                                       return(
                                         <div key={l.id} style={{display:"flex",alignItems:"flex-start",gap:"8px",padding:"5px 0",borderBottom:li<loads.length-1?"1px solid #f1f5f9":"none"}}>
-                                          <span style={{width:"16px",height:"16px",borderRadius:"50%",background:"#e2e8f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"9px",fontWeight:"700",color:"#64748b",flexShrink:0,marginTop:"1px"}}>{li+1}</span>
+                                          <span style={{width:"16px",height:"16px",borderRadius:"50%",background:"#e2e8f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"9px",fontWeight:"700",color:"#64748b",flexShrink:0,marginTop:"1px"}}>{l.stop||li+1}</span>
                                           <div style={{flex:1,minWidth:0}}>
                                             <div style={{fontSize:"12px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sr.r||sr.s||"—"}</div>
                                             <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"2px"}}>
