@@ -2466,8 +2466,22 @@ ${accRows.length>0?`
                         const sr=parseSR(l.sr||"");
                         const lST={"Need to pickup":{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"},"Need to Pickup":{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"},"Dock":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Yard":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Dispatched":{bg:"#dbeafe",c:"#1e40af",bd:"#3b82f6"},"Tomorrow":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Picked Up":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"In Transit":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"}};
                         // Case-insensitive status lookup + smart default
-                        const lStKey=Object.keys(lST).find(k=>k.toLowerCase()===(l.status||"").toLowerCase())||l.status;
-                        const lSp=l.status?lST[lStKey]||{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"}:{bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};
+                        // Compute effective display status for combined load
+                        const lPuD=parsePickupDate(l.pickup);
+                        const lPuTs=lPuD?lPuD.getTime():null;
+                        const lIsTom=lPuTs===tomorrowDay.getTime();
+                        const lIsToday=lPuTs===today.getTime();
+                        const lIsPast=lPuTs&&lPuTs<today.getTime();
+                        // Override "Need to pickup" → "Tomorrow" if pickup is tomorrow
+                        // Override empty → infer from date
+                        const lEffSt=(()=>{
+                          const raw=l.status||"";
+                          if(lIsTom&&(raw===""||raw.toLowerCase()==="need to pickup"))return "Tomorrow";
+                          if((lIsToday||lIsPast)&&raw==="")return "Need to pickup";
+                          return raw;
+                        })();
+                        const lStKey=Object.keys(lST).find(k=>k.toLowerCase()===lEffSt.toLowerCase())||lEffSt;
+                        const lSp=lEffSt?lST[lStKey]||{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"}:{bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};
                         const isLExp=!!expandedLoads["c_"+l.id];
                         const showBrokerC=canSeeBroker(group,l);
                         return(
@@ -2492,7 +2506,7 @@ ${accRows.length>0?`
                                   {["Need to pickup","Dispatched","Dock","Yard","Loaded","Delivered"].map(s=>(<option key={s}>{s}</option>))}
                                 </select>
                                 <span style={{display:"inline-flex",alignItems:"center",gap:"3px",fontSize:"9px",fontWeight:"700",padding:"2px 5px",borderRadius:"4px",background:lSp.bg,color:lSp.c,border:`1.5px solid ${lSp.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}>
-                                  <span style={{width:"5px",height:"5px",borderRadius:"50%",background:lSp.bd}}/>{l.status||"Not set"}
+                                  <span style={{width:"5px",height:"5px",borderRadius:"50%",background:lSp.bd}}/>{lEffSt||"Not set"}
                                 </span>
                               </div>
                               <span style={{fontSize:"10px",color:"#94a3b8",display:"inline-block",transition:"transform .15s",transform:isLExp?"rotate(180deg)":"rotate(0deg)",flexShrink:0}}>▾</span>
@@ -3592,7 +3606,19 @@ ${accRows.length>0?`
                                   <div style={{padding:"8px 12px",display:"flex",flexDirection:"column",gap:"6px"}}>
                                     {[...loads].sort((a,b)=>{const pa=new Date((a.delivery||"").split(" ")[0]).getTime()||Infinity;const pb=new Date((b.delivery||"").split(" ")[0]).getTime()||Infinity;return pa-pb;}).map((l,li)=>{
                                       const sr=parseSR(l.sr||"");
-                                      const lSt=l.status||"";
+                                      // Override status for display on dashboard
+                                      const lRawSt=l.status||"";
+                                      const lPuDash=new Date((l.pickup||"").split(" ")[0]);
+                                      lPuDash.setHours(0,0,0,0);
+                                      const lPuTsDash=isNaN(lPuDash.getTime())?null:lPuDash.getTime();
+                                      const lIsTomDash=lPuTsDash===tomorrowDay.getTime();
+                                      const lIsTodayDash=lPuTsDash===today.getTime();
+                                      const lIsPastDash=lPuTsDash&&lPuTsDash<today.getTime();
+                                      const lSt=(()=>{
+                                        if(lIsTomDash&&(lRawSt===""||lRawSt.toLowerCase()==="need to pickup"))return "Tomorrow";
+                                        if((lIsTodayDash||lIsPastDash)&&lRawSt==="")return "Need to pickup";
+                                        return lRawSt;
+                                      })();
                                       const lStColorMap={"need to pickup":"#dc2626","need to Pickup":"#dc2626","dispatched":"#2563eb","dock":"#7c3aed","yard":"#ca8a04","loaded":"#059669","in transit":"#c2410c","delivered":"#16a34a","tomorrow":"#f97316"};
                                       const lStColor=lStColorMap[(lSt||"").toLowerCase()]||"#94a3b8";
                                       return(
