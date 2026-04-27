@@ -2076,9 +2076,38 @@ ${accRows.length>0?`
                   {group.gross>0&&group.loc>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#86efac"}}>=${(group.gross-group.loc).toLocaleString()} net</span>}
                   {route&&<span style={{fontSize:"9px",color:"rgba(255,255,255,.28)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"180px",flexShrink:1}}>{route}</span>}
                   {isMultiStop&&<span style={{color:"#fbbf24",fontSize:"9px",flexShrink:0}}>{group.loads.length} stops</span>}
-                  {hasDriver&&<span style={{marginLeft:"auto",fontSize:"9px",color:"#86efac",fontWeight:"700",background:"rgba(134,239,172,.1)",border:"1px solid #86efac",padding:"1px 6px",borderRadius:"4px",whiteSpace:"nowrap",flexShrink:0}}>
-                    🚛 {group.groupDriver}{group.groupTruck&&<span style={{marginLeft:"3px",opacity:.7}}>·#{group.groupTruck}</span>}{group.groupTrailer&&<span style={{marginLeft:"3px",opacity:.6}}>/ T{group.groupTrailer}</span>}
-                  </span>}
+                  {/* OTR Driver — editable, removable */}
+                  {isAdmin&&(
+                    <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:"4px",flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                      {hasDriver?(
+                        <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
+                          <span style={{fontSize:"9px",color:"#86efac",fontWeight:"700",background:"rgba(134,239,172,.1)",border:"1px solid #86efac",padding:"1px 6px",borderRadius:"4px",whiteSpace:"nowrap"}}>
+                            🚛 {group.groupDriver}{group.groupTruck&&<span style={{marginLeft:"3px",opacity:.7}}>·#{group.groupTruck}</span>}{group.groupTrailer&&<span style={{marginLeft:"3px",opacity:.6}}>/ T{group.groupTrailer}</span>}
+                          </span>
+                          <button
+                            title="Change or remove OTR driver"
+                            onClick={e=>{e.stopPropagation();setGroup(group.id,"groupDriver","");}}
+                            style={{background:"rgba(239,68,68,.15)",border:"1px solid rgba(239,68,68,.3)",color:"#fca5a5",borderRadius:"3px",padding:"1px 5px",fontSize:"9px",fontWeight:"700",cursor:"pointer",lineHeight:1}}
+                          >✕</button>
+                        </div>
+                      ):(
+                        <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
+                          <input
+                            list={`otr-quick-${group.id}`}
+                            placeholder="Assign OTR driver..."
+                            defaultValue=""
+                            onBlur={e=>{const v=e.target.value.trim();if(v){setGroup(group.id,"groupDriver",v);e.target.value="";}}}
+                            onKeyDown={e=>{if(e.key==="Enter"){const v=e.target.value.trim();if(v){setGroup(group.id,"groupDriver",v);e.target.value="";}}}}
+                            onClick={e=>e.stopPropagation()}
+                            style={{fontSize:"9px",background:"rgba(134,239,172,.1)",border:"1px solid rgba(134,239,172,.3)",borderRadius:"4px",padding:"2px 6px",color:"#86efac",outline:"none",width:"120px",fontFamily:"inherit"}}
+                          />
+                          <datalist id={`otr-quick-${group.id}`}>
+                            {[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}/>))}
+                          </datalist>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {isAdmin&&!hasDriver&&<div style={{display:"flex",alignItems:"center",gap:"3px",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                     <select value={group.groupDriver||""} onChange={e=>setGroup(group.id,"groupDriver",e.target.value)} style={{border:"1px solid rgba(134,239,172,.3)",borderRadius:"4px",background:"rgba(0,0,0,.3)",color:"#86efac",fontSize:"9px",fontWeight:"600",padding:"1px 4px",cursor:"pointer",outline:"none",maxWidth:"110px"}}>
                       <option value="" style={{background:"#1e3a5f",color:"#fff"}}>— OTR Driver —</option>
@@ -2491,7 +2520,8 @@ ${accRows.length>0?`
                               style={{display:"flex",alignItems:"center",gap:"5px",padding:"6px 0",fontSize:"10px",cursor:"pointer",background:isLExp?"#eff6ff":"transparent"}}>
                               <span style={{width:"13px",height:"13px",borderRadius:"50%",background:isLExp?"#bfdbfe":"#e2e8f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"8px",color:isLExp?"#1e40af":"#64748b",flexShrink:0}}>{li+1}</span>
                               <div style={{flex:1,minWidth:0}}>
-                                <div style={{fontWeight:"600",color:"#374151",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:"10px"}}>{sr.r||sr.s||"—"}</div>
+                                <div style={{fontSize:"9px",color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:"1px"}}>{sr.s||""}</div>
+                                <div style={{fontWeight:"600",color:"#374151",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:"10px"}}>→ {sr.r||sr.s||"—"}</div>
                                 <div style={{display:"flex",gap:"6px",flexWrap:"wrap",marginTop:"2px",alignItems:"center"}}>
                                   {l.pickup&&<span style={{fontSize:"9px",color:"#475569",background:"#e0f2fe",padding:"1px 5px",borderRadius:"3px"}}>🛫 {l.pickup}</span>}
                                   {l.delivery&&<span style={{fontSize:"9px",color:"#64748b",background:"#f1f5f9",padding:"1px 5px",borderRadius:"3px"}}>📦 {l.delivery}</span>}
