@@ -2464,8 +2464,10 @@ ${accRows.length>0?`
                       {/* Load list — show full pickup+delivery datetime */}
                       {[...(group.loads||[])].sort((a,b)=>{const pa=new Date((a.delivery||"").split(" ")[0]).getTime()||Infinity;const pb=new Date((b.delivery||"").split(" ")[0]).getTime()||Infinity;return pa-pb;}).map((l,li)=>{
                         const sr=parseSR(l.sr||"");
-                        const lST={"Need to Pickup":{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"},"Dock":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Yard":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Dispatched":{bg:"#dbeafe",c:"#1e40af",bd:"#3b82f6"},"Picked Up":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"In Transit":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"}};
-                        const lSp=l.status?lST[l.status]||{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"}:{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"};
+                        const lST={"Need to pickup":{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"},"Need to Pickup":{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"},"Dock":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Yard":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Dispatched":{bg:"#dbeafe",c:"#1e40af",bd:"#3b82f6"},"Tomorrow":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Picked Up":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"In Transit":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"}};
+                        // Case-insensitive status lookup + smart default
+                        const lStKey=Object.keys(lST).find(k=>k.toLowerCase()===(l.status||"").toLowerCase())||l.status;
+                        const lSp=l.status?lST[lStKey]||{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"}:{bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};
                         const isLExp=!!expandedLoads["c_"+l.id];
                         const showBrokerC=canSeeBroker(group,l);
                         return(
@@ -2477,6 +2479,7 @@ ${accRows.length>0?`
                               <div style={{flex:1,minWidth:0}}>
                                 <div style={{fontWeight:"600",color:"#374151",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:"10px"}}>{sr.r||sr.s||"—"}</div>
                                 <div style={{display:"flex",gap:"6px",flexWrap:"wrap",marginTop:"2px",alignItems:"center"}}>
+                                  {l.pickup&&<span style={{fontSize:"9px",color:"#475569",background:"#e0f2fe",padding:"1px 5px",borderRadius:"3px"}}>🛫 {l.pickup}</span>}
                                   {l.delivery&&<span style={{fontSize:"9px",color:"#64748b",background:"#f1f5f9",padding:"1px 5px",borderRadius:"3px"}}>📦 {l.delivery}</span>}
                                   {(()=>{const lc=l.manualLocalCharge!==""&&l.manualLocalCharge!=null?parseFloat(l.manualLocalCharge):localCharge(cityMiles(parseSR(l.sr||"").s));return lc!=null&&lc>0?<span style={{fontSize:"9px",color:"#b45309",background:"#fffbeb",padding:"1px 5px",borderRadius:"3px",fontWeight:"600"}}>-${lc.toLocaleString()} local</span>:null;})()}
                                 </div>
@@ -2486,7 +2489,7 @@ ${accRows.length>0?`
                                 <select value={l.status||""} onChange={e=>{isAdmin&&setLoad(group.id,l.id,"status",e.target.value);trackField("status");}}
                                   style={{position:"absolute",inset:0,opacity:0,cursor:isAdmin?"pointer":"default",width:"100%",height:"100%",zIndex:2}} disabled={!isAdmin}>
                                   <option value="">— Not set —</option>
-                                  {["Dock","Dispatched","Need to Pickup","Loaded","Yard"].map(s=>(<option key={s}>{s}</option>))}
+                                  {["Need to pickup","Dispatched","Dock","Yard","Loaded","Delivered"].map(s=>(<option key={s}>{s}</option>))}
                                 </select>
                                 <span style={{display:"inline-flex",alignItems:"center",gap:"3px",fontSize:"9px",fontWeight:"700",padding:"2px 5px",borderRadius:"4px",background:lSp.bg,color:lSp.c,border:`1.5px solid ${lSp.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}>
                                   <span style={{width:"5px",height:"5px",borderRadius:"50%",background:lSp.bd}}/>{l.status||"Not set"}
@@ -3590,7 +3593,8 @@ ${accRows.length>0?`
                                     {[...loads].sort((a,b)=>{const pa=new Date((a.delivery||"").split(" ")[0]).getTime()||Infinity;const pb=new Date((b.delivery||"").split(" ")[0]).getTime()||Infinity;return pa-pb;}).map((l,li)=>{
                                       const sr=parseSR(l.sr||"");
                                       const lSt=l.status||"";
-                                      const lStColor={"Dispatched":"#2563eb","Need to Pickup":"#dc2626","Dock":"#7c3aed","Yard":"#ca8a04","Loaded":"#059669","In Transit":"#c2410c"}[lSt]||"#94a3b8";
+                                      const lStColorMap={"need to pickup":"#dc2626","need to Pickup":"#dc2626","dispatched":"#2563eb","dock":"#7c3aed","yard":"#ca8a04","loaded":"#059669","in transit":"#c2410c","delivered":"#16a34a","tomorrow":"#f97316"};
+                                      const lStColor=lStColorMap[(lSt||"").toLowerCase()]||"#94a3b8";
                                       return(
                                         <div key={l.id} style={{display:"flex",alignItems:"flex-start",gap:"8px",padding:"5px 0",borderBottom:li<loads.length-1?"1px solid #f1f5f9":"none"}}>
                                           <span style={{width:"16px",height:"16px",borderRadius:"50%",background:"#e2e8f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"9px",fontWeight:"700",color:"#64748b",flexShrink:0,marginTop:"1px"}}>{l.stop||li+1}</span>
