@@ -315,8 +315,8 @@ function cityMiles(s){
   }
   return null;
 }
-const TIERS=[[10,250],[25,300],[50,350],[75,400],[100,450],[125,500],[150,550]];
-function localCharge(m){if(m==null||m==="")return null;const v=parseFloat(m);if(isNaN(v)||v<0)return null;if(v===0)return 250;for(const[mx,c]of TIERS)if(v<=mx)return c;return 550;}
+const TIERS=[[10,300],[25,350],[50,400],[75,450],[100,500],[125,600],[150,650],[175,700]];
+function localCharge(m){if(m==null||m==="")return null;const v=parseFloat(m);if(isNaN(v)||v<0)return null;if(v===0)return 300;for(const[mx,c]of TIERS)if(v<=mx)return c;return 700;}
 function parsePickupDate(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return null;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);d.setHours(0,0,0,0);return d;}
 function parseTS(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return Infinity;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);if(tm){let h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}else{d.setHours(0,0,0,0);}return d.getTime();}
 function parseSR(t=""){const i=t.indexOf(" - ");return i<0?{s:t.trim(),r:""}:{s:t.slice(0,i).trim(),r:t.slice(i+3).trim()};}
