@@ -1147,8 +1147,11 @@ function App(){
       const rates=(g.loads||[]).map(l=>parseFloat(l.rate)||0).sort((a,b)=>b-a);
       return s+rates.slice(1).reduce((x,r)=>x+r,0);
     },0);
-    const allMi=grps.reduce((s,g)=>s+(g.calcTripMi?parseFloat(g.calcTripMi):(g.autoTripMi||0)),0);
-    const rpm=allMi>0?+((net/allMi).toFixed(2)):0;
+    const allMi=grps.reduce((s,g)=>{
+      const raw=g.tripMiles!==""&&g.tripMiles!=null?parseFloat(g.tripMiles):g.calcTripMi?parseFloat(g.calcTripMi):g.autoTripMi?parseFloat(g.autoTripMi):0;
+      return s+(isNaN(raw)?0:raw);
+    },0);
+    const rpm=allMi>0?Math.round((net/allMi)*100)/100:0;
     // Top drivers
     const drvGross={};
     grps.forEach(g=>{
@@ -1334,7 +1337,21 @@ ${accRows.length>0?`
   const updSub=(sec,id,f,v)=>setW(sec,(week[sec]||[]).map(r=>r.id!==id?r:{...r,[f]:v}));
   const addSub=(sec,mk)=>setW(sec,[...(week[sec]||[]),mk()]);
   const removeSub=(sec,id)=>setW(sec,(week[sec]||[]).filter(r=>r.id!==id));
-  const addWeek=()=>{const l=prompt("Week label (e.g. 3.30.2026 - 4.6.2026)");if(!l)return;setWeeksAndSave(p=>[...p,mkWeek(l)]);setActiveWeek(weeks.length);};
+  const addWeek=()=>{
+    const l=prompt("Week label (e.g. 3.30.2026 - 4.6.2026)");
+    if(!l)return;
+    const lastWk=weeks[weeks.length-1]||{};
+    const DONE=["Delivered","Paid","Completed"];
+    const carryXdock=(lastWk.crossdockDrops||[]).filter(r=>!DONE.includes(r.status||"")).map(r=>({...r,id:uid(),carriedFrom:lastWk.label||"prev"}));
+    const carryAcc=(lastWk.accessorials||[]).filter(r=>r.status!=="Paid").map(r=>({...r,id:uid(),carriedFrom:lastWk.label||"prev"}));
+    const carryOTR=(lastWk.groups||[]).filter(g=>["In Transit","Driver assigned","Loaded"].includes(g.groupStatus||"")).map(g=>({...g,id:uid(),carriedFrom:lastWk.label||"prev"}));
+    const carryLocal=(lastWk.localDeliveries||[]).filter(r=>r.status!=="Delivered").map(r=>({...r,id:uid(),carriedFrom:lastWk.label||"prev"}));
+    const newWk={...mkWeek(l),crossdockDrops:carryXdock,accessorials:carryAcc,groups:[mkGroup(),...carryOTR],localDeliveries:carryLocal};
+    setWeeksAndSave(p=>[...p,newWk]);
+    setActiveWeek(weeks.length);
+    const carried=[carryOTR.length&&carryOTR.length+" OTR",carryLocal.length&&carryLocal.length+" local",carryXdock.length&&carryXdock.length+" crossdock",carryAcc.length&&carryAcc.length+" accessorials"].filter(Boolean);
+    if(carried.length)alert("Carried to new week: "+carried.join(", "));
+  };
   const removeWeek=i=>{if(weeks.length<=1){alert("Cannot remove last week.");return;}if(!confirm("Remove this week?"))return;setWeeksAndSave(p=>p.filter((_,j)=>j!==i));setActiveWeek(0);};
 
   const TH=(bg,ex={})=>({padding:"4px 2px",fontSize:"9px",fontWeight:"600",background:bg||"#1a2e50",color:"#fff",border:"1px solid rgba(255,255,255,0.15)",whiteSpace:"nowrap",textAlign:"center",position:"sticky",top:0,zIndex:5,...ex});
@@ -2012,7 +2029,7 @@ ${accRows.length>0?`
         
       </div>
       {(activeSection==="all"||activeSection==="main")&&week.openSections?.main&&(
-      <div style={{display:"flex",gap:"10px",alignItems:"flex-start",padding:"10px",background:"#f0f4f8",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px"}}>
+      <div style={{display:"flex",gap:"10px",alignItems:"flex-start",padding:"10px",background:"#f0f4f8",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",maxWidth:"100%",boxSizing:"border-box"}}>
 
         {/* ════ LEFT PANEL ════ */}
         <div style={{flex:"3 1 0",minWidth:0,display:"flex",flexDirection:"column",gap:"8px"}}>
@@ -2120,7 +2137,7 @@ ${accRows.length>0?`
                 </div>
 
                 {/* ── COLUMN HEADERS ── */}
-                <div style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 152px 152px 54px 30px 108px 90px 90px 82px 90px 22px",gap:"18px",padding:"5px 16px",background:"#f1f5f9",borderBottom:"1px solid #e2e8f0",fontSize:"10px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",alignItems:"center"}}>
+                <div style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 55px 75px 55px 65px 78px 22px",gap:"10px",padding:"5px 12px",background:"#f1f5f9",borderBottom:"1px solid #e2e8f0",fontSize:"10px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",alignItems:"center"}}>
                   <span/>
                   <span onClick={()=>setPlanSort(p=>p==="pickup"?"default":"pickup")} style={{cursor:"pointer",color:planSort==="pickup"?"#2563eb":"#64748b"}}>Route{planSort==="pickup"?" ▲":""}</span>
                   <span onClick={()=>setPlanSort(p=>p==="pickup"?"default":"pickup")} style={{cursor:"pointer",color:planSort==="pickup"?"#2563eb":"#64748b"}}>Pickup</span>
@@ -2163,7 +2180,7 @@ ${accRows.length>0?`
                         onDragOver={e=>{if(!dragLoad.current)return;e.preventDefault();e.currentTarget.style.boxShadow="inset 0 -3px 0 #3b82f6";}}
                         onDragLeave={e=>{e.currentTarget.style.boxShadow="";}}
                         onDrop={e=>{e.preventDefault();e.currentTarget.style.boxShadow="";if(!dragLoad.current||!isAdmin)return;const dl=dragLoad.current;dragLoad.current=null;moveLoad(dl.fromGroupId,group.id,dl.loadId,li);}}
-                        style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 152px 152px 54px 30px 108px 90px 90px 82px 90px 22px",gap:"18px",padding:"9px 16px",alignItems:"center",fontSize:"12px",background:isExp?"#eff6ff":li%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #e5edf5",cursor:"pointer",transition:"background .1s",borderLeft:isExp?"3px solid #3b82f6":"3px solid transparent"}}
+                        style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 55px 75px 55px 65px 78px 22px",gap:"10px",padding:"7px 12px",alignItems:"center",fontSize:"12px",background:isExp?"#eff6ff":li%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #e5edf5",cursor:"pointer",transition:"background .1s",borderLeft:isExp?"3px solid #3b82f6":"3px solid transparent"}}
                       >
                         {/* Stop dot */}
                         <div style={{width:"18px",height:"18px",borderRadius:"50%",background:isExp?"#bfdbfe":isAdmin?"#c7d2fe":"#e2e8f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"10px",fontWeight:"700",color:isExp?"#1e40af":isAdmin?"#4338ca":"#64748b",flexShrink:0,cursor:isAdmin?"grab":"default",userSelect:"none"}} draggable={isAdmin} onDragStart={e=>{if(!isAdmin)return;e.stopPropagation();dragLoad.current={loadId:load.id,fromGroupId:group.id};dragGroupIdx.current=null;e.dataTransfer.effectAllowed="move";const row=e.currentTarget.closest("[id='load-"+load.id+"']");if(row){row.style.opacity="0.5";row.style.outline="2px solid #3b82f6";}}} onDragEnd={e=>{e.stopPropagation();const row=document.getElementById("load-"+load.id);if(row){row.style.opacity="1";row.style.outline="";}dragLoad.current=null;dragGroupIdx.current=null;}} title="Drag to combine with another trailer">{load.stop||li+1}</div>
@@ -2392,7 +2409,7 @@ ${accRows.length>0?`
           const hasMulti=(pendingGroups||[]).some(g=>!g.isCombined&&(g.loads||[]).length>1);
           if(!combined.length&&!hasMulti)return null;
           return(
-            <div style={{flex:"1 1 0",minWidth:"180px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:"8px",overflow:"hidden",alignSelf:"flex-start"}}>
+            <div style={{flex:"2 1 0",minWidth:"300px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:"8px",overflow:"hidden",alignSelf:"flex-start"}}>
               <div style={{background:"#1a2e50",padding:"7px 12px",display:"flex",alignItems:"center",gap:"8px"}}>
                 <span style={{color:"#fff",fontWeight:"700",fontSize:"12px"}}>🔄 Combined</span>
                 <span style={{background:"rgba(255,255,255,.15)",color:"#fff",fontSize:"10px",padding:"1px 6px",borderRadius:"10px"}}>{combined.length}</span>
@@ -2710,174 +2727,216 @@ ${accRows.length>0?`
 
 
       {/* OTR */}
-            {(activeSection==="all"||activeSection==="otr")&&otrGroups.length>0&&(<><div id="section-otr" className="section-header" style={{background:"linear-gradient(90deg,#4c1d95,#5b21b6)",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("otr")}><span>{week.openSections?.otr!==false?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>🚛 OTR — In Transit & Delivered</span><span style={{fontSize:"11px",opacity:.75,marginLeft:"6px"}}>{otrGroups.filter(g=>g.groupStatus==="In Transit").length} rolling · {otrGroups.filter(g=>g.groupStatus==="Delivered").length} delivered</span></div>{week.openSections?.otr!==false&&(<div style={{border:"1px solid #7c3aed",borderTop:"none",borderRadius:"0 0 8px 8px",background:"#0f0a1e"}}>{[...otrGroups].sort((a,b)=>{const aD=a.groupStatus==="Delivered"?1:0;const bD=b.groupStatus==="Delivered"?1:0;return aD-bD;}).map((group)=>{const loads=[...group.loads].sort((a,b)=>parseTS(a.delivery)-parseTS(b.delivery));const otrNet=group.gross-group.loc;return(<div key={group.id} style={{borderBottom:"1px solid rgba(139,92,246,0.2)",padding:"10px 14px"}}>
-            {/* Group header row */}
-            <div style={{display:"flex",alignItems:"center",gap:"10px",flexWrap:"wrap",marginBottom:"8px"}}>
-              <span style={{fontSize:"13px",fontWeight:"800",color:"#fff",background:"#7c3aed",padding:"2px 10px",borderRadius:"5px",flexShrink:0}}>T</span>
-              <span style={{fontSize:"12px",fontWeight:"700",color:"#e2e8f0"}}>{group.groupDriver||"No driver"}</span>
-              {group.groupTruck&&<span style={{fontSize:"11px",color:"#a78bfa"}}>🚚#{group.groupTruck}</span>}
-              {group.groupTrailer&&<span style={{fontSize:"11px",color:"#a78bfa"}}>🚛#{group.groupTrailer}</span>}
-              {/* Financials */}
-              <div style={{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap",marginLeft:"4px"}}>
-                {group.gross>0&&<span style={{fontSize:"11px",fontWeight:"700",color:"#93c5fd",background:"rgba(147,197,253,0.1)",border:"1px solid rgba(147,197,253,0.3)",padding:"1px 8px",borderRadius:"4px"}}>${group.gross.toLocaleString()}</span>}
-                {group.loc>0&&<span style={{fontSize:"10px",color:"#fcd34d"}}>−${group.loc.toLocaleString()}</span>}
-                {group.gross>0&&<span style={{fontSize:"11px",fontWeight:"800",color:"#86efac",background:"rgba(134,239,172,0.1)",border:"1px solid rgba(134,239,172,0.3)",padding:"1px 8px",borderRadius:"4px"}}>=${otrNet.toLocaleString()} net</span>}
-                {group.calcTripMi&&<span style={{fontSize:"10px",color:"#c4b5fd",background:"rgba(196,181,253,0.1)",border:"1px solid rgba(196,181,253,0.3)",padding:"1px 8px",borderRadius:"4px"}}>📍{group.calcTripMi}mi</span>}
-                {group.rpm!=null&&<span style={{fontSize:"11px",fontWeight:"700",padding:"1px 8px",borderRadius:"4px",border:"1px solid",color:group.rpm>=3?"#166534":group.rpm<2.5?"#991b1b":"#92400e",background:group.rpm>=3?"#dcfce7":group.rpm<2.5?"#fee2e2":"#fef9c3",borderColor:group.rpm>=3?"#86efac":group.rpm<2.5?"#fca5a5":"#fde68a"}}>${group.rpm}/mi</span>}
-              </div>
-              {(()=>{
-                const gSt=group.groupStatus||"Pending";
-                const statusColors={
-                  "Pending":{bg:"rgba(107,114,128,.15)",c:"#9ca3af",bd:"#6b7280"},
-                  "Driver assigned":{bg:"rgba(194,65,12,.15)",c:"#fb923c",bd:"#c2410c"},
-                  "Loaded":{bg:"rgba(146,64,14,.15)",c:"#fcd34d",bd:"#92400e"},
-                  "In Transit":{bg:"rgba(91,33,182,.15)",c:"#a78bfa",bd:"#7c3aed"},
-                  "Delivered":{bg:"rgba(22,101,52,.2)",c:"#86efac",bd:"#16a34a"},
-                  "Issue":{bg:"rgba(190,18,60,.15)",c:"#fca5a5",bd:"#be123c"}
-                };
-                const sc=statusColors[gSt]||statusColors["Pending"];
-                return(
-                  <div style={{position:"relative",marginLeft:"auto"}}>
-                    <select value={gSt} onChange={e=>isAdmin&&setGroup(group.id,"groupStatus",e.target.value)}
-                      style={{position:"absolute",inset:0,opacity:0,cursor:isAdmin?"pointer":"not-allowed",width:"100%",height:"100%",zIndex:2}}
-                      disabled={!isAdmin}>
-                      {Object.keys(GSS).map(s=>(<option key={s}>{s}</option>))}
-                    </select>
-                    <span style={{display:"inline-flex",alignItems:"center",gap:"4px",fontSize:"11px",fontWeight:"800",padding:"2px 8px",borderRadius:"4px",background:sc.bg,color:sc.c,border:`1.5px solid ${sc.bd}`,userSelect:"none",whiteSpace:"nowrap"}}>
-                      <span style={{width:"6px",height:"6px",borderRadius:"50%",background:sc.bd,flexShrink:0}}/>
-                      {gSt}
-                    </span>
-                  </div>
-                );
-              })()}
-            </div>
-            {/* Load rows */}
-            {loads.map((load,li)=>{
-              const lrc=rowColor(load,today,tomorrow);
-              const showBroker=canSeeBroker(group,load);
-              const brokerName=load.broker?load.broker.split("&")[0].trim():"";
-              const loadNum=load.broker&&load.broker.includes("&")?load.broker.split("&")[1]?.trim():"";
-              return(<div key={load.id} style={{display:"flex",alignItems:"center",gap:"8px",background:"rgba(255,255,255,0.04)",borderRadius:"6px",padding:"6px 10px",border:`1px solid ${lrc.stripe}33`,flexWrap:"wrap",marginBottom:"4px"}}>
-                {loads.length>1&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fbbf24",background:"rgba(251,191,36,0.15)",border:"1px solid rgba(251,191,36,0.4)",borderRadius:"4px",padding:"1px 6px",flexShrink:0}}>Stop {li+1}</span>}
-                <span style={{fontSize:"11px",fontWeight:"600",color:"#e2e8f0",flex:"1",minWidth:"150px"}}>{load.sr||"—"}</span>
-                {/* Broker & Load# - visibility controlled */}
-                {showBroker
-                  ? <span style={{fontSize:"10px",color:"#7dd3fc",fontWeight:"600",background:"rgba(125,211,252,0.1)",border:"1px solid rgba(125,211,252,0.25)",padding:"1px 7px",borderRadius:"4px",whiteSpace:"nowrap"}}>{brokerName}{loadNum&&<span style={{marginLeft:"4px",color:"#fbbf24"}}>#{loadNum}</span>}</span>
-                  : <span style={{fontSize:"10px",color:"#475569",fontStyle:"italic"}}>●●● hidden</span>
-                }
-                {/* Local pickup driver */}
-                {load.driver&&<span style={{fontSize:"10px",color:"#86efac",background:"rgba(134,239,172,0.08)",border:"1px solid rgba(134,239,172,0.25)",padding:"1px 7px",borderRadius:"4px",whiteSpace:"nowrap"}}>🧑 {load.driver}</span>}
-                <span style={{fontSize:"10px",color:"#a78bfa",whiteSpace:"nowrap"}}>🛫 {load.pickup||"—"}</span>
-                <span style={{fontSize:"10px",color:"#cbd5e1",whiteSpace:"nowrap"}}>📦 {load.delivery||"—"}</span>
-                {(()=>{const ts=parseTS(load.delivery);if(ts===Infinity)return null;const diff=ts-Date.now();const hrs=Math.abs(Math.round(diff/3600000));const color=diff<0?"#f87171":diff<12*3600000?"#fbbf24":"#34d399";if(Math.abs(diff)>72*3600000)return null;return<span style={{fontSize:"10px",fontWeight:"700",color,background:"rgba(0,0,0,0.25)",padding:"1px 7px",borderRadius:"10px",border:`1px solid ${color}55`,whiteSpace:"nowrap",flexShrink:0}}>⏱ {diff<0?`${hrs}h late`:`${hrs}h left`}</span>;})()}
-                {/* Rate per load */}
-                {(parseFloat(load.rate)||0)>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#86efac",background:"rgba(134,239,172,0.1)",border:"1px solid rgba(134,239,172,0.25)",padding:"1px 7px",borderRadius:"4px",whiteSpace:"nowrap"}}>${(parseFloat(load.rate)||0).toLocaleString()}</span>}
-                <select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{fontSize:"10px",fontWeight:"600",color:lrc.tc,background:lrc.barBg,border:`1px solid ${lrc.bar}`,borderRadius:"4px",padding:"1px 4px",cursor:isAdmin?"pointer":"not-allowed",outline:"none",flexShrink:0}} disabled={!isAdmin}><option value="">— Not set —</option>{LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}</select>
+            {(activeSection==="all"||activeSection==="otr")&&otrGroups.length>0&&(<><div id="section-otr" className="section-header" style={{background:"linear-gradient(90deg,#4c1d95,#5b21b6)",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("otr")}><span>{week.openSections?.otr!==false?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>🚛 OTR — In Transit & Delivered</span><span style={{fontSize:"11px",opacity:.75,marginLeft:"6px"}}>{otrGroups.filter(g=>g.groupStatus==="In Transit").length} rolling · {otrGroups.filter(g=>g.groupStatus==="Delivered").length} delivered</span></div>{week.openSections?.otr!==false&&(<div style={{border:"1px solid #7c3aed",borderTop:"none",borderRadius:"0 0 8px 8px",background:"#0f0a1e"}}>{(()=>{
+            const STATUS_ORDER=["In Transit","Driver assigned","Loaded","Pending","Delivered","Issue"];
+            const SSTYLE={
+              "In Transit":{bg:"#f5f3ff",c:"#5b21b6",bd:"#7c3aed",lbdr:"#7c3aed"},
+              "Driver assigned":{bg:"#fff7ed",c:"#c2410c",bd:"#fb923c",lbdr:"#fb923c"},
+              "Loaded":{bg:"#fffbeb",c:"#92400e",bd:"#fcd34d",lbdr:"#d97706"},
+              "Pending":{bg:"#f9fafb",c:"#6b7280",bd:"#d1d5db",lbdr:"#9ca3af"},
+              "Delivered":{bg:"#f0fdf4",c:"#166534",bd:"#86efac",lbdr:"#22c55e"},
+              "Issue":{bg:"#fff1f2",c:"#be123c",bd:"#fca5a5",lbdr:"#ef4444"}
+            };
+            const byStatus={};
+            STATUS_ORDER.forEach(s=>{byStatus[s]=[];});
+            otrGroups.forEach(g=>{const st=g.groupStatus||"Pending";if(!byStatus[st])byStatus[st]=[];byStatus[st].push(g);});
+
+            return STATUS_ORDER.filter(st=>byStatus[st]&&byStatus[st].length>0).map(st=>{
+              const ss=SSTYLE[st]||SSTYLE["Pending"];
+              const groups=byStatus[st];
+              return(<div key={st} style={{marginBottom:"10px"}}>
+                {/* Status group tab */}
+                <div style={{display:"flex",alignItems:"center",gap:"6px",padding:"4px 8px 4px 0",marginBottom:"5px"}}>
+                  <span style={{display:"inline-flex",alignItems:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 12px",borderRadius:"12px",background:ss.bg,color:ss.c,border:`1.5px solid ${ss.bd}`}}>
+                    <span style={{width:"6px",height:"6px",borderRadius:"50%",background:ss.bd,flexShrink:0}}/>
+                    {st}
+                  </span>
+                  <span style={{fontSize:"10px",color:"#94a3b8"}}>{groups.length} trailer{groups.length!==1?"s":""}</span>
+                </div>
+
+                {/* Trailer cards — 2-col grid like Combined */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))",gap:"8px"}}>
+                {groups.map(group=>{
+                  const loads=[...group.loads].sort((a,b)=>parseTS(a.delivery)-parseTS(b.delivery));
+                  const otrNet=Math.round(group.gross-group.loc);
+                  const mi=group.tripMiles!==""&&group.tripMiles!=null?parseFloat(group.tripMiles):group.calcTripMi?parseFloat(group.calcTripMi):group.autoTripMi?parseFloat(group.autoTripMi):null;
+                  return(
+                    <div key={group.id} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"10px",overflow:"hidden",marginBottom:"7px",borderLeft:`3px solid ${ss.lbdr}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+                      {/* Card header — dark banner like Combined */}
+                      <div style={{background:"#0f1f3d",padding:"8px 12px",display:"flex",alignItems:"center",gap:"7px",flexWrap:"wrap"}}>
+                        {group.groupTruck&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 8px",borderRadius:"4px"}}>#{group.groupTruck}</span>}
+                        {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"2px 8px",borderRadius:"4px"}}>T{group.groupTrailer}</span>}
+                        <span style={{fontSize:"12px",fontWeight:"700",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{group.groupDriver||<span style={{color:"rgba(255,255,255,.35)",fontStyle:"italic",fontWeight:"400"}}>No driver</span>}</span>
+                        {mi&&<span style={{fontSize:"10px",color:"rgba(255,255,255,.4)",whiteSpace:"nowrap"}}>{Math.round(mi).toLocaleString()} mi</span>}
+                        <span style={{fontSize:"13px",fontWeight:"900",color:"#86efac",whiteSpace:"nowrap"}}>${otrNet.toLocaleString()}</span>
+                        {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
+                          <select value={group.groupStatus||"Pending"} onChange={e=>setGroup(group.id,"groupStatus",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 5px",borderRadius:"4px",border:`1px solid ${ss.bd}`,background:ss.bg,color:ss.c,cursor:"pointer",outline:"none",maxWidth:"90px"}} disabled={!isAdmin}>
+                            {Object.keys(GSS).map(s=>(<option key={s}>{s}</option>))}
+                          </select>
+                        </div>}
+                      </div>
+
+                      {/* Load rows — compact like Combined collapsed rows */}
+                      {loads.map((load,li)=>{
+                        const lrc=rowColor(load,today,tomorrow);
+                        const sr=parseSR(load.sr||"");
+                        const showBroker=canSeeBroker(group,load);
+                        const brokerName=load.broker?load.broker.split("&")[0].trim():"";
+                        return(
+                          <div key={load.id} style={{display:"flex",alignItems:"center",gap:"6px",padding:"6px 12px",borderTop:"1px solid #f1f5f9",flexWrap:"nowrap"}}>
+                            <span style={{width:"15px",height:"15px",borderRadius:"50%",background:lrc.barBg,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"8px",fontWeight:"800",color:lrc.tc,flexShrink:0}}>{li+1}</span>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontSize:"10px",color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sr.s||""}</div>
+                              <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>→ {sr.r||sr.s||"—"}</div>
+                            </div>
+                            {load.delivery&&<span style={{fontSize:"9px",color:"#64748b",whiteSpace:"nowrap",flexShrink:0}}>📦 {load.delivery}</span>}
+                            {showBroker&&brokerName&&<span style={{fontSize:"9px",color:"#94a3b8",whiteSpace:"nowrap",flexShrink:0}}>{brokerName}</span>}
+                            {(parseFloat(load.rate)||0)>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#059669",whiteSpace:"nowrap",flexShrink:0}}>${(parseFloat(load.rate)||0).toLocaleString()}</span>}
+                            {isAdmin&&<select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"600",color:lrc.tc,background:lrc.barBg,border:`1px solid ${lrc.bar}`,borderRadius:"4px",padding:"1px 3px",cursor:"pointer",outline:"none",flexShrink:0}} disabled={!isAdmin}>
+                              <option value="">— set —</option>
+                              {LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}
+                            </select>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+                </div>
               </div>);
-            })}
-          </div>);})}</div>)}</>)}
+            });
+          })()}</div>)}</>)}
 
       {/* LOCAL DELIVERIES */}
       {(activeSection==="all"||activeSection==="local")&&<div id="section-local" className="section-header" style={{background:"#065f46",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("local")}><span>{week.openSections?.local?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>Local Deliveries</span><span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.localDeliveries||[]).length} entries</span></div>}
-      {(activeSection==="all"||activeSection==="local")&&week.openSections?.local&&(<div style={{border:"1px solid #bfdbfe",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%",minWidth:"900px"}}><colgroup><col style={{width:"160px"}}/><col style={{width:"85px"}}/><col style={{width:"85px"}}/><col style={{width:"100px"}}/><col style={{width:"100px"}}/><col style={{width:"130px"}}/><col style={{width:"130px"}}/><col style={{width:"110px"}}/><col style={{width:"100px"}}/><col style={{width:"28px"}}/></colgroup><thead><tr>{["Destination","Trailer #","Truck #","Broker","Load #","Date / Time","Driver","Notes","Status",""].map((h,i)=>(<th key={i} style={TH("#065f46")}>{h}</th>))}</tr></thead><tbody>{!(week.localDeliveries||[]).length&&<tr><td colSpan={10} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:ROW_BG}}>No local deliveries</td></tr>}{(week.localDeliveries||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#f0fdf4";return(<tr key={row.id} style={{borderBottom:"1px solid rgba(0,0,0,0.06)"}}>
-<td style={CELL(ROW_BG)}><input value={row.destination||""} onChange={e=>updSub("localDeliveries",row.id,"destination",e.target.value)} style={INCEL()} placeholder="City / Address" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG)}><select value={row.trailer||""} onChange={e=>updSub("localDeliveries",row.id,"trailer",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.trailer?"#7c3aed":"#9ca3af"}} disabled={isViewer}><option value="">—</option>{[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
-<td style={CELL(ROW_BG)}><select value={row.truck||""} onChange={e=>updSub("localDeliveries",row.id,"truck",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.truck?"#1e40af":"#9ca3af"}} disabled={isViewer}><option value="">—</option>{[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}</select></td>
-<td style={CELL(ROW_BG)}><input value={row.broker||""} onChange={e=>updSub("localDeliveries",row.id,"broker",e.target.value)} style={INCEL()} placeholder="Broker" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG)}><input value={row.loadNum||""} onChange={e=>updSub("localDeliveries",row.id,"loadNum",e.target.value)} style={INCEL()} placeholder="Load #" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG)}><input value={row.datetime||""} onChange={e=>updSub("localDeliveries",row.id,"datetime",e.target.value)} style={INCEL()} placeholder="3/31/2026 8AM" disabled={!isAdmin}/></td>
-<td style={CELL(ROW_BG)}><select value={row.driver||""} onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)} style={{...INCEL({cursor:isViewer?"not-allowed":"pointer"}),color:row.driver?"#065f46":"#9ca3af"}} disabled={isViewer}><option value="">— Driver —</option>{DRIVERS.map(d=>(<option key={d} value={d}>{d}</option>))}</select></td>
-<td style={CELL(ROW_BG)}><input value={row.notes||""} onChange={e=>updSub("localDeliveries",row.id,"notes",e.target.value)} style={INCEL()} placeholder="Notes" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG,{padding:"3px 4px",minWidth:"130px"})}>{(()=>{
-  const dt=parsePickupDate(row.datetime);
-  const dtT=dt?dt.getTime():null;
-  const todayT=today.getTime();
-  const tomorrowT=tomorrow.getTime();
-  let p;
-  if(row.status==="In Transit"){p={bg:"#ede9fe",c:"#5b21b6",bd:"#7c3aed"};}
-  else if(row.status==="Waiting Appointment"){p={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
-  else if(row.status==="Delivered"){p={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
-  else if(row.status==="Need to deliver"||!row.status){
-    if(dtT===todayT){p={bg:"#fef9c3",c:"#713f12",bd:"#eab308"};}
-    else if(dtT&&dtT>todayT){p={bg:"#fee2e2",c:"#991b1b",bd:"#f87171"};}
-    else{p={bg:"#fef9c3",c:"#713f12",bd:"#eab308"};}
-  } else {p={bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};}
-  return(<div style={{position:"relative"}}>
-    <select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{position:"absolute",inset:0,opacity:0,cursor:isViewer?"not-allowed":"pointer",width:"100%",height:"100%",zIndex:2}} disabled={isViewer}>
-      <option value="">— Status —</option>
-      <option>Need to deliver</option>
-      <option>In Transit</option>
-      <option>Waiting Appointment</option>
-      <option>Delivered</option>
-    </select>
-    <span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",background:p.bg,color:p.c,border:`2px solid ${p.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}><span style={{width:"7px",height:"7px",borderRadius:"50%",background:p.bd,flexShrink:0}}/>{row.status||"— Status —"}</span>
-  </div>);
-})()}</td>
-<td style={CELL(ROW_BG,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>{if(window.confirm("Delete this local delivery?"))removeSub("localDeliveries",row.id);}} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
-</tr>);})}</tbody></table>{!isViewer&&<div style={{padding:"8px 12px",background:"#eff6ff",borderTop:"1px solid #bfdbfe"}}><button onClick={()=>addSub("localDeliveries",mkLocal)} style={{background:"#059669",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Local Delivery</button></div>}</div>)}
+      {(activeSection==="all"||activeSection==="local")&&week.openSections?.local&&(<div style={{border:"1px solid #d1fae5",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"10px",background:"#f0fdf4"}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:"8px",marginBottom:"8px"}}>
+        {!(week.localDeliveries||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No local deliveries</div>}
+        {(week.localDeliveries||[]).map((row,i)=>{
+          const dt=parsePickupDate(row.datetime);const dtT=dt?dt.getTime():null;const todayT=today.getTime();
+          let sp;
+          if(row.status==="Delivered"){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
+          else if(row.status==="In Transit"){sp={bg:"#ede9fe",c:"#5b21b6",bd:"#7c3aed"};}
+          else if(row.status==="Waiting Appointment"){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
+          else{sp=dtT&&dtT<=todayT?{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}:{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
+          const isDone=row.status==="Delivered";
+          return(
+            <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${sp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDone?.65:1}}>
+              <div style={{background:"#065f46",padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
+                {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>T{row.trailer}</span>}
+                {row.truck&&<span style={{fontSize:"11px",fontWeight:"700",color:"#6ee7b7",background:"rgba(110,231,183,.1)",padding:"2px 7px",borderRadius:"4px"}}>#{row.truck}</span>}
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
+                {row.carriedFrom&&<span style={{fontSize:"8px",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>&#8617; carried</span>}
+                <select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"100px"}} disabled={isViewer}>
+                  <option value="">-- status --</option>
+                  {["Need to deliver","In Transit","Waiting Appointment","Delivered"].map(s=>(<option key={s}>{s}</option>))}
+                </select>
+              </div>
+              <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
+                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div>
+                <input value={row.broker||""} onChange={e=>updSub("localDeliveries",row.id,"broker",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Broker" disabled={isViewer}/></div>
+                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div>
+                <input value={row.loadNum||""} onChange={e=>updSub("localDeliveries",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
+                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
+                <input value={row.datetime||""} onChange={e=>updSub("localDeliveries",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
+                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Driver</div>
+                <input value={row.driver||""} onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/></div>
+                {row.amount?<div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
+                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
+                <input value={row.notes||""} onChange={e=>updSub("localDeliveries",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
+              </div>
+              {isAdmin&&<div style={{padding:"2px 12px 8px",display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setW("localDeliveries",(week.localDeliveries||[]).filter(r=>r.id!==row.id))} style={{fontSize:"9px",color:"#ef4444",background:"none",border:"1px solid #fecaca",borderRadius:"4px",padding:"2px 8px",cursor:"pointer"}}>&#10005; Remove</button></div>}
+            </div>
+          );
+        })}
+        </div>
+        {isAdmin&&<button onClick={()=>setW("localDeliveries",[...(week.localDeliveries||[]),{id:uid(),destination:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",amount:"",status:""}])} style={{background:"#065f46",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Local Delivery</button>}
+      </div>)}
 
       {/* CROSSDOCK */}
       {(activeSection==="all"||activeSection==="xdrop")&&<div id="section-xdrop" className="section-header" style={{background:"#7c3aed",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("xdrop")}><span>{week.openSections?.xdrop?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>Loads Dropped at Crossdock</span><span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.crossdockDrops||[]).length} entries</span></div>}
-      {(activeSection==="all"||activeSection==="xdrop")&&week.openSections?.xdrop&&(<div style={{border:"1px solid #bfdbfe",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%",minWidth:"900px"}}><colgroup><col style={{width:"160px"}}/><col style={{width:"130px"}}/><col style={{width:"100px"}}/><col style={{width:"100px"}}/><col style={{width:"130px"}}/><col style={{width:"130px"}}/><col style={{width:"110px"}}/><col style={{width:"100px"}}/><col style={{width:"28px"}}/></colgroup><thead><tr>{["Location","Crossdock","Broker","Load #","Date / Time","Driver","Notes","Status",""].map((h,i)=>(<th key={i} style={TH("#7c3aed")}>{h}</th>))}</tr></thead><tbody>{!(week.crossdockDrops||[]).length&&<tr><td colSpan={9} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:ROW_BG}}>No crossdock drops</td></tr>}{(week.crossdockDrops||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#faf5ff";return(<tr key={row.id} style={{borderBottom:"1px solid #d1d5db"}}>
-<td style={CELL(ROW_BG)}><input value={row.location||""} onChange={e=>updSub("crossdockDrops",row.id,"location",e.target.value)} style={INCEL()} placeholder="Delivery city" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG)}><input value={row.trailer||""} onChange={e=>updSub("crossdockDrops",row.id,"trailer",e.target.value)} style={INCEL()} placeholder="Crossdock name" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG)}><input value={row.broker||""} onChange={e=>updSub("crossdockDrops",row.id,"broker",e.target.value)} style={INCEL()} placeholder="Broker" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG)}><input value={row.loadNum||""} onChange={e=>updSub("crossdockDrops",row.id,"loadNum",e.target.value)} style={INCEL()} placeholder="Load #" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG)}><input value={row.datetime||""} onChange={e=>updSub("crossdockDrops",row.id,"datetime",e.target.value)} style={INCEL()} placeholder="3/31/2026 8AM" disabled={!isAdmin}/></td>
-<td style={CELL(ROW_BG)}><input value={row.driver||""} onChange={e=>updSub("crossdockDrops",row.id,"driver",e.target.value)} style={INCEL()} placeholder="Driver / #" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG)}><input value={row.notes||""} onChange={e=>updSub("crossdockDrops",row.id,"notes",e.target.value)} style={INCEL()} placeholder="Notes" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG,{padding:"3px 4px",minWidth:"130px"})}>{(()=>{
-  const dt=parsePickupDate(row.datetime);const dtT=dt?dt.getTime():null;const todayT=today.getTime();
-  let p;
-  if(row.status==="In Transit"){p={bg:"#ede9fe",c:"#5b21b6",bd:"#7c3aed"};}
-  else if(row.status==="Waiting Appointment"){p={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
-  else if(row.status==="Delivered"){p={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
-  else{p=dtT===todayT?{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}:dtT&&dtT>todayT?{bg:"#fee2e2",c:"#991b1b",bd:"#f87171"}:{bg:"#fef9c3",c:"#713f12",bd:"#eab308"};}
-  return(<div style={{position:"relative"}}>
-    <select value={row.status||""} onChange={e=>updSub("crossdockDrops",row.id,"status",e.target.value)} style={{position:"absolute",inset:0,opacity:0,cursor:isViewer?"not-allowed":"pointer",width:"100%",height:"100%",zIndex:2}} disabled={isViewer}>
-      <option value="">— Status —</option>
-      <option>Need to deliver</option>
-      <option>In Transit</option>
-      <option>Waiting Appointment</option>
-      <option>Delivered</option>
-    </select>
-    <span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",background:p.bg,color:p.c,border:`2px solid ${p.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}><span style={{width:"7px",height:"7px",borderRadius:"50%",background:p.bd,flexShrink:0}}/>{row.status||"— Status —"}</span>
-  </div>);
-})()}</td>
-<td style={CELL(ROW_BG,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>{if(window.confirm("Delete this crossdock entry?"))removeSub("crossdockDrops",row.id);}} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
-</tr>);})}</tbody></table>{!isViewer&&<div style={{padding:"8px 12px",background:"#eff6ff",borderTop:"1px solid #bfdbfe"}}><button onClick={()=>addSub("crossdockDrops",mkXDrop)} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button></div>}</div>)}
+      {(activeSection==="all"||activeSection==="xdrop")&&week.openSections?.xdrop&&(<div style={{border:"1px solid #ede9fe",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"10px",background:"#f5f3ff"}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:"8px",marginBottom:"8px"}}>
+        {!(week.crossdockDrops||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No crossdock drops</div>}
+        {(week.crossdockDrops||[]).map((row,i)=>{
+          const dt=parsePickupDate(row.datetime);const dtT=dt?dt.getTime():null;const todayT=today.getTime();
+          let sp;
+          if(row.status==="Delivered"){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
+          else if(row.status==="In Transit"){sp={bg:"#ede9fe",c:"#5b21b6",bd:"#7c3aed"};}
+          else if(row.status==="Waiting Appointment"){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
+          else{sp=dtT&&dtT<=todayT?{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}:{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
+          const isDone=row.status==="Delivered";
+          return(
+            <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${sp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDone?.65:1}}>
+              <div style={{background:"#7c3aed",padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
+                {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>{row.trailer}</span>}
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.location||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No location</span>}</span>
+                {row.carriedFrom&&<span style={{fontSize:"8px",color:"#c4b5fd",background:"rgba(196,181,253,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>&#8617; carried</span>}
+                <select value={row.status||""} onChange={e=>updSub("crossdockDrops",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"100px"}} disabled={isViewer}>
+                  <option value="">-- status --</option>
+                  {["In Transit","Waiting Appointment","Delivered"].map(s=>(<option key={s}>{s}</option>))}
+                </select>
+              </div>
+              <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
+                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div>
+                <input value={row.broker||""} onChange={e=>updSub("crossdockDrops",row.id,"broker",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Broker" disabled={isViewer}/></div>
+                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div>
+                <input value={row.loadNum||""} onChange={e=>updSub("crossdockDrops",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
+                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
+                <input value={row.datetime||""} onChange={e=>updSub("crossdockDrops",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
+                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Driver</div>
+                <input value={row.driver||""} onChange={e=>updSub("crossdockDrops",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/></div>
+                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
+                <input value={row.notes||""} onChange={e=>updSub("crossdockDrops",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
+              </div>
+              {isAdmin&&<div style={{padding:"2px 12px 8px",display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setW("crossdockDrops",(week.crossdockDrops||[]).filter(r=>r.id!==row.id))} style={{fontSize:"9px",color:"#ef4444",background:"none",border:"1px solid #fecaca",borderRadius:"4px",padding:"2px 8px",cursor:"pointer"}}>&#10005; Remove</button></div>}
+            </div>
+          );
+        })}
+        </div>
+        {isAdmin&&<button onClick={()=>setW("crossdockDrops",[...(week.crossdockDrops||[]),{id:uid(),location:"",trailer:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""}])} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button>}
+      </div>)}
 
       {/* ACCESSORIALS */}
       {(activeSection==="all"||activeSection==="acc")&&<div id="section-acc" className="section-header" style={{background:"#b45309",marginTop:"10px",borderRadius:"6px 6px 0 0"}} onClick={()=>toggleSection("acc")}><span>{week.openSections?.acc?"▼":"▶"}</span><span style={{fontWeight:"700",fontSize:"13px"}}>Accessorials</span><span style={{fontSize:"11px",opacity:.7,marginLeft:"auto"}}>{(week.accessorials||[]).length} entries{totAcc>0?` · Total: $${totAcc.toLocaleString()}`:""}</span></div>}
-      {(activeSection==="all"||activeSection==="acc")&&week.openSections?.acc&&(<div style={{border:"1px solid #bfdbfe",borderTop:"none",borderRadius:"0 0 8px 8px",overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%",minWidth:"600px"}}><colgroup><col style={{width:"140px"}}/><col style={{width:"120px"}}/><col style={{width:"110px"}}/><col style={{width:"90px"}}/><col style={{width:"180px"}}/><col style={{width:"110px"}}/><col style={{width:"28px"}}/></colgroup><thead><tr>{["Broker","Load #","Type","Amount ($)","Notes","Status",""].map((h,i)=>(<th key={i} style={TH("#b45309")}>{h}</th>))}</tr></thead><tbody>{!(week.accessorials||[]).length&&<tr><td colSpan={7} style={{padding:"16px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:ROW_BG}}>No accessorials</td></tr>}{(week.accessorials||[]).map((row,i)=>{const bg=i%2===0?"#fff":"#fffbeb";const tFg=row.type==="Detention"?"#b45309":row.type==="Lumper"?"#1e40af":row.type==="Layover"?"#166534":"#7c3aed";return(<tr key={row.id} style={{borderBottom:"1px solid #d1d5db"}}>
-<td style={CELL(ROW_BG)}><input value={row.broker||""} onChange={e=>updSub("accessorials",row.id,"broker",e.target.value)} style={INCEL()} placeholder="Broker" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG)}><input value={row.loadNum||""} onChange={e=>updSub("accessorials",row.id,"loadNum",e.target.value)} style={INCEL()} placeholder="Load #" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG,{padding:"3px 4px"})}>{(()=>{
-  const TP={"Detention":{bg:"#fff7ed",c:"#c2410c",bd:"#f97316"},"Lumper":{bg:"#eff6ff",c:"#1e40af",bd:"#3b82f6"},"Layover":{bg:"#f0fdf4",c:"#166534",bd:"#16a34a"},"TONU":{bg:"#fff1f2",c:"#be123c",bd:"#f43f5e"},"Other":{bg:"#f8fafc",c:"#475569",bd:"#94a3b8"}};
-  const p=TP[row.type||"Detention"]||TP["Other"];
-  return(<div style={{position:"relative"}}>
-    <select value={row.type||"Detention"} onChange={e=>updSub("accessorials",row.id,"type",e.target.value)} style={{position:"absolute",inset:0,opacity:0,cursor:isViewer?"not-allowed":"pointer",width:"100%",height:"100%",zIndex:2}} disabled={isViewer}>
-      <option>Detention</option><option>Lumper</option><option>Layover</option><option>TONU</option><option>Other</option>
-    </select>
-    <span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",background:p.bg,color:p.c,border:`2px solid ${p.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}><span style={{width:"7px",height:"7px",borderRadius:"50%",background:p.bd,flexShrink:0}}/>{row.type||"Detention"}</span>
-  </div>);
-})()}</td>
-<td style={CELL(ROW_BG,{textAlign:"right"})}><div style={{display:"flex",alignItems:"center",gap:"2px"}}><span style={{color:"#b45309",fontWeight:"700"}}>$</span><input value={row.amount||""} type="number" onChange={e=>updSub("accessorials",row.id,"amount",e.target.value)} style={INCEL({textAlign:"right",fontWeight:"700",color:"#b45309"})} placeholder="0" disabled={isViewer}/></div></td>
-<td style={CELL(ROW_BG)}><input value={row.notes||""} onChange={e=>updSub("accessorials",row.id,"notes",e.target.value)} style={INCEL()} placeholder="Notes" disabled={isViewer}/></td>
-<td style={CELL(ROW_BG,{padding:"3px 4px"})}>{(()=>{
-  const SP={"Paid":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"},"Requested":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}};
-  const p=SP[row.status]||{bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};
-  return(<div style={{position:"relative"}}>
-    <select value={row.status||""} onChange={e=>updSub("accessorials",row.id,"status",e.target.value)} style={{position:"absolute",inset:0,opacity:0,cursor:isViewer?"not-allowed":"pointer",width:"100%",height:"100%",zIndex:2}} disabled={isViewer}>
-      <option value="">— Status —</option>
-      <option>Requested</option>
-      <option>Paid</option>
-    </select>
-    <span style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",background:p.bg,color:p.c,border:`2px solid ${p.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}><span style={{width:"7px",height:"7px",borderRadius:"50%",background:p.bd,flexShrink:0}}/>{row.status||"— Status —"}</span>
-  </div>);
-})()}</td>
-<td style={CELL(ROW_BG,{textAlign:"center",padding:"2px"})}>{!isViewer&&<button onClick={()=>{if(window.confirm("Delete this accessorial?"))removeSub("accessorials",row.id);}} style={{width:"20px",height:"20px",border:"1px solid #fca5a5",background:"#fee2e2",color:"#dc2626",borderRadius:"4px",fontSize:"13px",padding:0,lineHeight:1,cursor:"pointer"}}>×</button>}</td>
-</tr>);})}{ (week.accessorials||[]).length>0&&(<tr style={{background:"#dbeafe",borderTop:"2px solid #93c5fd"}}><td colSpan={2} style={CELL("#fff7ed",{fontWeight:"700",color:"#92400e",textAlign:"right"})}>Total:</td><td style={CELL("#fff7ed",{textAlign:"right",fontWeight:"700",color:"#b45309",fontSize:"13px"})}>${totAcc.toLocaleString()}</td><td colSpan={3} style={CELL("#fff7ed")}/></tr>)}</tbody></table>{!isViewer&&<div style={{padding:"8px 12px",background:"#eff6ff",borderTop:"1px solid #bfdbfe"}}><button onClick={()=>addSub("accessorials",mkAcc)} style={{background:"#b45309",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Accessorial</button></div>}</div>)}
+      {(activeSection==="all"||activeSection==="acc")&&week.openSections?.acc&&(<div style={{border:"1px solid #fde68a",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"10px",background:"#fffbeb"}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:"8px",marginBottom:"8px"}}>
+        {!(week.accessorials||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No accessorials</div>}
+        {(week.accessorials||[]).map((row,i)=>{
+          const TP={"Detention":{bg:"#fff7ed",c:"#c2410c",bd:"#f97316",hdr:"#b45309"},"Lumper":{bg:"#eff6ff",c:"#1e40af",bd:"#3b82f6",hdr:"#1e40af"},"Layover":{bg:"#f0fdf4",c:"#166534",bd:"#16a34a",hdr:"#166534"},"TONU":{bg:"#fff1f2",c:"#be123c",bd:"#f43f5e",hdr:"#be123c"},"Other":{bg:"#f8fafc",c:"#475569",bd:"#94a3b8",hdr:"#475569"}};
+          const SP={"Paid":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"},"Requested":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}};
+          const tp=TP[row.type||"Detention"]||TP["Other"];
+          const sp=SP[row.status]||{bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};
+          const isPaid=row.status==="Paid";
+          return(
+            <div key={row.id} style={{background:"#fff",border:`1px solid ${tp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${tp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isPaid?.6:1}}>
+              <div style={{background:tp.hdr,padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
+                <select value={row.type||"Detention"} onChange={e=>updSub("accessorials",row.id,"type",e.target.value)} style={{fontSize:"10px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.15)",border:"1px solid rgba(255,255,255,.3)",borderRadius:"4px",padding:"2px 5px",cursor:isViewer?"not-allowed":"pointer",outline:"none"}} disabled={isViewer}>
+                  <option>Detention</option><option>Lumper</option><option>Layover</option><option>TONU</option><option>Other</option>
+                </select>
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.broker||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No broker</span>}</span>
+                {row.carriedFrom&&<span style={{fontSize:"8px",color:"rgba(255,255,255,.7)",background:"rgba(255,255,255,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>↩ carried</span>}
+                {row.amount&&<span style={{fontSize:"13px",fontWeight:"900",color:"#fff",whiteSpace:"nowrap"}}>${parseFloat(row.amount||0).toLocaleString()}</span>}
+                <select value={row.status||""} onChange={e=>updSub("accessorials",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"80px"}} disabled={isViewer}>
+                  <option value="">— status —</option>
+                  <option>Requested</option><option>Paid</option>
+                </select>
+              </div>
+              <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
+                <div><span style={{color:"#94a3b8",fontSize:"9px",display:"block",fontWeight:"600",textTransform:"uppercase"}}>Load #</span>
+                <input value={row.loadNum||""} onChange={e=>updSub("accessorials",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
+                <div><span style={{color:"#94a3b8",fontSize:"9px",display:"block",fontWeight:"600",textTransform:"uppercase"}}>Amount</span>
+                <input value={row.amount||""} onChange={e=>updSub("accessorials",row.id,"amount",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="$0" disabled={isViewer}/></div>
+                <div style={{gridColumn:"1/-1"}}><span style={{color:"#94a3b8",fontSize:"9px",display:"block",fontWeight:"600",textTransform:"uppercase"}}>Notes</span>
+                <input value={row.notes||""} onChange={e=>updSub("accessorials",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Description" disabled={isViewer}/></div>
+              </div>
+              {isAdmin&&<div style={{padding:"4px 12px 8px",display:"flex",justifyContent:"flex-end"}}><button onClick={()=>updSub("accessorials",row.id,"_del",true)||setW("accessorials",(week.accessorials||[]).filter(r=>r.id!==row.id))} style={{fontSize:"9px",color:"#ef4444",background:"none",border:"1px solid #fecaca",borderRadius:"4px",padding:"2px 8px",cursor:"pointer"}}>✕ Remove</button></div>}
+            </div>
+          );
+        })}
+        </div>
+        {isAdmin&&<button onClick={()=>setW("accessorials",[...(week.accessorials||[]),{id:uid(),broker:"",loadNum:"",type:"Detention",amount:"",notes:"",status:""}])} style={{background:"#b45309",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Accessorial</button>}
+        </div>)}
     </div>
     )}
 
@@ -3447,9 +3506,12 @@ ${accRows.length>0?`
             const acc=(w.accessorials||[]).reduce((s,a)=>s+(parseFloat(a.amount)||0),0);
             const localDel=(w.localDeliveries||[]).length;
             const trailers=grps.length;
-            const allMi=grps.reduce((s,g)=>s+(g.calcTripMi?parseFloat(g.calcTripMi):(g.autoTripMi||0)),0);
+            const allMi=grps.reduce((s,g)=>{
+              const raw=g.tripMiles!==""&&g.tripMiles!=null?parseFloat(g.tripMiles):g.calcTripMi?parseFloat(g.calcTripMi):g.autoTripMi?parseFloat(g.autoTripMi):0;
+              return s+(isNaN(raw)?0:raw);
+            },0);
             const netGross=gross-loc+acc;
-            const rpm=allMi>0?+((gross-loc)/allMi).toFixed(2):0;
+            const rpm=allMi>0?Math.round((netGross/allMi)*100)/100:0;
             const drivers={};
             loads.forEach(l=>{const d=l.driver||(grps.find(g=>g.loads.some(ld=>ld.id===l.id))||{}).groupDriver;if(d&&!LOCAL_DRV.has(d)){drivers[d]=(drivers[d]||0)+(parseFloat(l.rate)||0);}});
             const states={};
@@ -3477,9 +3539,9 @@ ${accRows.length>0?`
             {label:"Gross Revenue",cur:cur.gross,prev:prev.gross,icon:"💰",color:"#059669",bg:"#f0fdf4",fmt:v=>"$"+v.toLocaleString()},
             {label:"Local Expenses",cur:cur.loc,prev:prev.loc,icon:"🏠",color:"#d97706",bg:"#fffbeb",fmt:v=>"$"+v.toLocaleString(),rev:true},
             {label:"Net Revenue",cur:cur.netGross,prev:prev.netGross,icon:"🏆",color:"#166534",bg:"#dcfce7",fmt:v=>"$"+v.toLocaleString()},
-            {label:"Avg $/mi",cur:cur.rpm,prev:prev.rpm,icon:"📍",color:"#7c3aed",bg:"#faf5ff",fmt:v=>v?"$"+v+"/mi":"—"},
+            {label:"RPM",cur:cur.rpm,prev:prev.rpm,icon:"📍",color:"#7c3aed",bg:"#faf5ff",fmt:v=>v?"$"+v+"/mi":"—"},
             {label:"Miles Driven",cur:cur.allMi,prev:prev.allMi,icon:"🛣",color:"#374151",bg:"#f8fafc",fmt:v=>v>0?v.toLocaleString()+" mi":"—"},
-            {label:"Extra Added",cur:cur.extraAdded,prev:prev.extraAdded,icon:"⭐",color:"#b45309",bg:"#fffbeb",fmt:v=>v>0?"$"+v.toLocaleString():"$0"},
+            {label:"Additional",cur:cur.extraAdded,prev:prev.extraAdded,icon:"⭐",color:"#b45309",bg:"#fffbeb",fmt:v=>v>0?"$"+v.toLocaleString():"$0"},
           ];
           const allStates=Object.keys({...cur.states,...prev.states});
           // Top Drivers — across ALL weeks filtered by date range
@@ -3640,7 +3702,7 @@ ${accRows.length>0?`
                                   {/* CLAIM BAR — visible to everyone when no driver assigned */}
                                   {!hasDriver&&(
                                     <div style={{background:"linear-gradient(90deg,#fef3c7,#fde68a)",borderTop:"2px solid #f59e0b",padding:"7px 12px",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}}>
-                                      <span style={{fontSize:"14px",flexShrink:0}}>🙋</span>
+                                      <span style={{fontSize:"14px",flexShrink:0}}>🚛</span>
                                       <span style={{fontSize:"11px",fontWeight:"700",color:"#78350f",flex:1,minWidth:"120px"}}>Available — enter your name to claim:</span>
                                       <input
                                         id={`claim-${group.id}`}
@@ -3704,7 +3766,7 @@ ${accRows.length>0?`
                                       const lStColor=lStColorMap[(lSt||"").toLowerCase()]||"#94a3b8";
                                       return(
                                         <div key={l.id} style={{display:"flex",alignItems:"flex-start",gap:"8px",padding:"5px 0",borderBottom:li<loads.length-1?"1px solid #f1f5f9":"none"}}>
-                                          <span style={{width:"16px",height:"16px",borderRadius:"50%",background:"#e2e8f0",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"9px",fontWeight:"700",color:"#64748b",flexShrink:0,marginTop:"1px"}}>{l.stop||li+1}</span>
+                                          <span style={{width:"18px",height:"18px",borderRadius:"4px",background:"#1e3a5f",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"9px",fontWeight:"800",color:"#93c5fd",flexShrink:0,marginTop:"1px"}}>{li+1}</span>
                                           <div style={{flex:1,minWidth:0}}>
                                             <div style={{fontSize:"12px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sr.r||sr.s||"—"}</div>
                                             <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"2px"}}>
@@ -3752,13 +3814,13 @@ ${accRows.length>0?`
                   <div style={{fontSize:"15px",fontWeight:"800",color:card.textColor,marginBottom:"12px"}}>{(weeks[card.idx]||{}).label||"—"}</div>
                   <div style={{display:"flex",gap:"16px",flexWrap:"wrap"}}>
                     <div>
-                      <div style={{fontSize:"22px",fontWeight:"900",color:card.numColors[0]}}>${card.data.netGross.toLocaleString()}</div>
-                      <div style={{fontSize:"11px",color:card.subColor,fontWeight:"600"}}>Net Revenue</div>
-                      <div style={{fontSize:"11px",color:"rgba(255,255,255,.45)",marginTop:"2px"}}>Gross: ${card.data.gross.toLocaleString()}</div>
+                      <div style={{fontSize:"22px",fontWeight:"900",color:card.numColors[0]}}>${card.data.gross.toLocaleString()}</div>
+                      <div style={{fontSize:"11px",color:card.subColor,fontWeight:"600"}}>Gross</div>
+                      <div style={{fontSize:"11px",color:"rgba(255,255,255,.45)",marginTop:"2px"}}>Net: ${card.data.netGross.toLocaleString()}</div>
                     </div>
                     <div><div style={{fontSize:"22px",fontWeight:"900",color:card.numColors[1]}}>{card.data.loads}</div><div style={{fontSize:"11px",color:card.subColor,fontWeight:"600"}}>Loads</div></div>
                     <div><div style={{fontSize:"22px",fontWeight:"900",color:card.numColors[2]}}>{card.data.trailers}</div><div style={{fontSize:"11px",color:card.subColor,fontWeight:"600"}}>Trailers</div></div>
-                    <div><div style={{fontSize:"22px",fontWeight:"900",color:card.numColors[3]}}>{card.data.rpm?("$"+card.data.rpm+"/mi"):"—"}</div><div style={{fontSize:"11px",color:card.subColor,fontWeight:"600"}}>Rate/Mile</div></div>
+                    <div><div style={{fontSize:"22px",fontWeight:"900",color:card.numColors[3]}}>{card.data.rpm?("$"+card.data.rpm+"/mi"):"—"}</div><div style={{fontSize:"11px",color:card.subColor,fontWeight:"600"}}>RPM</div></div>
                   </div>
                 </div>
               ))}</div>
@@ -3812,7 +3874,7 @@ ${accRows.length>0?`
                       {topDrivers.map((dr,i)=>(
                         <div key={dr[0]} style={{display:"flex",alignItems:"center",gap:"8px"}}>
                           <span style={{fontSize:"13px",fontWeight:"800",color:i===0?"#f59e0b":i===1?"#94a3b8":i===2?"#d97706":"#cbd5e1",minWidth:"20px"}}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":"#"+(i+1)}</span>
-                          <span style={{fontSize:"12px",fontWeight:"600",color:"#374151",minWidth:"100px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{dr[0]}</span>
+                          <span style={{fontSize:"12px",fontWeight:"600",color:"#374151",minWidth:"100px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{(()=>{const firstName=dr[0].split(" ")[0];const trk=Object.entries(truckAssignments||{}).find(([t,d])=>d===dr[0]);return trk?"#"+trk[0]+" "+firstName:firstName;})()}</span>
                           <div style={{flex:1,height:"8px",background:"#f1f5f9",borderRadius:"4px",overflow:"hidden"}}>
                             <div style={{height:"100%",width:Math.round(dr[1]/maxDriverGross*100)+"%",background:i===0?"#f59e0b":i===1?"#94a3b8":"#2563eb",borderRadius:"4px"}}/>
                           </div>
