@@ -2422,6 +2422,13 @@ ${accRows.length>0?`
                   return (ORDER[a.combinedStatus||"Preplanned"]||0)-(ORDER[b.combinedStatus||"Preplanned"]||0);
                 }).map((group)=>{
                   const gGross=(group.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
+                  const gLoc=(group.loads||[]).reduce((s,l)=>{
+                    if(l.manualLocalCharge!==""&&l.manualLocalCharge!=null)return s+(parseFloat(l.manualLocalCharge)||0);
+                    const sr2=parseSR(l.sr||"");const am2=cityMiles(sr2.s);
+                    const um2=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am2;
+                    return s+(um2!=null?localCharge(um2)||0:0);
+                  },0);
+                  const gNet=Math.round(gGross-gLoc);
                   const gi=(week.groups||[]).indexOf(group);
                   const COMBINED_STATUSES=["Preplanned","Future","Not dispatched","Loaded","Ready"];
                   const cSt=group.combinedStatus||"Preplanned";
@@ -2431,7 +2438,7 @@ ${accRows.length>0?`
                       {/* Header row: T# · stops · urgency tag */}
                       <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"5px",flexWrap:"wrap"}}>
                         <span style={{fontSize:"12px",fontWeight:"700",color:"#0f1f3d"}}>T{gi+1} · {(group.loads||[]).length} stops</span>
-                        <span style={{fontSize:"11px",fontWeight:"700",color:"#059669",marginLeft:"auto"}}>${gGross.toLocaleString()}</span>
+                        <span style={{fontSize:"11px",fontWeight:"700",color:"#059669",marginLeft:"auto"}} title="Net after local expenses">${gNet.toLocaleString()}</span>
                       </div>
                       {/* No Driver warning bar */}
                       {!group.groupDriver&&(
@@ -2640,6 +2647,24 @@ ${accRows.length>0?`
                           </div>
                         );
                       })}
+                      {/* Ready Time field */}
+                      <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"5px",padding:"5px 7px",background:"rgba(34,197,94,.06)",border:"1px solid #bbf7d0",borderRadius:"5px"}}>
+                        <span style={{fontSize:"9px",fontWeight:"700",color:"#15803d",textTransform:"uppercase",letterSpacing:".04em",flexShrink:0}}>🕐 Ready</span>
+                        {isAdmin?(
+                          <input
+                            type="text"
+                            defaultValue={group.readyTime||""}
+                            placeholder="e.g. 4/28 8AM"
+                            onBlur={e=>setGroup(group.id,"readyTime",e.target.value.trim())}
+                            onKeyDown={e=>{if(e.key==="Enter"){setGroup(group.id,"readyTime",e.target.value.trim());e.target.blur();}}}
+                            onClick={e=>e.stopPropagation()}
+                            style={{flex:1,border:"none",background:"transparent",fontSize:"11px",fontWeight:"600",color:"#15803d",outline:"none",fontFamily:"inherit"}}
+                          />
+                        ):(
+                          <span style={{fontSize:"11px",fontWeight:"600",color:"#15803d"}}>{group.readyTime||<span style={{color:"#94a3b8",fontWeight:"400",fontStyle:"italic"}}>Not set</span>}</span>
+                        )}
+                      </div>
+
                       {/* Mileage row */}
                       <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"5px",padding:"5px 7px",background:"rgba(255,255,255,.6)",border:"1px solid #e2e8f0",borderRadius:"5px"}}>
                         <span style={{fontSize:"9px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em"}}>Miles</span>
@@ -2692,6 +2717,7 @@ ${accRows.length>0?`
                                   trailer:group.groupTrailer||"",
                                   driver:group.groupDriver||"",
                                   status:group.combinedStatus||"Preplanned",
+                                  readyTime:group.readyTime||"",
                                   stopCount:loads.length,
                                   gross:Math.round(gross),
                                   locCost:Math.round(locCost),
@@ -2701,7 +2727,7 @@ ${accRows.length>0?`
                                     const am=cityMiles(sr.s);
                                     const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
                                     const lc=l.manualLocalCharge!==""&&l.manualLocalCharge!=null?parseFloat(l.manualLocalCharge)||0:localCharge(um)||0;
-                                    return{num:li+1,shipper:sr.s||"",receiver:sr.r||"",pickup:l.pickup||"",delivery:l.delivery||"",rate:parseFloat(l.rate)||0,localCharge:Math.round(lc)};
+                                    return{num:li+1,shipper:sr.s||"",receiver:sr.r||"",delivery:l.delivery||"",rate:parseFloat(l.rate)||0,localCharge:Math.round(lc)};
                                   })
                                 }
                               };
