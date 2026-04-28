@@ -526,20 +526,48 @@ function clearLoginErr() {
 
 function attemptLogin() {
   var pin = document.getElementById('pin-input').value.trim();
-  var storedPin = localStorage.getItem('fcbv2_adminPin') || '';
-  hashPin(pin).then(function(hash) {
-    var storedHash = localStorage.getItem('fcbv2_adminPinHash') || '';
-    if ((storedPin && pin === storedPin) || (storedHash && hash === storedHash)) {
-      loginSuccess();
-    } else {
-      document.getElementById('login-err').textContent = 'Incorrect PIN   try again';
+  if (!pin) return;
+
+  // Read all possible stored PIN formats
+  var storedPlain  = localStorage.getItem('fcbv2_adminPin') || '';
+  var storedHash   = localStorage.getItem('fcbv2_adminPinHash') || '';
+
+  // Step 1: Try plain text comparison immediately (no async needed)
+  if (storedPlain && pin === storedPlain) {
+    loginSuccess();
+    return;
+  }
+
+  // Step 2: If no plain text match, try hash comparison
+  if (typeof hashPin === 'function') {
+    hashPin(pin).then(function(hash) {
+      if (storedHash && hash === storedHash) {
+        loginSuccess();
+        return;
+      }
+      // Step 3: Re-try plain text after hash (in case storedPlain was set after initial read)
+      var reCheck = localStorage.getItem('fcbv2_adminPin') || '';
+      if (reCheck && pin === reCheck) {
+        loginSuccess();
+        return;
+      }
+      document.getElementById('login-err').textContent = 'Incorrect PIN — try again';
       document.getElementById('pin-input').value = '';
-    }
-  }).catch(function() {
-    if (pin === storedPin) { loginSuccess(); return; }
-    document.getElementById('login-err').textContent = 'Incorrect PIN   try again';
+    }).catch(function() {
+      // hashPin failed — fall back to plain text only
+      var fallback = localStorage.getItem('fcbv2_adminPin') || '';
+      if (fallback && pin === fallback) {
+        loginSuccess();
+      } else {
+        document.getElementById('login-err').textContent = 'Incorrect PIN — try again';
+        document.getElementById('pin-input').value = '';
+      }
+    });
+  } else {
+    // hashPin not available — plain text only
+    document.getElementById('login-err').textContent = 'Incorrect PIN — try again';
     document.getElementById('pin-input').value = '';
-  });
+  }
 }
 
 function loginSuccess() {
@@ -933,6 +961,13 @@ function refreshData() {
     });
     var payload = (typeof data === 'object' && !Array.isArray(data)) ? Object.assign({},data,{weeks:weeks}) : {weeks:weeks};
     localStorage.setItem('fcbv2_localdata', JSON.stringify(payload));
+    // Extract adminPin to its own key so mobile login can find it
+    if (data && data.adminPin) {
+      localStorage.setItem('fcbv2_adminPin', data.adminPin);
+    }
+    if (data && data.viewerPin) {
+      localStorage.setItem('fcbv2_viewerPin', data.viewerPin);
+    }
     activeWeekIdx = 0;
     setSync('ok');
     document.getElementById('hdr-sub').textContent = weeks[0] ? (weeks[0].label||'Week 1') : 'No data';
