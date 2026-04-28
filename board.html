@@ -2755,7 +2755,7 @@ ${accRows.length>0?`
                 </div>
 
                 {/* Trailer cards — 2-col grid like Combined */}
-                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))",gap:"8px"}}>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(500px,1fr))",gap:"10px"}}>
                 {groups.map(group=>{
                   const loads=[...group.loads].sort((a,b)=>parseTS(a.delivery)-parseTS(b.delivery));
                   const otrGross=(group.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);const otrNet=Math.round(otrGross-(group.loc||0));
@@ -2763,17 +2763,24 @@ ${accRows.length>0?`
                   return(
                     <div key={group.id} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"10px",overflow:"hidden",marginBottom:"7px",borderLeft:`3px solid ${ss.lbdr}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
                       {/* Card header — dark banner like Combined */}
-                      <div style={{background:"#0f1f3d",padding:"8px 12px",display:"flex",alignItems:"center",gap:"7px",flexWrap:"wrap"}}>
-                        {group.groupTruck&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 8px",borderRadius:"4px"}}>#{group.groupTruck}</span>}
-                        {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"2px 8px",borderRadius:"4px"}}>T{group.groupTrailer}</span>}
-                        <span style={{fontSize:"12px",fontWeight:"700",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{group.groupDriver||<span style={{color:"rgba(255,255,255,.35)",fontStyle:"italic",fontWeight:"400"}}>No driver</span>}</span>
-                        {mi&&<span style={{fontSize:"10px",color:"rgba(255,255,255,.4)",whiteSpace:"nowrap"}}>{Math.round(mi).toLocaleString()} mi</span>}
-                        <span style={{fontSize:"13px",fontWeight:"900",color:"#86efac",whiteSpace:"nowrap"}}>${otrNet.toLocaleString()}</span>
-                        {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
-                          <select value={group.groupStatus||"Pending"} onChange={e=>setGroup(group.id,"groupStatus",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 5px",borderRadius:"4px",border:`1px solid ${ss.bd}`,background:ss.bg,color:ss.c,cursor:"pointer",outline:"none",maxWidth:"90px"}} disabled={!isAdmin}>
-                            {Object.keys(GSS).map(s=>(<option key={s}>{s}</option>))}
-                          </select>
-                        </div>}
+                      <div style={{background:"#0f1f3d",padding:"9px 14px",display:"flex",flexDirection:"column",gap:"6px"}}>
+                        {/* Row 1: Truck, Trailer, Driver, Net */}
+                        <div style={{display:"flex",alignItems:"center",gap:"7px",flexWrap:"nowrap"}}>
+                          {group.groupTruck&&<span style={{fontSize:"12px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>#{group.groupTruck}</span>}
+                          {group.groupTrailer&&<span style={{fontSize:"12px",fontWeight:"800",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>T{group.groupTrailer}</span>}
+                          <span style={{fontSize:"13px",fontWeight:"700",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{group.groupDriver||<span style={{color:"rgba(255,255,255,.35)",fontStyle:"italic",fontWeight:"400"}}>No driver assigned</span>}</span>
+                          <span style={{fontSize:"14px",fontWeight:"900",color:"#86efac",whiteSpace:"nowrap",flexShrink:0}}>${otrNet.toLocaleString()}</span>
+                        </div>
+                        {/* Row 2: Miles + Status dropdown */}
+                        <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                          {mi&&<span style={{fontSize:"10px",color:"rgba(255,255,255,.5)",background:"rgba(255,255,255,.07)",padding:"2px 8px",borderRadius:"4px",whiteSpace:"nowrap"}}>{Math.round(mi).toLocaleString()} mi</span>}
+                          <span style={{flex:1}}/>
+                          {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
+                            <select value={group.groupStatus||"Pending"} onChange={e=>setGroup(group.id,"groupStatus",e.target.value)} style={{fontSize:"10px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",border:`1px solid ${ss.bd}`,background:ss.bg,color:ss.c,cursor:"pointer",outline:"none",minWidth:"100px"}} disabled={!isAdmin}>
+                              {Object.keys(GSS).map(s=>(<option key={s}>{s}</option>))}
+                            </select>
+                          </div>}
+                        </div>
                       </div>
 
                       {/* Load rows — compact like Combined collapsed rows */}
