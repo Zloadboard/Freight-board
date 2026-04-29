@@ -856,8 +856,20 @@ function App(){
           const finalWeeks=rawWithPhotos;
           setWeeks(finalWeeks);
           if(data.customDrivers)setCustomDrivers(data.customDrivers);
-          if(data.dispatcherEmails){setDispatcherEmails(data.dispatcherEmails);localStorage.setItem("fcbv2_disp_emails",JSON.stringify(data.dispatcherEmails));}
+          // Merge Sheets + local emails — Sheets never overwrites local-only saves
+          (()=>{
+            const sheetsEmails=Array.isArray(data.dispatcherEmails)?data.dispatcherEmails:[];
+            let localEmails=[];try{localEmails=JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch(ex){}
+            // Use whichever list is longer, or merge if both have entries
+            const merged=[...new Set([...sheetsEmails,...localEmails])];
+            const final=merged.length>0?merged:(sheetsEmails.length>0?sheetsEmails:localEmails);
+            if(final.length>0||sheetsEmails.length>0){
+              setDispatcherEmails(final);
+              localStorage.setItem("fcbv2_disp_emails",JSON.stringify(final));
+            }
+          })();
           if(data.customTrucks)setCustomTrucks(data.customTrucks);
+          if(data.adminEmail&&!localStorage.getItem("fcbv2_adminEmail")){localStorage.setItem("fcbv2_adminEmail",data.adminEmail);}
           if(data.customTrailers)setCustomTrailers(data.customTrailers);
           if(data.dispatchers&&data.dispatchers.length>0){setDispatchers(data.dispatchers);localStorage.setItem(DISPATCHERS_KEY,JSON.stringify(data.dispatchers));}
           // Restore admin/viewer PINs from Sheets so every computer stays in sync
