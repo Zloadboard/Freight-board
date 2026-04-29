@@ -3674,63 +3674,62 @@ ${accRows.length>0?`
                               const netRate=grossRate-locCost;
                               const hasDriver=!!(group.groupDriver&&group.groupDriver.trim());
                               return(
-                                <div key={group.id} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"10px",overflow:"hidden",borderLeft:`4px solid ${stStyle.bd}`,boxShadow:"0 1px 4px rgba(0,0,0,.06)"}}>
+                                <div key={group.id} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"10px",overflow:"hidden",borderLeft:`4px solid ${stStyle.bd}`,boxShadow:"0 1px 4px rgba(0,0,0,.05)"}}>
 
-                                  {/* Header — dark navy with truck/trailer/driver/miles */}
-                                  <div style={{background:hasDriver?"#0f1f3d":"#fee2e2",padding:"9px 14px",display:"flex",alignItems:"center",gap:"7px",flexWrap:"wrap"}}>
+                                  {/* HEADER */}
+                                  <div style={{background:hasDriver?"#0f1f3d":stStyle.bg,padding:"9px 14px",display:"flex",alignItems:"center",gap:"7px",flexWrap:"wrap"}}>
                                     {hasDriver?(
                                       <>
-                                        {group.groupTruck&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.15)",padding:"2px 7px",borderRadius:"4px",flexShrink:0}}>#{group.groupTruck}</span>}
-                                        {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#c4b5fd",background:"rgba(167,139,250,.2)",padding:"2px 7px",borderRadius:"4px",flexShrink:0}}>T{group.groupTrailer}</span>}
-                                        <span style={{fontSize:"12px",fontWeight:"700",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{group.groupDriver}</span>
+                                        {group.groupTruck&&<span style={{fontSize:"11px",fontWeight:"700",color:"#fff",background:"rgba(255,255,255,.15)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>#{group.groupTruck}</span>}
+                                        {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"700",color:"#c4b5fd",background:"rgba(167,139,250,.2)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>T{group.groupTrailer}</span>}
+                                        <span style={{fontSize:"12px",fontWeight:"600",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{group.groupDriver}</span>
+                                        {(()=>{const mi=group.tripMiles!==""&&group.tripMiles!=null?parseFloat(group.tripMiles):group.calcTripMi?parseFloat(group.calcTripMi):group.autoTripMi?parseFloat(group.autoTripMi):null;return mi?<span style={{fontSize:"10px",color:"rgba(255,255,255,.45)",background:"rgba(255,255,255,.08)",padding:"2px 6px",borderRadius:"4px",flexShrink:0}}>{Math.round(mi).toLocaleString()} mi</span>:null;})()}
                                       </>
                                     ):(
                                       <>
-                                        <span style={{fontSize:"13px"}}>⚠️</span>
-                                        <span style={{fontSize:"11px",fontWeight:"800",color:"#b91c1c",flex:1}}>NO DRIVER ASSIGNED</span>
+                                        <span style={{fontSize:"11px",fontWeight:"800",color:"#b91c1c",flex:1,letterSpacing:".01em"}}>NO DRIVER ASSIGNED</span>
+                                        {(()=>{const mi=group.tripMiles!==""&&group.tripMiles!=null?parseFloat(group.tripMiles):group.calcTripMi?parseFloat(group.calcTripMi):group.autoTripMi?parseFloat(group.autoTripMi):null;return mi?<span style={{fontSize:"10px",color:stStyle.c,background:"rgba(0,0,0,.06)",padding:"2px 6px",borderRadius:"4px",flexShrink:0}}>{Math.round(mi).toLocaleString()} mi</span>:null;})()}
                                       </>
                                     )}
-                                    {(()=>{const mi=group.tripMiles!==""&&group.tripMiles!=null?parseFloat(group.tripMiles):group.calcTripMi?parseFloat(group.calcTripMi):group.autoTripMi?parseFloat(group.autoTripMi):null;return mi?<span style={{fontSize:"10px",fontWeight:"600",color:hasDriver?"rgba(255,255,255,.45)":"#fca5a5",background:"rgba(255,255,255,.08)",padding:"2px 6px",borderRadius:"4px",flexShrink:0}}>{Math.round(mi).toLocaleString()} mi</span>:null;})()}
                                   </div>
 
-                                  {/* Route flow — all cities in one row */}
-                                  <div style={{padding:"12px 14px 8px"}}>
+                                  {/* BODY */}
+                                  <div style={{padding:"12px 14px 10px"}}>
+
+                                    {/* Chips row for no-driver cards */}
+                                    {!hasDriver&&(group.groupTruck||group.groupTrailer)&&(
+                                      <div style={{display:"flex",gap:"6px",marginBottom:"10px",alignItems:"center"}}>
+                                        {group.groupTruck&&<span style={{fontSize:"11px",fontWeight:"700",color:"#0f1f3d",background:"#f1f5f9",border:"1px solid #e2e8f0",padding:"2px 8px",borderRadius:"4px"}}>#{group.groupTruck}</span>}
+                                        {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"700",color:"#5b21b6",background:"#ede9fe",border:"1px solid #ddd6fe",padding:"2px 8px",borderRadius:"4px"}}>T{group.groupTrailer}</span>}
+                                        <span style={{fontSize:"11px",color:"#94a3b8"}}>{loads.length}-Stop Load</span>
+                                      </div>
+                                    )}
+
+                                    {/* ROUTE — boxed cities like email template */}
                                     {(()=>{
-                                      const sortedLoads=[...loads].sort((a,b)=>{const da=a.delivery||a.pickup||"";const db=b.delivery||b.pickup||"";return(new Date(da.split(" ")[0]).getTime()||Infinity)-(new Date(db.split(" ")[0]).getTime()||Infinity);});
+                                      const sortedLoads=[...loads].sort((a,b)=>{
+                                        const da=a.delivery||a.pickup||"";const db=b.delivery||b.pickup||"";
+                                        return(new Date(da.split(" ")[0]).getTime()||Infinity)-(new Date(db.split(" ")[0]).getTime()||Infinity);
+                                      });
                                       const origin=sortedLoads.length>0?parseSR(sortedLoads[0].sr||"").s:"";
+                                      const cellSt={background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"8px",padding:"8px 6px",textAlign:"center",flex:"1 1 0",minWidth:0};
                                       return(
-                                        <div style={{display:"flex",alignItems:"flex-start",gap:"0",marginBottom:"10px",overflowX:"auto"}}>
-                                          {/* Origin city */}
-                                          <div style={{textAlign:"center",minWidth:"90px",flexShrink:0}}>
-                                            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"600",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Origin</div>
-                                            <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",lineHeight:1.2}}>{origin||"—"}</div>
+                                        <div style={{display:"flex",alignItems:"flex-start",gap:"4px",marginBottom:"10px"}}>
+                                          <div style={cellSt}>
+                                            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".05em",marginBottom:"3px"}}>Origin</div>
+                                            <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{origin||"—"}</div>
                                           </div>
-                                          {/* Each stop */}
                                           {sortedLoads.map((l,li)=>{
                                             const sr=parseSR(l.sr||"");
-                                            // effective status
-                                            const lRawSt=l.status||"";
-                                            const lPD=new Date((l.pickup||"").split(" ")[0]);lPD.setHours(0,0,0,0);
-                                            const lPTs=isNaN(lPD.getTime())?null:lPD.getTime();
-                                            const lIsTom=lPTs===tomorrowDay.getTime();
-                                            const lIsToday=lPTs===today.getTime();
-                                            const lIsPast=lPTs&&lPTs<today.getTime();
-                                            const lSt=(()=>{if(lIsTom&&(lRawSt===""||lRawSt.toLowerCase()==="need to pickup"))return "Tomorrow";if((lIsToday||lIsPast)&&lRawSt==="")return "Need to pickup";return lRawSt;})();
-                                            const stColorMap={"need to pickup":"#dc2626","dispatched":"#2563eb","dock":"#7c3aed","yard":"#ca8a04","loaded":"#059669","in transit":"#c2410c","delivered":"#16a34a","tomorrow":"#f97316"};
-                                            const stColor=stColorMap[(lSt||"").toLowerCase()]||"#94a3b8";
                                             return(
                                               <React.Fragment key={l.id}>
-                                                {/* Arrow line */}
-                                                <div style={{flex:1,display:"flex",alignItems:"center",paddingTop:"14px",minWidth:"20px"}}>
-                                                  <div style={{flex:1,borderTop:"1.5px solid #cbd5e1"}}/>
-                                                  <span style={{fontSize:"12px",color:"#94a3b8",flexShrink:0}}>›</span>
+                                                <div style={{display:"flex",alignItems:"center",paddingTop:"14px",flexShrink:0}}>
+                                                  <span style={{fontSize:"14px",color:"#cbd5e1",lineHeight:1}}>›</span>
                                                 </div>
-                                                {/* Destination */}
-                                                <div style={{textAlign:"center",minWidth:"90px",flexShrink:0}}>
-                                                  <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"600",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Stop {li+1}</div>
-                                                  <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",lineHeight:1.2,marginBottom:"3px"}}>{sr.r||sr.s||"—"}</div>
-                                                  {l.delivery&&<div style={{fontSize:"9px",color:"#475569"}}>Del: {l.delivery}</div>}
-                                                  {lSt&&<div style={{fontSize:"9px",fontWeight:"700",color:stColor,marginTop:"2px"}}>{lSt}</div>}
+                                                <div style={cellSt}>
+                                                  <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".05em",marginBottom:"3px"}}>Stop {li+1}</div>
+                                                  <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:"4px"}}>{sr.r||sr.s||"—"}</div>
+                                                  {l.delivery&&<span style={{display:"inline-block",fontSize:"10px",color:"#475569",background:"#e2e8f0",borderRadius:"3px",padding:"1px 5px"}}>{l.delivery}</span>}
                                                 </div>
                                               </React.Fragment>
                                             );
@@ -3739,25 +3738,24 @@ ${accRows.length>0?`
                                       );
                                     })()}
 
-                                    {/* Ready time — if set */}
+                                    {/* READY TIME */}
                                     {group.readyTime&&(
-                                      <div style={{display:"flex",alignItems:"center",gap:"8px",background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:"6px",padding:"5px 10px",marginBottom:"8px"}}>
-                                        <span style={{fontSize:"9px",fontWeight:"700",color:"#15803d",textTransform:"uppercase",letterSpacing:".04em"}}>Ready</span>
-                                        <span style={{fontSize:"12px",fontWeight:"600",color:"#15803d"}}>{group.readyTime}</span>
+                                      <div style={{background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:"7px",padding:"7px 12px",marginBottom:"10px",display:"flex",alignItems:"center",gap:"8px"}}>
+                                        <span style={{fontSize:"10px",fontWeight:"700",color:"#15803d",textTransform:"uppercase",letterSpacing:".04em",flexShrink:0}}>Preloaded Ready at a Yard</span>
+                                        <span style={{fontSize:"11px",fontWeight:"600",color:"#15803d"}}>{group.readyTime}</span>
                                       </div>
                                     )}
 
-                                    {/* CLAIM BAR — when no driver */}
+                                    {/* CLAIM BAR — clean bordered box */}
                                     {!hasDriver&&(
-                                      <div style={{background:"linear-gradient(90deg,#fef3c7,#fde68a)",border:"1.5px solid #f59e0b",borderRadius:"7px",padding:"7px 10px",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap",marginBottom:"8px"}}>
-                                        <span style={{fontSize:"13px",flexShrink:0}}>🚛</span>
-                                        <span style={{fontSize:"11px",fontWeight:"700",color:"#78350f",flex:1,minWidth:"100px"}}>Available — enter your name to claim:</span>
+                                      <div style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"8px",padding:"8px 12px",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap",marginBottom:"10px"}}>
+                                        <span style={{fontSize:"11px",fontWeight:"500",color:"#475569",flex:1,minWidth:"80px"}}>Enter your name to claim:</span>
                                         <input
                                           id={`claim-${group.id}`}
                                           type="text"
                                           placeholder="Your name..."
                                           onClick={e=>e.stopPropagation()}
-                                          style={{border:"2px solid #f59e0b",borderRadius:"6px",padding:"4px 8px",fontSize:"11px",fontWeight:"600",color:"#78350f",background:"#fff",outline:"none",width:"120px",flexShrink:0}}
+                                          style={{border:"1px solid #e2e8f0",borderRadius:"6px",padding:"5px 9px",fontSize:"11px",color:"#0f1f3d",background:"#fff",outline:"none",width:"130px",flexShrink:0,fontFamily:"inherit"}}
                                         />
                                         <button
                                           onClick={e=>{
@@ -3771,18 +3769,18 @@ ${accRows.length>0?`
                                               setWeeksAndSave(updated);
                                             }
                                           }}
-                                          style={{background:"#d97706",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",fontSize:"11px",fontWeight:"800",cursor:"pointer",flexShrink:0}}
-                                        >✓ Claim</button>
+                                          style={{background:"#059669",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 14px",fontSize:"11px",fontWeight:"700",cursor:"pointer",flexShrink:0}}
+                                        >Claim</button>
                                       </div>
                                     )}
 
-                                    {/* Net revenue — bottom */}
-                                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",borderTop:"0.5px solid #e2e8f0",paddingTop:"8px"}}>
-                                      <span style={{fontSize:"10px",color:"#94a3b8"}}>Net after local expenses</span>
-                                      <span style={{fontSize:"16px",fontWeight:"800",color:"#15803d"}}>${netRate.toLocaleString()}</span>
+                                    {/* NET REVENUE */}
+                                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",borderTop:"1px solid #e2e8f0",paddingTop:"9px"}}>
+                                      <span style={{fontSize:"11px",color:"#94a3b8"}}>Net after local expenses</span>
+                                      <span style={{fontSize:"14px",fontWeight:"700",color:"#15803d"}}>${Math.round(netRate).toLocaleString()}</span>
                                     </div>
-                                  </div>
 
+                                  </div>
                                 </div>
                               );
                             })}
