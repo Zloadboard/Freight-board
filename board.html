@@ -2640,7 +2640,7 @@ ${accRows.length>0?`
                         </div>
                       </div>
                       {/* Load list — show full pickup+delivery datetime */}
-                      {[...(group.loads||[])].sort((a,b)=>{const pa=parseTS(a.pickup)||parseTS(a.delivery)||Infinity;const pb=parseTS(b.pickup)||parseTS(b.delivery)||Infinity;if(pa!==pb)return pa-pb;return(group.loads||[]).indexOf(a)-(group.loads||[]).indexOf(b);}).map((l,li)=>{
+                      {[...(group.loads||[])].sort((a,b)=>{const pa=parseTS(a.delivery)||parseTS(a.pickup)||Infinity;const pb=parseTS(b.delivery)||parseTS(b.pickup)||Infinity;if(pa!==pb)return pa-pb;return(group.loads||[]).indexOf(a)-(group.loads||[]).indexOf(b);}).map((l,li)=>{
                         const sr=parseSR(l.sr||"");
                         const lST={"Need to pickup":{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"},"Need to Pickup":{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"},"Dock":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Yard":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"Loaded":{bg:"#dcfce7",c:"#14532d",bd:"#22c55e"},"Dispatched":{bg:"#dbeafe",c:"#1e40af",bd:"#3b82f6"},"Tomorrow":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Picked Up":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"},"In Transit":{bg:"#ffedd5",c:"#9a3412",bd:"#f97316"},"Delivered":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"}};
                         // Case-insensitive status lookup + smart default
@@ -2909,7 +2909,7 @@ ${accRows.length>0?`
                 {/* Trailer cards — 2-col grid like Combined */}
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(500px,1fr))",gap:"10px"}}>
                 {groups.map(group=>{
-                  const loads=[...group.loads].sort((a,b)=>{const pa=parseTS(a.pickup)||parseTS(a.delivery)||Infinity;const pb=parseTS(b.pickup)||parseTS(b.delivery)||Infinity;if(pa!==pb)return pa-pb;return group.loads.indexOf(a)-group.loads.indexOf(b);});
+                  const loads=[...group.loads].sort((a,b)=>{const pa=parseTS(a.delivery)||parseTS(a.pickup)||Infinity;const pb=parseTS(b.delivery)||parseTS(b.pickup)||Infinity;if(pa!==pb)return pa-pb;return group.loads.indexOf(a)-group.loads.indexOf(b);});
                   const otrGross=(group.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);const otrNet=Math.round(otrGross-(group.loc||0));
                   const mi=group.tripMiles!==""&&group.tripMiles!=null?parseFloat(group.tripMiles):group.calcTripMi?parseFloat(group.calcTripMi):group.autoTripMi?parseFloat(group.autoTripMi):null;
                   return(
@@ -3833,13 +3833,11 @@ ${accRows.length>0?`
 
                                     {/* ROUTE — boxed cities like email template */}
                                     {(()=>{
-                                      // Use pickup date as primary sort (respects the order user added stops),
-                                      // fall back to delivery date, then original array index as final tiebreaker
+                                      // Sort by delivery date first, then pickup, then natural index as tiebreaker
                                       const sortedLoads=[...loads].sort((a,b)=>{
-                                        const pa=parseTS(a.pickup)||parseTS(a.delivery)||Infinity;
-                                        const pb=parseTS(b.pickup)||parseTS(b.delivery)||Infinity;
+                                        const pa=parseTS(a.delivery)||parseTS(a.pickup)||Infinity;
+                                        const pb=parseTS(b.delivery)||parseTS(b.pickup)||Infinity;
                                         if(pa!==pb)return pa-pb;
-                                        // Tiebreaker: original index (preserves user-set order)
                                         return loads.indexOf(a)-loads.indexOf(b);
                                       });
                                       const origin=sortedLoads.length>0?parseSR(sortedLoads[0].sr||"").s:"";
