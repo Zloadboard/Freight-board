@@ -2322,55 +2322,42 @@ ${accRows.length>0?`
         {!(week.localDeliveries||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No local deliveries</div>}
         {(week.localDeliveries||[]).map((row,i)=>{
           const dt=parsePickupDate(row.datetime);const dtT=dt?dt.getTime():null;const todayT=today.getTime();
+          const isDelivered=row.status==="Delivered";
+          const isTransit=row.status==="In Transit";
+          const isWaiting=row.status==="Waiting Appointment";
           let sp;
-          if(row.status==="Delivered"){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
-          else if(row.status==="In Transit"){sp={bg:"#ede9fe",c:"#5b21b6",bd:"#7c3aed"};}
-          else if(row.status==="Waiting Appointment"){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
-          else{sp=dtT&&dtT<=todayT?{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}:{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
-          const isDone=row.status==="Delivered";
+          if(isDelivered){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
+          else if(isTransit){sp={bg:"#ffedd5",c:"#9a3412",bd:"#fb923c"};}
+          else if(isWaiting){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
+          else if(dtT&&dtT>todayT){sp={bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"};}
+          else if(dtT){sp={bg:"#fef9c3",c:"#713f12",bd:"#eab308"};}
+          else{sp={bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
+          const isDone=isDelivered;
           return(
             <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${sp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDone?.65:1}}>
               <div style={{background:"#065f46",padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
                 {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>T{row.trailer}</span>}
                 {row.truck&&<span style={{fontSize:"10px",fontWeight:"700",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"2px 7px",borderRadius:"4px"}}>#{row.truck}{row.driver?` · ${row.driver.split(" ")[0]}`:""}</span>}
-                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
                 {row.carriedFrom&&<span style={{fontSize:"8px",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>&#8617; carried</span>}
-                <select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"100px"}} disabled={isViewer}>
+                <select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"110px"}} disabled={isViewer}>
                   <option value="">-- status --</option>
                   {["Need to deliver","In Transit","Waiting Appointment","Delivered"].map(s=>(<option key={s}>{s}</option>))}
                 </select>
               </div>
               <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
+                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Destination</div>
+                <input value={row.destination||""} onChange={e=>updSub("localDeliveries",row.id,"destination",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="123 Main St, City, IL" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div>
                 <input value={row.broker||""} onChange={e=>updSub("localDeliveries",row.id,"broker",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Broker" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div>
                 <input value={row.loadNum||""} onChange={e=>updSub("localDeliveries",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
                 <input value={row.datetime||""} onChange={e=>updSub("localDeliveries",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
-                <div style={{gridColumn:"1/-1"}}>
-                  <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Truck + Driver</div>
-                  <select
-                    value={row.truck||""}
-                    onChange={e=>{
-                      const tk=e.target.value;
-                      updSub("localDeliveries",row.id,"truck",tk);
-                      if(tk&&truckAssignments[tk]){updSub("localDeliveries",row.id,"driver",truckAssignments[tk]);}
-                      else if(!tk){updSub("localDeliveries",row.id,"driver","");}
-                    }}
-                    style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 6px",fontSize:"11px",background:"#f8fafc",outline:"none",fontFamily:"inherit"}}
-                    disabled={isViewer}
-                  >
-                    <option value="">— select truck + driver —</option>
-                    {allTrucks.map(t=>(
-                      <option key={t} value={t}>
-                        {truckAssignments[t]?`Truck #${t} — ${truckAssignments[t]}`:`Truck #${t} (no driver assigned)`}
-                      </option>
-                    ))}
-                  </select>
-                  {row.truck&&row.driver&&<div style={{fontSize:"10px",color:"#059669",marginTop:"3px",fontWeight:"600"}}>✓ {row.driver}</div>}
-                  {row.truck&&!row.driver&&<div style={{fontSize:"10px",color:"#f59e0b",marginTop:"3px"}}>No driver assigned to this truck</div>}
-                </div>
-                {row.amount?<div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
+                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Driver</div>
+                <input list={`local-drv-${row.id}`} value={row.driver||""} onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/>
+                <datalist id={`local-drv-${row.id}`}>{[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}/>))}</datalist></div>
+                {row.amount?<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
                 <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
                 <input value={row.notes||""} onChange={e=>updSub("localDeliveries",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
               </div>
@@ -3384,25 +3371,32 @@ ${accRows.length>0?`
         {!(week.localDeliveries||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No local deliveries</div>}
         {(week.localDeliveries||[]).map((row,i)=>{
           const dt=parsePickupDate(row.datetime);const dtT=dt?dt.getTime():null;const todayT=today.getTime();
+          const isDelivered=row.status==="Delivered";
+          const isTransit=row.status==="In Transit";
+          const isWaiting=row.status==="Waiting Appointment";
           let sp;
-          if(row.status==="Delivered"){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
-          else if(row.status==="In Transit"){sp={bg:"#ede9fe",c:"#5b21b6",bd:"#7c3aed"};}
-          else if(row.status==="Waiting Appointment"){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
-          else{sp=dtT&&dtT<=todayT?{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}:{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
-          const isDone=row.status==="Delivered";
+          if(isDelivered){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
+          else if(isTransit){sp={bg:"#ffedd5",c:"#9a3412",bd:"#fb923c"};}
+          else if(isWaiting){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
+          else if(dtT&&dtT>todayT){sp={bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"};}
+          else if(dtT){sp={bg:"#fef9c3",c:"#713f12",bd:"#eab308"};}
+          else{sp={bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
+          const isDone=isDelivered;
           return(
             <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${sp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDone?.65:1}}>
               <div style={{background:"#065f46",padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
                 {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>T{row.trailer}</span>}
-                {row.truck&&<span style={{fontSize:"11px",fontWeight:"700",color:"#6ee7b7",background:"rgba(110,231,183,.1)",padding:"2px 7px",borderRadius:"4px"}}>#{row.truck}</span>}
-                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
+                {row.truck&&<span style={{fontSize:"10px",fontWeight:"700",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"2px 7px",borderRadius:"4px"}}>#{row.truck}{row.driver?` · ${row.driver.split(" ")[0]}`:""}</span>}
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
                 {row.carriedFrom&&<span style={{fontSize:"8px",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>&#8617; carried</span>}
-                <select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"100px"}} disabled={isViewer}>
+                <select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"110px"}} disabled={isViewer}>
                   <option value="">-- status --</option>
                   {["Need to deliver","In Transit","Waiting Appointment","Delivered"].map(s=>(<option key={s}>{s}</option>))}
                 </select>
               </div>
               <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
+                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Destination</div>
+                <input value={row.destination||""} onChange={e=>updSub("localDeliveries",row.id,"destination",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="123 Main St, City, IL" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div>
                 <input value={row.broker||""} onChange={e=>updSub("localDeliveries",row.id,"broker",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Broker" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div>
@@ -3410,8 +3404,9 @@ ${accRows.length>0?`
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
                 <input value={row.datetime||""} onChange={e=>updSub("localDeliveries",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Driver</div>
-                <input value={row.driver||""} onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/></div>
-                {row.amount?<div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
+                <input list={`local-drv-${row.id}`} value={row.driver||""} onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/>
+                <datalist id={`local-drv-${row.id}`}>{[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}/>))}</datalist></div>
+                {row.amount?<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
                 <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
                 <input value={row.notes||""} onChange={e=>updSub("localDeliveries",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
               </div>
