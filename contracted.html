@@ -669,6 +669,20 @@ function findTruckForDriver(truckAssignments, driverName) {
   return "";
 }
 
+// True if a load has no user-visible content yet — used to decide whether
+// to delete the card when a duplicate-detection abort happens on a freshly
+// created load. We deliberately ignore createdAt/updatedAt/id.
+function isEmptyLoad(l) {
+  if (!l) return false;
+  if (l.broker || l.loadNum || l.rate || l.notes) return false;
+  if (l.otrDriver || l.otrTruck || l.trailer || l.truck) return false;
+  if (l.rateConUrl) return false;
+  if ((l.pickups    || []).some(p => p && (p.location || p.datetime || p.weight || p.pallets || p.commodity))) return false;
+  if ((l.deliveries || []).some(d => d && (d.location || d.datetime))) return false;
+  if ((l.photos     || []).length > 0) return false;
+  return true;
+}
+
 // ============================================================
 // DATA NORMALIZATION
 // Single source of truth for the on-disk → in-memory shape transform.
@@ -1402,7 +1416,7 @@ function StopList({ stops, type, color, onChange }) {
 // COMPONENTS — RATE CON & PHOTOS
 // ============================================================
 
-function RateConSlot({ load, onChange, checkDuplicate }) {
+function RateConSlot({ load, onChange, onDelete, checkDuplicate }) {
   const [busy, setBusy]   = useState(false);
   const [drag, setDrag]   = useState(false);
   const [note, setNote]   = useState("");   // banner message after parse
@@ -1423,12 +1437,11 @@ function RateConSlot({ load, onChange, checkDuplicate }) {
       return;
     }
     setBusy(true);
-    setNote("");
+    setNote("Reading PDF…");
     try {
-      // 1. Upload to Drive first so we always have the file linked even if parsing fails
-      const uploaded = await apiUpload(f, "uploadRateCon");
-
-      // 2. Try to extract + parse in parallel-ish (still must await for safety)
+      // 1. Parse text FIRST, locally, before touching the server. This lets
+      //    us run the duplicate check without uploading a PDF that we may
+      //    end up throwing away if the user cancels.
       let parsed = null;
       let parseError = null;
       try {
@@ -1439,41 +1452,51 @@ function RateConSlot({ load, onChange, checkDuplicate }) {
         console.warn("Rate con auto-parse failed:", e);
       }
 
-      // 3. Compose a single load update with both the upload and any parsed fields
-      let next = { ...load, rateConUrl: uploaded.url, rateConName: uploaded.name };
-      let filledFields = [];
-      let dupWarning   = null;
-      if (parsed) {
-        // Duplicate-loadNum check: if the PDF's load # already exists elsewhere on the
-        // board, ask the user before applying it. If they say no, strip it from parsed.
-        if (parsed.loadNum && checkDuplicate) {
-          const hit = checkDuplicate(load.id, parsed.loadNum);
-          if (hit) {
-            const proceed = window.confirm(
-              "Load # " + parsed.loadNum + " already exists in \"" + hit.weekLabel + "\"" +
-              (hit.broker ? " (broker: " + hit.broker + ")" : "") + ".\n\n" +
-              "Use it on this load anyway?"
-            );
-            if (!proceed) {
-              parsed = { ...parsed, loadNum: undefined };
-              dupWarning = "Skipped Load # — duplicate of an existing load.";
+      // 2. Duplicate-loadNum check BEFORE upload. If user cancels, abort
+      //    completely — don't upload, don't change the card. If the load
+      //    we're dropping onto was an untouched blank card, delete it so
+      //    the user sees no residue.
+      if (parsed && parsed.loadNum && checkDuplicate) {
+        const hit = checkDuplicate(load.id, parsed.loadNum);
+        if (hit) {
+          const proceed = window.confirm(
+            "Load # " + parsed.loadNum + " already exists in \"" + hit.weekLabel + "\"" +
+            (hit.broker ? " (broker: " + hit.broker + ")" : "") + ".\n\n" +
+            "Add this duplicate load anyway?\n\n" +
+            "Click Cancel to skip — nothing will be uploaded or changed."
+          );
+          if (!proceed) {
+            setBusy(false);
+            // If the destination card is completely empty (user just hit + Add Load
+            // and dragged in a duplicate), remove the empty placeholder so they don't
+            // have to manually delete it.
+            if (isEmptyLoad(load) && typeof onDelete === "function") {
+              onDelete(load.id);
+            } else {
+              setNote("✕ Skipped — Load #" + parsed.loadNum + " is already on the board.");
             }
+            return;
           }
         }
+      }
+
+      // 3. Now upload (only after dup check has passed or wasn't needed)
+      setNote("Uploading…");
+      const uploaded = await apiUpload(f, "uploadRateCon");
+
+      // 4. Compose the single load update with the upload + any parsed fields
+      let next = { ...load, rateConUrl: uploaded.url, rateConName: uploaded.name };
+      let filledFields = [];
+      if (parsed) {
         const merged = applyParsedToLoad(next, parsed);
         next = merged.merged;
         filledFields = merged.filledFields;
       }
       onChange(next);
 
-      // 4. Report what happened
+      // 5. Report what happened
       if (filledFields.length) {
-        setNote(
-          (dupWarning ? "⚠ " + dupWarning + " " : "") +
-          "✓ Auto-filled " + filledFields.length + " field" + (filledFields.length === 1 ? "" : "s") + ": " + filledFields.join(", ") + ". Please review."
-        );
-      } else if (dupWarning) {
-        setNote("⚠ " + dupWarning);
+        setNote("✓ Auto-filled " + filledFields.length + " field" + (filledFields.length === 1 ? "" : "s") + ": " + filledFields.join(", ") + ". Please review.");
       } else if (parseError) {
         setNote("Uploaded. Couldn't read text from this PDF (it may be a scan) — please fill fields manually.");
       } else {
@@ -1715,7 +1738,7 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
             </div>
           </div>
 
-          <RateConSlot load={load} onChange={onChange} checkDuplicate={checkDuplicate} />
+          <RateConSlot load={load} onChange={onChange} onDelete={onDelete} checkDuplicate={checkDuplicate} />
 
           <StopList stops={load.pickups || []} type="pickup" color="#0f766e"
                     onChange={pickups => update("pickups", pickups)} />
