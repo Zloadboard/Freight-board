@@ -135,6 +135,13 @@
   }
   .clb-card:hover { box-shadow: 0 4px 14px rgba(15,23,42,.08); }
   .clb-card--delivered { opacity: .62; }
+  .clb-card--waiting {
+    background: #fffbeb;
+    box-shadow: inset 4px 0 0 #f59e0b;
+  }
+  .clb-card--waiting .clb-card__head {
+    background: #fef3c7;
+  }
 
   .clb-card__head {
     display: flex; align-items: center; gap: 10px;
@@ -551,14 +558,11 @@ const STATUS_STYLES = {
 };
 
 // Buckets are now built dynamically from today's date — see buildBuckets() below.
-// Keys are stable: waiting, overdue, today, tomorrow, day2..day7, future, delivered.
+// Keys are stable: overdue, today, tomorrow, day2..day7, future, delivered.
 // Labels for day2..day7 are weekday-name abbreviations with date ("Thu 5/14").
 function buildBuckets(today) {
   const dayAbbrev = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   const out = [
-    // Always at the top — loads explicitly marked as waiting for an update
-    // (missing rate, appointment times, etc.) live here regardless of pickup date.
-    { key: "waiting",  label: "⏳ Waiting Updated", color: "#b45309", bg: "#fef3c7" },
     { key: "overdue",  label: "Overdue",  color: "#dc2626", bg: "#fef2f2" },
     { key: "today",    label: "Today",    color: "#ca8a04", bg: "#fefce8" },
     { key: "tomorrow", label: "Tomorrow", color: "#ea580c", bg: "#fff7ed" }
@@ -615,9 +619,6 @@ function todayMidnight() {
 
 function getBucket(load, today, tomorrow) {
   if (load.status === "Delivered") return "delivered";
-  // Manually flagged as waiting for updated info — sits at the top of the
-  // board regardless of pickup date, until user clears the flag.
-  if (load.waitingUpdate) return "waiting";
 
   // Earliest pickup date is the urgency anchor (when the truck needs to be there).
   // Falls back to earliest delivery if no pickups have a date.
@@ -1681,7 +1682,9 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
   ) : null;
 
   return (
-    <div className={"clb-card" + (load.status === "Delivered" ? " clb-card--delivered" : "")}
+    <div className={"clb-card" +
+                    (load.status === "Delivered" ? " clb-card--delivered" : "") +
+                    (load.waitingUpdate ? " clb-card--waiting" : "")}
          style={{ "--bucket-color": bucketColor }}>
       <div className="clb-card__head" onClick={onToggle}>
         <span className="clb-card__caret">{expanded ? "▼" : "▶"}</span>
