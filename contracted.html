@@ -170,6 +170,28 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
+  .clb-card__waiting {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 10px; font-weight: 600;
+    color: #94a3b8; background: transparent;
+    border: 1px solid #e2e8f0;
+    padding: 2px 7px; border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color .15s, background .15s, border-color .15s;
+    font-family: inherit;
+  }
+  .clb-card__waiting:hover {
+    color: #475569; background: #f1f5f9; border-color: #cbd5e1;
+  }
+  .clb-card__waiting--on {
+    color: #92400e; background: #fef3c7;
+    border-color: #f59e0b;
+    font-size: 11px;
+  }
+  .clb-card__waiting--on:hover {
+    background: #fde68a;
+  }
   .clb-card__rate {
     font-family: "Manrope", sans-serif;
     font-size: 14px; font-weight: 800; color: #059669;
@@ -458,6 +480,7 @@
              lane:      "IL → GA",          // optional free text
              status:    "Need to Pickup" | "Dispatched" | "Loaded" | "Yard" | "Delivered",
              rate:      2500,               // number
+             waitingUpdate: false,          // when true, load lives in ⏳ Waiting Updated bucket regardless of date
              otrDriver: "Jeff Mecha",       // long-haul driver — shown on collapsed card
              otrTruck:  "519",              // long-haul truck # — auto-fills from truckAssignments
              trailer:   "53117",            // local trailer # — shown on collapsed card
@@ -528,11 +551,14 @@ const STATUS_STYLES = {
 };
 
 // Buckets are now built dynamically from today's date — see buildBuckets() below.
-// Keys are stable: overdue, today, tomorrow, day2..day7, future, delivered.
+// Keys are stable: waiting, overdue, today, tomorrow, day2..day7, future, delivered.
 // Labels for day2..day7 are weekday-name abbreviations with date ("Thu 5/14").
 function buildBuckets(today) {
   const dayAbbrev = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   const out = [
+    // Always at the top — loads explicitly marked as waiting for an update
+    // (missing rate, appointment times, etc.) live here regardless of pickup date.
+    { key: "waiting",  label: "⏳ Waiting Updated", color: "#b45309", bg: "#fef3c7" },
     { key: "overdue",  label: "Overdue",  color: "#dc2626", bg: "#fef2f2" },
     { key: "today",    label: "Today",    color: "#ca8a04", bg: "#fefce8" },
     { key: "tomorrow", label: "Tomorrow", color: "#ea580c", bg: "#fff7ed" }
@@ -589,6 +615,9 @@ function todayMidnight() {
 
 function getBucket(load, today, tomorrow) {
   if (load.status === "Delivered") return "delivered";
+  // Manually flagged as waiting for updated info — sits at the top of the
+  // board regardless of pickup date, until user clears the flag.
+  if (load.waitingUpdate) return "waiting";
 
   // Earliest pickup date is the urgency anchor (when the truck needs to be there).
   // Falls back to earliest delivery if no pickups have a date.
@@ -1651,6 +1680,15 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
          style={{ "--bucket-color": bucketColor }}>
       <div className="clb-card__head" onClick={onToggle}>
         <span className="clb-card__caret">{expanded ? "▼" : "▶"}</span>
+        <button
+          type="button"
+          className={"clb-card__waiting" + (load.waitingUpdate ? " clb-card__waiting--on" : "")}
+          onClick={e => { e.stopPropagation(); update("waitingUpdate", !load.waitingUpdate); }}
+          title={load.waitingUpdate
+            ? "Currently waiting for updated info — click to clear and return to the normal day bucket."
+            : "Click to mark this load as waiting for updated info (rate, appt times, etc.). Marked loads group at the top of the board."}>
+          {load.waitingUpdate ? "⏳ Waiting update" : "⏳ Mark waiting"}
+        </button>
         <span className="clb-card__broker">{load.broker || "—"}</span>
         {load.loadNum && <span className="clb-card__loadnum">#{load.loadNum}</span>}
         <span className="clb-card__lane">{summarizeLane(load)}</span>
@@ -1817,17 +1855,25 @@ function Header({ data, saveStatus, lastSync, search, setSearch, onAddLoad, onLo
     saveStatus === "error"  ? "Save failed" :
     "Synced";
 
-  // Storage size warning thresholds. Single Sheets cell holds ~50,000 chars.
-  const sizeKb = (storageSize / 1024).toFixed(1);
+  // Storage warning thresholds — measured against the biggest single week,
+  // which is what hits the 50KB Sheets cell cap (post-multi-cell upgrade).
+  // Pre-upgrade, the cap applies to total; for that case we factor it in too.
+  const watermark = Math.max(storageSize.biggestWeek, storageSize.total);
+  const sizeKb = (watermark / 1024).toFixed(1);
   const sizeLevel =
-    storageSize > 42000 ? "critical" :
-    storageSize > 32000 ? "warning"  :
-    storageSize > 20000 ? "info"     : null;
+    watermark > 42000 ? "critical" :
+    watermark > 32000 ? "warning"  :
+    watermark > 20000 ? "info"     : null;
   const sizeColors = {
     critical: { bg: "rgba(248,113,113,.25)", color: "#fecaca" },
     warning:  { bg: "rgba(251,191,36,.22)",  color: "#fcd34d" },
     info:     { bg: "rgba(255,255,255,.08)", color: "rgba(255,255,255,.65)" }
   };
+  const sizeTitle = sizeLevel === "critical"
+    ? "Approaching the 50KB Sheets cell limit. Archive old weeks to free space, or upgrade the Apps Script for per-week storage."
+    : sizeLevel === "warning"
+    ? "Data is getting large. Largest week: " + (storageSize.biggestWeek/1024).toFixed(1) + " KB" + (storageSize.biggestWeekLabel ? " (" + storageSize.biggestWeekLabel + ")" : "") + "."
+    : "Storage usage. Largest week: " + (storageSize.biggestWeek/1024).toFixed(1) + " KB · total: " + (storageSize.total/1024).toFixed(1) + " KB.";
 
   const weeks = (data && data.weeks) || [];
   const activeWeeks   = weeks.filter(w => !w.archived);
@@ -1864,12 +1910,7 @@ function Header({ data, saveStatus, lastSync, search, setSearch, onAddLoad, onLo
       )}
       <span className={"clb-save clb-save--" + saveStatus}>● {saveLbl}</span>
       {sizeLevel && (
-        <span className="clb-save" style={sizeColors[sizeLevel]}
-              title={sizeLevel === "critical"
-                ? "Approaching the 50KB Sheets cell limit. Archive old weeks to free space."
-                : sizeLevel === "warning"
-                ? "Data is getting large. Consider archiving old weeks."
-                : "Current storage usage."}>
+        <span className="clb-save" style={sizeColors[sizeLevel]} title={sizeTitle}>
           {sizeKb} KB
         </span>
       )}
@@ -2129,6 +2170,7 @@ function App() {
       trailer: "",
       truck: "",
       notes: "",
+      waitingUpdate: false,
       pickups:    [{ location:"", datetime:"", commodity:"", weight:"", pallets:"", notes:"" }],
       deliveries: [{ location:"", datetime:"", notes:"" }],
       rateConUrl: "",
@@ -2336,10 +2378,24 @@ function App() {
     };
   }, []);
 
-  // ---- Storage size monitor (the JSON blob that goes into a single Sheets cell) ----
+  // ---- Storage size monitor ----
+  // Tracks both total payload AND the largest single week. With the current
+  // (single-blob) Apps Script the 50KB cell limit applies to total. With the
+  // multi-cell Apps Script (one row per week) the limit applies per week —
+  // which is `biggestWeek` here. Showing both keeps the warning useful in
+  // either deployment.
   const storageSize = useMemo(() => {
-    if (!data) return 0;
-    try { return JSON.stringify(data).length; } catch (e) { return 0; }
+    const empty = { total: 0, biggestWeek: 0, biggestWeekLabel: "" };
+    if (!data) return empty;
+    try {
+      const total = JSON.stringify(data).length;
+      let biggestWeek = 0, biggestWeekLabel = "";
+      (data.weeks || []).forEach(w => {
+        const s = JSON.stringify(w).length;
+        if (s > biggestWeek) { biggestWeek = s; biggestWeekLabel = w.label || ""; }
+      });
+      return { total, biggestWeek, biggestWeekLabel };
+    } catch (e) { return empty; }
   }, [data]);
 
   // ---- Render ----
