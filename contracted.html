@@ -818,12 +818,184 @@ function extractStopFromSection(section) {
   return (out.location || out.datetime) ? out : null;
 }
 
+// ============================================================
+// RJW LOGISTICS — broker-specific parser
+// Targets the structured LOAD SUMMARY and LOAD DETAILS sections
+// instead of regex-guessing across the whole document. Multi-stop
+// aware: outputs `allPickups` and `allDeliveries` arrays.
+// ============================================================
+
+// "LOCKPORT" → "Lockport". "NEW YORK" → "New York".
+function rjwCapitalizeCity(s) {
+  return String(s).trim().split(/\s+/).map(w =>
+    w.length > 0 ? (w[0].toUpperCase() + w.slice(1).toLowerCase()) : w
+  ).join(" ");
+}
+
+// "05/15/2026" → "5/15". Drops year and leading zeros to match how users type dates.
+function rjwFormatDate(s) {
+  const m = String(s).match(/(\d{1,2})\/(\d{1,2})/);
+  if (!m) return String(s);
+  return parseInt(m[1], 10) + "/" + parseInt(m[2], 10);
+}
+
+// "1600" → "4PM",  "0002" → "12:02AM",  "0830" → "8:30AM"
+function rjwFormatTime(s) {
+  const str = String(s).replace(/\D/g, "");
+  if (str.length < 3) return String(s);
+  const hh = parseInt(str.slice(0, str.length - 2), 10);
+  const mm = parseInt(str.slice(-2), 10);
+  if (isNaN(hh) || isNaN(mm)) return String(s);
+  const ap = hh >= 12 ? "PM" : "AM";
+  const h12 = hh === 0 ? 12 : (hh > 12 ? hh - 12 : hh);
+  if (mm === 0) return h12 + ap;
+  return h12 + ":" + String(mm).padStart(2, "0") + ap;
+}
+
+// Parse a single PU/SP/SO block from the LOAD DETAILS section.
+// Looks for "<CITY> <ST> <ZIP>" line and the first "Date: <MM/DD/YYYY> <HHMM>".
+function parseRJWStopBlock(content) {
+  // City State ZIP: match a line like "LOCKPORT IL 60441"
+  // We allow multi-word city names by being non-greedy and requiring a trailing 5-digit ZIP.
+  const cityM = content.match(/\b([A-Z][A-Z .\-&]*?[A-Z])\s+([A-Z]{2})\s+(\d{5})\b/);
+  if (!cityM) return null;
+
+  // Date: 05/15/2026 1600 (we take the first / window start)
+  const dateM = content.match(/Date:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{3,4})/);
+
+  const stop = {
+    location: rjwCapitalizeCity(cityM[1]) + ", " + cityM[2]
+  };
+  if (dateM) {
+    stop.datetime = rjwFormatDate(dateM[1]) + " " + rjwFormatTime(dateM[2]);
+  }
+  return stop;
+}
+
+function parseRJW(rawText) {
+  const result = { broker: "RJW Logistics" };
+  if (!rawText) return result;
+
+  // ---- Load number (M396863, etc.) ----
+  // RJW formats: "Load # M396863" in header, "RJW Load Number: M396863" in summary
+  const ldM = rawText.match(/RJW\s+Load\s+Number:\s*([A-Z]?\d{4,})/i)
+           || rawText.match(/Load\s*#\s*([A-Z]?\d{4,})/i);
+  if (ldM) result.loadNum = ldM[1];
+
+  // ---- LOAD SUMMARY section ----
+  // Contains canonical pickup city/state, delivery city/state, scheduled times,
+  // total pay, weight, pieces. Bounded by "LOAD INSTRUCTIONS" or "LOAD DETAILS".
+  const sumStart = rawText.indexOf("LOAD SUMMARY");
+  const sumEnd   = sumStart >= 0
+    ? (function() {
+        const a = rawText.indexOf("LOAD INSTRUCTIONS", sumStart);
+        const b = rawText.indexOf("LOAD DETAILS",      sumStart);
+        const candidates = [a, b].filter(x => x > sumStart);
+        return candidates.length ? Math.min.apply(null, candidates) : rawText.length;
+      })()
+    : -1;
+  const summary = (sumStart >= 0) ? rawText.slice(sumStart, sumEnd) : "";
+
+  if (summary) {
+    // City State pattern within the summary — bounded so we only match valid pairs
+    // e.g. "Pickup City: LOCKPORT IL    Scheduled Pickup: ..."
+    const puCity = summary.match(/Pickup\s+City:\s*([A-Z][A-Z .\-&]*?)\s+([A-Z]{2})(?=\s|$)/i);
+    const puDt   = summary.match(/Scheduled\s+Pickup:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{3,4})/i);
+    if (puCity || puDt) {
+      result.pickup = {};
+      if (puCity) result.pickup.location = rjwCapitalizeCity(puCity[1]) + ", " + puCity[2];
+      if (puDt)   result.pickup.datetime = rjwFormatDate(puDt[1]) + " " + rjwFormatTime(puDt[2]);
+    }
+
+    const dCity = summary.match(/Delivery\s+City:\s*([A-Z][A-Z .\-&]*?)\s+([A-Z]{2})(?=\s|$)/i);
+    const dDt   = summary.match(/Scheduled\s+Delivery:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{3,4})/i);
+    if (dCity || dDt) {
+      result.delivery = {};
+      if (dCity) result.delivery.location = rjwCapitalizeCity(dCity[1]) + ", " + dCity[2];
+      if (dDt)   result.delivery.datetime = rjwFormatDate(dDt[1]) + " " + rjwFormatTime(dDt[2]);
+    }
+
+    const payM = summary.match(/Total\s+Carrier\s+Pay:\s*\$?\s*([\d,]+(?:\.\d+)?)/i);
+    if (payM) {
+      const v = parseFloat(payM[1].replace(/,/g, ""));
+      if (!isNaN(v)) result.rate = Math.round(v).toString();
+    }
+
+    const wgtM = summary.match(/Weight\s*\(lbs\):\s*([\d,]+(?:\.\d+)?)/i);
+    if (wgtM) {
+      const w = parseFloat(wgtM[1].replace(/,/g, ""));
+      if (!isNaN(w) && w >= 100 && w <= 80000) {
+        if (!result.pickup) result.pickup = {};
+        result.pickup.weight = Math.round(w).toString();
+      }
+    }
+
+    // Pieces \ Spots: 5065 \ 0  →  pallets = 5065
+    const pcsM = summary.match(/Pieces\s*\\?\s*Spots?:\s*(\d{1,5})\b/i);
+    if (pcsM) {
+      const n = parseInt(pcsM[1], 10);
+      if (n >= 1 && n <= 99999) {
+        if (!result.pickup) result.pickup = {};
+        result.pickup.pallets = String(n);
+      }
+    }
+  }
+
+  // ---- LOAD DETAILS section — multi-stop ----
+  const detStart = rawText.indexOf("LOAD DETAILS");
+  const detEnd   = detStart >= 0
+    ? (function() {
+        const a = rawText.indexOf("CARRIER OFFER", detStart);
+        const b = rawText.indexOf("OTHER IMPORTANT",   detStart);
+        const candidates = [a, b].filter(x => x > detStart);
+        return candidates.length ? Math.min.apply(null, candidates) : rawText.length;
+      })()
+    : -1;
+  const details = (detStart >= 0) ? rawText.slice(detStart, detEnd) : "";
+
+  if (details) {
+    // Find each "PU Name:", "SP Name:", or "SO Name:" header and slice into blocks.
+    const headerRe = /\b(PU|SP|SO)\s+Name:/g;
+    const matches = [];
+    let hm;
+    while ((hm = headerRe.exec(details)) !== null) {
+      matches.push({ type: hm[1], index: hm.index });
+    }
+
+    const pickups = [];
+    const deliveries = [];
+    for (let i = 0; i < matches.length; i++) {
+      const start = matches[i].index;
+      const end   = (i + 1 < matches.length) ? matches[i + 1].index : details.length;
+      const block = details.slice(start, end);
+      const stop  = parseRJWStopBlock(block);
+      if (stop) {
+        if (matches[i].type === "SO") deliveries.push(stop);
+        else                          pickups.push(stop);   // PU or SP
+      }
+    }
+
+    if (pickups.length    > 0) result.allPickups    = pickups;
+    if (deliveries.length > 0) result.allDeliveries = deliveries;
+  }
+
+  return result;
+}
+
 function parseRateCon(rawText) {
   const result = {};
   if (!rawText) return result;
   const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const flat  = rawText.replace(/\s+/g, " ");
 
+  // ---- Broker-specific parsers (precise, no letterhead-noise issues) ----
+  // RJW Logistics is the primary broker for this board — use the structured
+  // parser that reads LOAD SUMMARY / LOAD DETAILS sections directly.
+  if (/RJW\s*Logistics/i.test(flat)) {
+    return parseRJW(rawText);
+  }
+
+  // ---- Generic broker fallback (regex heuristics across whole doc) ----
   // ---- Broker ----
   // RJW Logistics is the primary broker in scope; other matches are bonus.
   if (/RJW\s*Logistics/i.test(flat))        result.broker = "RJW Logistics";
@@ -924,8 +1096,11 @@ function parseRateCon(rawText) {
   return result;
 }
 
-// Merge parsed fields into a load, NEVER overwriting non-empty fields.
-// Returns { merged, filledFields } so the caller can report what happened.
+// Merge parsed fields into a load. Single-stop fields fill only empty
+// destination fields (preserves user input). Multi-stop arrays REPLACE
+// the entire pickups/deliveries lists — used by the RJW parser, where
+// the PDF is the authoritative source.
+// Returns { merged, filledFields }.
 function applyParsedToLoad(load, parsed) {
   const merged = { ...load };
   const filled = [];
@@ -934,7 +1109,26 @@ function applyParsedToLoad(load, parsed) {
   if (parsed.loadNum && !merged.loadNum) { merged.loadNum = parsed.loadNum; filled.push("Load #"); }
   if (parsed.rate    && !parseFloat(merged.rate)) { merged.rate = String(parsed.rate); filled.push("Rate"); }
 
-  if (parsed.pickup) {
+  // ----- Multi-stop pickups (RJW path) -----
+  if (Array.isArray(parsed.allPickups) && parsed.allPickups.length > 0) {
+    merged.pickups = parsed.allPickups.map(p => ({
+      location:  p.location  || "",
+      datetime:  p.datetime  || "",
+      commodity: "",
+      weight:    "",
+      pallets:   "",
+      notes:     ""
+    }));
+    // Attach load-wide cargo attributes (from LOAD SUMMARY) to the first pickup
+    if (parsed.pickup && merged.pickups[0]) {
+      if (parsed.pickup.weight)    { merged.pickups[0].weight    = parsed.pickup.weight;    filled.push("Weight"); }
+      if (parsed.pickup.pallets)   { merged.pickups[0].pallets   = parsed.pickup.pallets;   filled.push("Pallets"); }
+      if (parsed.pickup.commodity) { merged.pickups[0].commodity = parsed.pickup.commodity; filled.push("Commodity"); }
+    }
+    filled.push(merged.pickups.length + " pickup" + (merged.pickups.length > 1 ? "s" : ""));
+
+  // ----- Single-pickup fallback (generic parser) -----
+  } else if (parsed.pickup) {
     const pickups = (merged.pickups || []).slice();
     const emptyIdx = pickups.findIndex(p => !p.location && !p.datetime);
     const target = emptyIdx >= 0 ? emptyIdx : pickups.length;
@@ -952,7 +1146,17 @@ function applyParsedToLoad(load, parsed) {
     }
   }
 
-  if (parsed.delivery) {
+  // ----- Multi-stop deliveries (RJW path) -----
+  if (Array.isArray(parsed.allDeliveries) && parsed.allDeliveries.length > 0) {
+    merged.deliveries = parsed.allDeliveries.map(d => ({
+      location: d.location || "",
+      datetime: d.datetime || "",
+      notes:    ""
+    }));
+    filled.push(merged.deliveries.length + " deliver" + (merged.deliveries.length > 1 ? "ies" : "y"));
+
+  // ----- Single-delivery fallback -----
+  } else if (parsed.delivery) {
     const deliveries = (merged.deliveries || []).slice();
     const emptyIdx = deliveries.findIndex(d => !d.location && !d.datetime);
     const target = emptyIdx >= 0 ? emptyIdx : deliveries.length;
