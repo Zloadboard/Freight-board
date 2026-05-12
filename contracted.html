@@ -527,14 +527,39 @@ const STATUS_STYLES = {
   "Delivered":      { bg:"#dcfce7", color:"#14532d", border:"#16a34a" }
 };
 
-const BUCKETS = [
-  { key:"overdue",   label:"Overdue",   color:"#dc2626", bg:"#fef2f2" },
-  { key:"today",     label:"Today",     color:"#ca8a04", bg:"#fefce8" },
-  { key:"tomorrow",  label:"Tomorrow",  color:"#ea580c", bg:"#fff7ed" },
-  { key:"thisweek",  label:"This Week", color:"#2563eb", bg:"#eff6ff" },
-  { key:"future",    label:"Future",    color:"#475569", bg:"#f8fafc" },
-  { key:"delivered", label:"Delivered", color:"#16a34a", bg:"#f0fdf4" }
-];
+// Buckets are now built dynamically from today's date — see buildBuckets() below.
+// Keys are stable: overdue, today, tomorrow, day2..day7, future, delivered.
+// Labels for day2..day7 are weekday-name abbreviations with date ("Thu 5/14").
+function buildBuckets(today) {
+  const dayAbbrev = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const out = [
+    { key: "overdue",  label: "Overdue",  color: "#dc2626", bg: "#fef2f2" },
+    { key: "today",    label: "Today",    color: "#ca8a04", bg: "#fefce8" },
+    { key: "tomorrow", label: "Tomorrow", color: "#ea580c", bg: "#fff7ed" }
+  ];
+  // Gradient of 6 colors for the next 6 days (after tomorrow), upcoming-not-urgent feel
+  const dayPalette = [
+    { color: "#0891b2", bg: "#ecfeff" }, // cyan
+    { color: "#2563eb", bg: "#eff6ff" }, // blue
+    { color: "#4f46e5", bg: "#eef2ff" }, // indigo
+    { color: "#7c3aed", bg: "#f5f3ff" }, // violet
+    { color: "#9333ea", bg: "#faf5ff" }, // purple
+    { color: "#c026d3", bg: "#fdf4ff" }  // fuchsia
+  ];
+  for (let i = 2; i <= 7; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    out.push({
+      key:   "day" + i,
+      label: dayAbbrev[d.getDay()] + " " + (d.getMonth() + 1) + "/" + d.getDate(),
+      color: dayPalette[i - 2].color,
+      bg:    dayPalette[i - 2].bg
+    });
+  }
+  out.push({ key: "future",    label: "Future",    color: "#475569", bg: "#f8fafc" });
+  out.push({ key: "delivered", label: "Delivered", color: "#16a34a", bg: "#f0fdf4" });
+  return out;
+}
 
 // ============================================================
 // HELPERS
@@ -565,38 +590,36 @@ function todayMidnight() {
 function getBucket(load, today, tomorrow) {
   if (load.status === "Delivered") return "delivered";
 
-  // earliest delivery date is the urgency anchor; fall back to last pickup if no deliveries dated
+  // Earliest pickup date is the urgency anchor (when the truck needs to be there).
+  // Falls back to earliest delivery if no pickups have a date.
   let ref = null;
-  (load.deliveries || []).forEach(d => {
-    const dt = parseDateTime(d && d.datetime);
+  (load.pickups || []).forEach(p => {
+    const dt = parseDateTime(p && p.datetime);
     if (dt && (!ref || dt < ref)) ref = dt;
   });
   if (!ref) {
-    (load.pickups || []).forEach(p => {
-      const dt = parseDateTime(p && p.datetime);
-      if (dt && (!ref || dt > ref)) ref = dt;
+    (load.deliveries || []).forEach(d => {
+      const dt = parseDateTime(d && d.datetime);
+      if (dt && (!ref || dt < ref)) ref = dt;
     });
   }
   if (!ref) return "future";
 
-  const t        = ref.getTime();
-  const todayT   = today.getTime();
-  const tmrT     = tomorrow.getTime();
-  if (t <  todayT)  return "overdue";
-  if (t === todayT) return "today";
-  if (t === tmrT)   return "tomorrow";
-  const weekEnd = new Date(today); weekEnd.setDate(weekEnd.getDate() + 7);
-  if (t < weekEnd.getTime()) return "thisweek";
+  const DAY_MS = 86400000;
+  const diff   = Math.round((ref.getTime() - today.getTime()) / DAY_MS);
+  if (diff <  0) return "overdue";
+  if (diff === 0) return "today";
+  if (diff === 1) return "tomorrow";
+  if (diff >= 2 && diff <= 7) return "day" + diff;
   return "future";
 }
 
 function summarizeLane(load) {
-  const first = (load.pickups    || [])[0];
-  const drops = load.deliveries  || [];
-  const last  = drops[drops.length - 1];
-  const a = (first && first.location) || "—";
-  const b = (last  && last.location)  || "—";
-  return a + "  →  " + b;
+  const pickups    = (load.pickups    || []).map(p => p && p.location).filter(Boolean);
+  const deliveries = (load.deliveries || []).map(d => d && d.location).filter(Boolean);
+  const p = pickups.length    ? pickups.join(" · ")    : "—";
+  const d = deliveries.length ? deliveries.join(" · ") : "—";
+  return p + "  →  " + d;
 }
 
 function loadMatchesSearch(load, q) {
@@ -853,21 +876,40 @@ function rjwFormatTime(s) {
 }
 
 // Parse a single PU/SP/SO block from the LOAD DETAILS section.
-// Looks for "<CITY> <ST> <ZIP>" line and the first "Date: <MM/DD/YYYY> <HHMM>".
+// Extracts city/state and the date window (start + end). The datetime
+// string is kept in the PDF's exact format: "MM/DD/YYYY HHMM - HHMM"
+// (compact when same day) or "MM/DD/YYYY HHMM - MM/DD/YYYY HHMM".
 function parseRJWStopBlock(content) {
   // City State ZIP: match a line like "LOCKPORT IL 60441"
-  // We allow multi-word city names by being non-greedy and requiring a trailing 5-digit ZIP.
   const cityM = content.match(/\b([A-Z][A-Z .\-&]*?[A-Z])\s+([A-Z]{2})\s+(\d{5})\b/);
   if (!cityM) return null;
 
-  // Date: 05/15/2026 1600 (we take the first / window start)
-  const dateM = content.match(/Date:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{3,4})/);
+  // Pull every "<MM/DD/YYYY> <HHMM>" pair in this block — windows have two.
+  const dtRe = /(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{3,4})\b/g;
+  const dts = [];
+  let dm;
+  while ((dm = dtRe.exec(content)) !== null) {
+    dts.push({ date: dm[1], time: dm[2].padStart(4, "0") });
+  }
 
   const stop = {
     location: rjwCapitalizeCity(cityM[1]) + ", " + cityM[2]
   };
-  if (dateM) {
-    stop.datetime = rjwFormatDate(dateM[1]) + " " + rjwFormatTime(dateM[2]);
+
+  if (dts.length === 1) {
+    stop.datetime = dts[0].date + " " + dts[0].time;
+  } else if (dts.length >= 2) {
+    const a = dts[0], b = dts[1];
+    if (a.date === b.date && a.time === b.time) {
+      // Window collapsed to a point (RJW sometimes lists the same time twice for "Live load")
+      stop.datetime = a.date + " " + a.time;
+    } else if (a.date === b.date) {
+      // Same-day window: "05/15/2026 1600 - 2300"
+      stop.datetime = a.date + " " + a.time + " - " + b.time;
+    } else {
+      // Multi-day window: "05/17/2026 0002 - 05/19/2026 2357"
+      stop.datetime = a.date + " " + a.time + " - " + b.date + " " + b.time;
+    }
   }
   return stop;
 }
@@ -1318,11 +1360,6 @@ function StopRow({ stop, index, type, color, onChange, onRemove }) {
           </div>
         </div>
       )}
-      <div className="clb-field">
-        <span className="clb-field__lbl">{type === "pickup" ? "Pickup notes" : "Delivery notes"}</span>
-        <input value={stop.notes || ""} onChange={e => set("notes", e.target.value)}
-               placeholder={type === "pickup" ? "PO #, references, dock, etc." : "Appointment #, instructions, etc."} />
-      </div>
     </div>
   );
 }
@@ -1365,7 +1402,7 @@ function StopList({ stops, type, color, onChange }) {
 // COMPONENTS — RATE CON & PHOTOS
 // ============================================================
 
-function RateConSlot({ load, onChange }) {
+function RateConSlot({ load, onChange, checkDuplicate }) {
   const [busy, setBusy]   = useState(false);
   const [drag, setDrag]   = useState(false);
   const [note, setNote]   = useState("");   // banner message after parse
@@ -1405,7 +1442,24 @@ function RateConSlot({ load, onChange }) {
       // 3. Compose a single load update with both the upload and any parsed fields
       let next = { ...load, rateConUrl: uploaded.url, rateConName: uploaded.name };
       let filledFields = [];
+      let dupWarning   = null;
       if (parsed) {
+        // Duplicate-loadNum check: if the PDF's load # already exists elsewhere on the
+        // board, ask the user before applying it. If they say no, strip it from parsed.
+        if (parsed.loadNum && checkDuplicate) {
+          const hit = checkDuplicate(load.id, parsed.loadNum);
+          if (hit) {
+            const proceed = window.confirm(
+              "Load # " + parsed.loadNum + " already exists in \"" + hit.weekLabel + "\"" +
+              (hit.broker ? " (broker: " + hit.broker + ")" : "") + ".\n\n" +
+              "Use it on this load anyway?"
+            );
+            if (!proceed) {
+              parsed = { ...parsed, loadNum: undefined };
+              dupWarning = "Skipped Load # — duplicate of an existing load.";
+            }
+          }
+        }
         const merged = applyParsedToLoad(next, parsed);
         next = merged.merged;
         filledFields = merged.filledFields;
@@ -1414,7 +1468,12 @@ function RateConSlot({ load, onChange }) {
 
       // 4. Report what happened
       if (filledFields.length) {
-        setNote("✓ Auto-filled " + filledFields.length + " field" + (filledFields.length === 1 ? "" : "s") + ": " + filledFields.join(", ") + ". Please review.");
+        setNote(
+          (dupWarning ? "⚠ " + dupWarning + " " : "") +
+          "✓ Auto-filled " + filledFields.length + " field" + (filledFields.length === 1 ? "" : "s") + ": " + filledFields.join(", ") + ". Please review."
+        );
+      } else if (dupWarning) {
+        setNote("⚠ " + dupWarning);
       } else if (parseError) {
         setNote("Uploaded. Couldn't read text from this PDF (it may be a scan) — please fill fields manually.");
       } else {
@@ -1532,7 +1591,7 @@ function PhotosSlot({ load, onChange }) {
 // COMPONENTS — LOAD CARD
 // ============================================================
 
-function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, expanded, onToggle, onChange, onDelete }) {
+function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, checkDuplicate, expanded, onToggle, onChange, onDelete }) {
   const [pendingDriver, setPendingDriver] = useState(load.otrDriver || "");
   useEffect(() => { setPendingDriver(load.otrDriver || ""); }, [load.otrDriver]);
 
@@ -1555,6 +1614,7 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, expan
 
   const ss = STATUS_STYLES[load.status] || STATUS_STYLES["Need to Pickup"];
   const bucketColor = bucket.color;
+  const dup = checkDuplicate ? checkDuplicate(load.id, load.loadNum) : null;
 
   // OTR badge shows either "#519 · Jeff Mecha" or whichever pieces are present
   const otrBadge = (load.otrDriver || load.otrTruck) ? (
@@ -1589,8 +1649,15 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, expan
               <input value={load.broker || ""} onChange={e => update("broker", e.target.value)} placeholder="RJW Logistics, Echo, etc." />
             </div>
             <div className="clb-field">
-              <span className="clb-field__lbl">Load #</span>
-              <input value={load.loadNum || ""} onChange={e => update("loadNum", e.target.value)} placeholder="12345" />
+              <span className="clb-field__lbl">Load #{dup && <span style={{ color:"#dc2626", marginLeft:6, fontWeight:700 }}>· duplicate</span>}</span>
+              <input value={load.loadNum || ""} onChange={e => update("loadNum", e.target.value)} placeholder="12345"
+                     style={dup ? { borderColor:"#dc2626", background:"#fef2f2" } : null} />
+              {dup && (
+                <div style={{ fontSize:10, color:"#b91c1c", fontWeight:600, marginTop:2, lineHeight:1.3 }}>
+                  ⚠ Already exists in <strong>{dup.weekLabel}</strong>
+                  {dup.broker ? <> (broker: {dup.broker})</> : null}
+                </div>
+              )}
             </div>
             <div className="clb-field">
               <span className="clb-field__lbl">Rate ($)</span>
@@ -1648,7 +1715,7 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, expan
             </div>
           </div>
 
-          <RateConSlot load={load} onChange={onChange} />
+          <RateConSlot load={load} onChange={onChange} checkDuplicate={checkDuplicate} />
 
           <StopList stops={load.pickups || []} type="pickup" color="#0f766e"
                     onChange={pickups => update("pickups", pickups)} />
@@ -1680,7 +1747,7 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, expan
 // COMPONENTS — BUCKET
 // ============================================================
 
-function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, allTrucks, truckAssignments, onChange, onDelete }) {
+function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, allTrucks, truckAssignments, checkDuplicate, onChange, onDelete }) {
   if (!loads.length) return null;
   const total = loads.reduce((s, l) => s + (parseFloat(l.rate) || 0), 0);
   return (
@@ -1699,6 +1766,7 @@ function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, al
             allDrivers={allDrivers}
             allTrucks={allTrucks}
             truckAssignments={truckAssignments}
+            checkDuplicate={checkDuplicate}
             expanded={expandedIds.has(l.id)}
             onToggle={() => setExpanded(prev => {
               const next = new Set(prev);
@@ -1824,19 +1892,19 @@ function Header({ data, saveStatus, lastSync, search, setSearch, onAddLoad, onLo
   );
 }
 
-function SummaryBar({ data, today, tomorrow }) {
+function SummaryBar({ data, today, tomorrow, buckets }) {
   const cur = getCurrentWeek(data);
   const loads = cur ? cur.loads : [];
   const counts = useMemo(() => {
     const c = { total: loads.length, totalRate: 0 };
-    BUCKETS.forEach(b => c[b.key] = 0);
+    buckets.forEach(b => c[b.key] = 0);
     loads.forEach(l => {
       const k = getBucket(l, today, tomorrow);
       c[k] = (c[k] || 0) + 1;
       c.totalRate += parseFloat(l.rate) || 0;
     });
     return c;
-  }, [loads, today, tomorrow]);
+  }, [loads, today, tomorrow, buckets]);
 
   return (
     <div className="clb-summary">
@@ -1848,7 +1916,7 @@ function SummaryBar({ data, today, tomorrow }) {
         <span className="clb-chip__val">{formatRate(counts.totalRate)}</span>
         <span className="clb-chip__lbl">Total revenue</span>
       </div>
-      {BUCKETS.filter(b => counts[b.key] > 0).map(b => (
+      {buckets.filter(b => counts[b.key] > 0).map(b => (
         <div key={b.key} className="clb-chip clb-chip--accent" style={{ "--accent": b.color }}>
           <span className="clb-chip__val">{counts[b.key]}</span>
           <span className="clb-chip__lbl">{b.label}</span>
@@ -1919,6 +1987,30 @@ function App() {
     (data && data.customTrucks || []).forEach(t => set.add(t));
     return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   }, [data && data.customTrucks]);
+
+  // ---- Duplicate-load# detection ----
+  // Builds a Map keyed by lowercase-trimmed loadNum across ALL weeks.
+  // A new entry conflicts if it matches a different load's id.
+  const loadNumIndex = useMemo(() => {
+    const m = new Map();
+    if (!data) return m;
+    for (const w of (data.weeks || [])) {
+      for (const l of (w.loads || [])) {
+        const ln = String(l.loadNum || "").trim().toLowerCase();
+        if (!ln) continue;
+        // Keep the first occurrence; later duplicates are themselves the conflicts.
+        if (!m.has(ln)) m.set(ln, { id: l.id, weekLabel: w.label, broker: l.broker || "" });
+      }
+    }
+    return m;
+  }, [data]);
+
+  const checkDuplicate = useCallback((loadId, loadNum) => {
+    const ln = String(loadNum || "").trim().toLowerCase();
+    if (!ln) return null;
+    const hit = loadNumIndex.get(ln);
+    return (hit && hit.id !== loadId) ? hit : null;
+  }, [loadNumIndex]);
 
   // ---- Initial load ----
   useEffect(() => {
@@ -2174,26 +2266,29 @@ function App() {
   // ---- Bucketing ----
   const today    = useMemo(() => todayMidnight(), []);
   const tomorrow = useMemo(() => { const t = new Date(today); t.setDate(t.getDate() + 1); return t; }, [today]);
+  const buckets  = useMemo(() => buildBuckets(today), [today]);
 
   const bucketed = useMemo(() => {
     if (!data) return null;
     const cur = getCurrentWeek(data);
     const loads = cur ? cur.loads : [];
     const byKey = {};
-    BUCKETS.forEach(b => byKey[b.key] = []);
+    buckets.forEach(b => byKey[b.key] = []);
     loads.filter(l => loadMatchesSearch(l, search)).forEach(l => {
       const k = getBucket(l, today, tomorrow);
       (byKey[k] || (byKey[k] = [])).push(l);
     });
-    // Sort within each bucket by earliest delivery date asc, then created asc
+    // Sort within each bucket by earliest pickup date asc, then created asc.
+    // Matches the bucketing anchor so cards inside "Today" are ordered by
+    // their pickup time, not by some hidden delivery date.
     Object.keys(byKey).forEach(k => {
       byKey[k].sort((a, b) => {
-        const da = (a.deliveries || []).reduce((m, d) => {
-          const dt = parseDateTime(d.datetime);
+        const da = (a.pickups || []).reduce((m, p) => {
+          const dt = parseDateTime(p.datetime);
           return dt && (!m || dt < m) ? dt : m;
         }, null);
-        const db = (b.deliveries || []).reduce((m, d) => {
-          const dt = parseDateTime(d.datetime);
+        const db = (b.pickups || []).reduce((m, p) => {
+          const dt = parseDateTime(p.datetime);
           return dt && (!m || dt < m) ? dt : m;
         }, null);
         if (da && db) return da - db;
@@ -2203,7 +2298,7 @@ function App() {
       });
     });
     return byKey;
-  }, [data, search, today, tomorrow]);
+  }, [data, search, today, tomorrow, buckets]);
 
   // ---- Online/offline detection ----
   const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine !== false : true);
@@ -2258,7 +2353,7 @@ function App() {
         storageSize={storageSize}
         online={online}
       />
-      <SummaryBar data={data} today={today} tomorrow={tomorrow} />
+      <SummaryBar data={data} today={today} tomorrow={tomorrow} buckets={buckets} />
 
       {(() => {
         const cur = getCurrentWeek(data);
@@ -2269,7 +2364,7 @@ function App() {
         );
       })()}
 
-      {BUCKETS.map(b => (
+      {buckets.map(b => (
         <BucketSection
           key={b.key}
           bucket={b}
@@ -2279,6 +2374,7 @@ function App() {
           allDrivers={allDrivers}
           allTrucks={allTrucks}
           truckAssignments={data.truckAssignments || {}}
+          checkDuplicate={checkDuplicate}
           onChange={onLoadChange}
           onDelete={onLoadDelete}
         />
