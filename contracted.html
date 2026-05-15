@@ -177,6 +177,12 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
+  .clb-card__delivery-dt {
+    font-size: 11px; font-weight: 600; color: #7c2d12;
+    background: #fed7aa; padding: 2px 8px; border-radius: 4px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
   .clb-card__waiting {
     display: inline-flex; align-items: center; gap: 3px;
     font-size: 10px; font-weight: 600;
@@ -485,7 +491,7 @@
              broker:    "RJW Logistics",    // free-text — pulled from rate con when possible
              loadNum:   "12345",
              lane:      "IL → GA",          // optional free text
-             status:    "Need to pickup" | "Dispatched" | "Dropped at shipper" | "Yard" | "Delivered",
+             status:    "Need to Drop" | "Dispatched" | "Dropped at shipper" | "Yard" | "Delivered",
              rate:      2500,               // number
              waitingUpdate: false,          // when true, load lives in ⏳ Waiting Updated bucket regardless of date
              otrDriver: "Jeff Mecha",       // long-haul driver — shown on collapsed card
@@ -547,10 +553,10 @@ const TRUCK_NUMBERS = ["13","15","29","029","407","408","414","422","432","444",
 // This is a read; we never write to the freight board from here.
 const FREIGHT_BOARD_URL = "https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec";
 
-const STATUSES = ["Need to pickup","Dispatched","Dropped at shipper","Yard","Delivered"];
+const STATUSES = ["Need to Drop","Dispatched","Dropped at shipper","Yard","Delivered"];
 
 const STATUS_STYLES = {
-  "Need to pickup":     { bg:"#fef9c3", color:"#854d0e", border:"#eab308" },
+  "Need to Drop":     { bg:"#fef9c3", color:"#854d0e", border:"#eab308" },
   "Dispatched":         { bg:"#dbeafe", color:"#1e40af", border:"#3b82f6" },
   "Dropped at shipper": { bg:"#ede9fe", color:"#5b21b6", border:"#7c3aed" },
   "Yard":               { bg:"#ffedd5", color:"#9a3412", border:"#fb923c" },
@@ -729,7 +735,9 @@ function migrateLoad(l) {
     out = { ...rest, otrDriver: driver };
   }
   // Legacy status values → new ones
-  if (out.status === "Need to Pickup") out = { ...out, status: "Need to pickup" };
+  if (out.status === "Need to Pickup" || out.status === "Need to pickup") {
+    out = { ...out, status: "Need to Drop" };
+  }
   if (out.status === "Loaded")         out = { ...out, status: "Dropped at shipper" };
   return out;
 }
@@ -1660,7 +1668,7 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
   const updateOtrDriver = (otrDriver) => {
     const next = { ...load, otrDriver };
     // Auto-promote Need to Pickup → Dispatched once an OTR driver is assigned.
-    if (otrDriver && (load.status || "Need to pickup") === "Need to pickup") {
+    if (otrDriver && (load.status || "Need to Drop") === "Need to Drop") {
       next.status = "Dispatched";
     }
     // Auto-fill OTR truck from truckAssignments — only if truck is currently empty
@@ -1670,7 +1678,7 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
     onChange(next);
   };
 
-  const ss = STATUS_STYLES[load.status] || STATUS_STYLES["Need to pickup"];
+  const ss = STATUS_STYLES[load.status] || STATUS_STYLES["Need to Drop"];
   const bucketColor = bucket.color;
   const dup = checkDuplicate ? checkDuplicate(load.id, load.loadNum) : null;
 
@@ -1700,12 +1708,21 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
         <span className="clb-card__broker">{load.broker || "—"}</span>
         {load.loadNum && <span className="clb-card__loadnum">#{load.loadNum}</span>}
         <span className="clb-card__lane">{summarizeLane(load)}</span>
+        {(() => {
+          const dts = (load.deliveries || []).map(d => d && d.datetime).filter(Boolean);
+          return dts.length ? (
+            <span className="clb-card__delivery-dt"
+                  title={dts.length === 1 ? "Delivery window" : "Delivery windows"}>
+              🏁 {dts.join(" · ")}
+            </span>
+          ) : null;
+        })()}
         {load.trailer && <span className="clb-card__trailer">T{load.trailer}</span>}
         {otrBadge}
         {parseFloat(load.rate) > 0 && <span className="clb-card__rate">{formatRate(load.rate)}</span>}
         <span className="clb-card__status"
               style={{ background: ss.bg, color: ss.color, border: "1px solid " + ss.border }}>
-          {load.status || "Need to pickup"}
+          {load.status || "Need to Drop"}
         </span>
       </div>
 
@@ -1760,7 +1777,7 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
             </div>
             <div className="clb-field">
               <span className="clb-field__lbl">Status</span>
-              <select value={load.status || "Need to pickup"} onChange={e => updateStatus(e.target.value)}>
+              <select value={load.status || "Need to Drop"} onChange={e => updateStatus(e.target.value)}>
                 {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
@@ -2171,7 +2188,7 @@ function App() {
       broker: "",
       loadNum: "",
       lane: "",
-      status: "Need to pickup",
+      status: "Need to Drop",
       rate: "",
       otrDriver: "",
       otrTruck: "",
