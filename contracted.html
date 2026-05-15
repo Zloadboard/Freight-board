@@ -1387,6 +1387,17 @@ function PinLogin({ expected, onSuccess }) {
 
 function StopRow({ stop, index, type, color, onChange, onRemove }) {
   const set = (field, value) => onChange({ ...stop, [field]: value });
+
+  // Local pending value for the Date/Time input. Without this, every keystroke
+  // updates load.datetime → triggers re-bucket → the card jumps between day
+  // groups while you're still typing. We commit on blur or Enter instead, so
+  // the card only moves when you've finished typing the date.
+  const [pendingDt, setPendingDt] = useState(stop.datetime || "");
+  useEffect(() => { setPendingDt(stop.datetime || ""); }, [stop.datetime]);
+  const commitDt = () => {
+    if (pendingDt !== (stop.datetime || "")) set("datetime", pendingDt);
+  };
+
   return (
     <div className="clb-stop" style={{ "--stop-color": color }}>
       <div className="clb-stop__num">{index + 1}</div>
@@ -1398,7 +1409,11 @@ function StopRow({ stop, index, type, color, onChange, onRemove }) {
         </div>
         <div className="clb-field">
           <span className="clb-field__lbl">Date / Time</span>
-          <input value={stop.datetime || ""} onChange={e => set("datetime", e.target.value)} placeholder="5/12 8AM" />
+          <input value={pendingDt}
+                 onChange={e => setPendingDt(e.target.value)}
+                 onBlur={commitDt}
+                 onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                 placeholder="5/12 8AM or 05/15/2026 1200 - 2300" />
         </div>
       </div>
       {type === "pickup" && (
