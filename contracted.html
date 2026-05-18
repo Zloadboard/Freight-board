@@ -881,6 +881,7 @@ function mergeClientData(serverRaw, localRaw) {
   local.weeks.forEach(w => { lW[w.id] = w; weekIds.add(w.id); });
 
   weekIds.forEach(wid => {
+    if (tombSet[wid]) return;   // week was deleted — drop it
     const sw = sW[wid], lw = lW[wid];
     if (sw && lw) {
       const sL = {}, lL = {}, loadIds = new Set();
@@ -907,6 +908,11 @@ function mergeClientData(serverRaw, localRaw) {
       });
     }
   });
+
+  // If the viewed week was deleted (by anyone), fall back to a valid one
+  if (out.weeks.length && !out.weeks.find(w => w.id === out.currentWeekId)) {
+    out.currentWeekId = (out.weeks.find(w => !w.archived) || out.weeks[0]).id;
+  }
 
   return out;
 }
@@ -2035,7 +2041,7 @@ function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, al
 // COMPONENTS — HEADER
 // ============================================================
 
-function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onImportFromFreight, onSwitchWeek, onNewWeek, onArchiveWeek, storageSize, online }) {
+function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onImportFromFreight, onSwitchWeek, onNewWeek, onArchiveWeek, onDeleteWeek, storageSize, online }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const saveLbl =
     saveStatus === "saving" ? "Saving…" :
@@ -2134,6 +2140,12 @@ function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddL
                     style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13 }}>
               📦 Archive current week
             </button>
+            {session && session.role === "admin" && (
+              <button onClick={() => { setMenuOpen(false); onDeleteWeek(); }}
+                      style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13, color:"#dc2626" }}>
+                🗑 Delete current week
+              </button>
+            )}
             <div style={{ height:1, background:"#f1f5f9", margin:"4px 0" }} />
             <button onClick={() => { setMenuOpen(false); onImportFromFreight(); }}
                     style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13 }}>
@@ -2421,6 +2433,29 @@ function App() {
     mutate({ ...cur, weeks: updatedWeeks, currentWeekId: nextActive.id });
   }, [mutate]);
 
+  const deleteCurrentWeek = useCallback(() => {
+    const cur = dataRef.current;
+    const curWeek = getCurrentWeek(cur);
+    if (!curWeek) return;
+    if (cur.weeks.length < 2) {
+      window.alert("Can't delete the only week. Create another week first, then delete this one.");
+      return;
+    }
+    const n = (curWeek.loads || []).length;
+    if (!window.confirm(
+      "Permanently DELETE week \"" + curWeek.label + "\"?\n\n" +
+      "This removes the week and all " + n + " load" + (n === 1 ? "" : "s") +
+      " in it. This cannot be undone.\n\nUse Archive instead if you just want it out of the way."
+    )) return;
+    const updatedWeeks = cur.weeks.filter(w => w.id !== curWeek.id);
+    const nextActive   = updatedWeeks.find(w => !w.archived) || updatedWeeks[0];
+    // Tombstone the week id so the merge doesn't resurrect it from another
+    // user's stale copy (same mechanism used for deleted loads).
+    const tombstones = (cur.tombstones || []).filter(t => t.id !== curWeek.id)
+      .concat([{ id: curWeek.id, at: Date.now() }]);
+    mutate({ ...cur, weeks: updatedWeeks, currentWeekId: nextActive.id, tombstones });
+  }, [mutate]);
+
   // ---- Auth handlers ----
   const handleLogin = (sess) => {
     try { localStorage.setItem(STORAGE.session, JSON.stringify(sess)); } catch (e) {}
@@ -2587,6 +2622,7 @@ function App() {
         onSwitchWeek={switchWeek}
         onNewWeek={createNewWeek}
         onArchiveWeek={archiveCurrentWeek}
+        onDeleteWeek={deleteCurrentWeek}
         storageSize={storageSize}
         online={online}
       />
