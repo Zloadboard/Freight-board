@@ -205,6 +205,32 @@
   .clb-card__waiting--on:hover {
     background: #fde68a;
   }
+  /* ---- Claim ---- */
+  .clb-card__claim {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 10px; font-weight: 700;
+    padding: 2px 8px; border-radius: 4px;
+    white-space: nowrap; font-family: inherit;
+    border: 1px solid transparent;
+  }
+  .clb-card__claim--free {
+    color: #1d4ed8; background: #eff6ff; border-color: #bfdbfe;
+    cursor: pointer; transition: background .15s;
+  }
+  .clb-card__claim--free:hover { background: #dbeafe; }
+  .clb-card__claim--taken {
+    color: #166534; background: #dcfce7; border-color: #86efac;
+    font-size: 11px; cursor: default;
+  }
+  .clb-card__claim-x {
+    border: none; background: rgba(22,101,52,.15);
+    color: #166534; cursor: pointer;
+    border-radius: 3px; font-size: 10px; font-weight: 700;
+    width: 16px; height: 16px; line-height: 1; padding: 0;
+    font-family: inherit;
+  }
+  .clb-card__claim-x:hover { background: rgba(22,101,52,.32); }
+  .clb-card--claimed { border-left: 3px solid #22c55e; }
   .clb-card__rate {
     font-family: "Manrope", sans-serif;
     font-size: 14px; font-weight: 800; color: #059669;
@@ -414,8 +440,14 @@
     border: none; border-radius: 8px;
     font-size: 14px; font-weight: 700;
     transition: background .12s;
+    margin-top: 8px;
   }
   .clb-auth__btn:hover { background: #0f172a; }
+  .clb-auth__btn--ghost {
+    background: #fff; color: #1e293b;
+    border: 1px solid #cbd5e1;
+  }
+  .clb-auth__btn--ghost:hover { background: #f1f5f9; }
   .clb-auth__err {
     color: #dc2626; font-size: 12px; font-weight: 600;
     margin-top: 8px; text-align: center;
@@ -499,22 +531,26 @@
              trailer:   "53117",            // local trailer # — shown on collapsed card
              truck:     "519",              // local truck # — shown only when expanded
              notes:     "",
+             waitingUpdate: false,          // when true → ⏳ highlight
+             claimedBy: "",                 // dispatcher name who claimed it ("" = unclaimed)
+             claimedAt: 0,                  // when it was claimed
              pickups:    [{ location, datetime, commodity, weight, pallets, notes }],
              deliveries: [{ location, datetime, notes }],
              rateConUrl:  "https://drive.google.com/...",
              rateConName: "RC_12345.pdf",
              photos: [{ id, url, thumbnailUrl, name, size, uploadedAt }],
              createdAt: 1234567890,
-             updatedAt: 1234567890
+             updatedAt: 1234567890          // per-load — drives server/client merge
            }
          ]
        }
      ],
      currentWeekId:    "wk_<rand>",         // which week is currently being viewed/edited
-     adminPin:         "1234",              // stored plain; restrict via Drive access
+     adminPin:         "1234",              // legacy field — no longer used (admin passcode is the ADMIN_PASSCODE constant)
      customDrivers:    ["..."],             // merged with DRIVERS for autocomplete
      customTrucks:     ["..."],             // merged with TRUCK_NUMBERS for autocomplete
      truckAssignments: { "519": "Jeff Mecha", ... },  // truck → driver; powers OTR Truck auto-fill
+     tombstones:       [{ id, at }],        // deleted load ids — so a merge never resurrects them
      updatedAt:        1234567890           // top-level for change detection / poll comparison
    }
 
@@ -536,8 +572,12 @@ const { useState, useEffect, useRef, useMemo, useCallback } = React;
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxDDf6EUF1VwZe_wn5qNUrS_2J_0EADhF_3bfAfn--3uvBLEASNiKNufe4HLETNelHa/exec";
 
 const STORAGE = {
-  authPin: "fcbc_auth_pin"
+  session: "fcbc_session"
 };
+
+// Admin passcode. Viewers need no code; admins enter this to unlock
+// admin-only actions (releasing a claimed load).
+const ADMIN_PASSCODE = "12345";
 
 const POLL_INTERVAL_MS  = 8000;
 const SAVE_DEBOUNCE_MS  = 1000;
@@ -752,6 +792,7 @@ function normalizeData(raw) {
     customDrivers:    Array.isArray(d.customDrivers) ? d.customDrivers : [],
     customTrucks:     Array.isArray(d.customTrucks)  ? d.customTrucks  : [],
     truckAssignments: (d.truckAssignments && typeof d.truckAssignments === "object") ? d.truckAssignments : {},
+    tombstones:       Array.isArray(d.tombstones) ? d.tombstones.filter(t => t && t.id) : [],
     updatedAt:        d.updatedAt || 0
   };
 
@@ -793,6 +834,79 @@ function normalizeData(raw) {
   if (!out.weeks.find(w => w.id === out.currentWeekId)) {
     out.currentWeekId = (out.weeks.find(w => !w.archived) || out.weeks[0]).id;
   }
+
+  return out;
+}
+
+// Merge two normalized data objects load-by-load. Loads present on both
+// sides resolve to whichever has the newer `updatedAt`; loads on one side
+// are kept; tombstoned loads are dropped. Used on poll and after every save
+// so one user's changes never silently overwrite another's.
+function mergeClientData(serverRaw, localRaw) {
+  const server = normalizeData(serverRaw);
+  const local  = normalizeData(localRaw);
+
+  // Tombstones — union by id, keep the latest 'at'
+  const tombAt = {};
+  [].concat(server.tombstones, local.tombstones).forEach(t => {
+    if (t && t.id) {
+      const at = t.at || 0;
+      if (!tombAt[t.id] || at > tombAt[t.id]) tombAt[t.id] = at;
+    }
+  });
+  const tombstones = Object.keys(tombAt).map(id => ({ id, at: tombAt[id] }));
+  const tombSet = {};
+  tombstones.forEach(t => { tombSet[t.id] = true; });
+
+  // Config — take whichever side was updated more recently
+  const serverNewer = (server.updatedAt || 0) >= (local.updatedAt || 0);
+  const cfg = serverNewer ? server : local;
+
+  const out = {
+    adminPin:         cfg.adminPin || "",
+    customDrivers:    cfg.customDrivers || [],
+    customTrucks:     cfg.customTrucks || [],
+    truckAssignments: cfg.truckAssignments || {},
+    // currentWeekId is effectively a per-device view choice — keep local's
+    // so a poll never yanks the user to a week someone else selected.
+    currentWeekId:    local.currentWeekId || server.currentWeekId || "",
+    tombstones,
+    updatedAt:        Math.max(server.updatedAt || 0, local.updatedAt || 0),
+    weeks: []
+  };
+
+  // Weeks — union by id
+  const sW = {}, lW = {}, weekIds = new Set();
+  server.weeks.forEach(w => { sW[w.id] = w; weekIds.add(w.id); });
+  local.weeks.forEach(w => { lW[w.id] = w; weekIds.add(w.id); });
+
+  weekIds.forEach(wid => {
+    const sw = sW[wid], lw = lW[wid];
+    if (sw && lw) {
+      const sL = {}, lL = {}, loadIds = new Set();
+      (sw.loads || []).forEach(l => { if (l && l.id) { sL[l.id] = l; loadIds.add(l.id); } });
+      (lw.loads || []).forEach(l => { if (l && l.id) { lL[l.id] = l; loadIds.add(l.id); } });
+      const loads = [];
+      loadIds.forEach(id => {
+        if (tombSet[id]) return;
+        const sl = sL[id], ll = lL[id];
+        if (sl && ll) loads.push((ll.updatedAt || 0) >= (sl.updatedAt || 0) ? ll : sl);
+        else          loads.push(ll || sl);
+      });
+      const meta = serverNewer ? sw : lw;
+      out.weeks.push({
+        id: wid, label: meta.label, startDate: meta.startDate || "",
+        createdAt: meta.createdAt || 0, archived: !!meta.archived, loads
+      });
+    } else {
+      const w = sw || lw;
+      out.weeks.push({
+        id: w.id, label: w.label, startDate: w.startDate || "",
+        createdAt: w.createdAt || 0, archived: !!w.archived,
+        loads: (w.loads || []).filter(l => l && l.id && !tombSet[l.id])
+      });
+    }
+  });
 
   return out;
 }
@@ -1319,63 +1433,67 @@ function LoadingScreen({ msg }) {
   return <div className="clb-loading">{msg || "Loading…"}</div>;
 }
 
-function PinSetup({ onSetup }) {
-  const [pin,    setPin]    = useState("");
-  const [pin2,   setPin2]   = useState("");
-  const [error,  setError]  = useState("");
-  const [busy,   setBusy]   = useState(false);
-
-  const submit = () => {
-    setError("");
-    if (pin.length < 4)       return setError("PIN must be at least 4 digits");
-    if (pin !== pin2)         return setError("PINs do not match");
-    setBusy(true);
-    onSetup(pin).catch(e => { setError(e.message || "Failed"); setBusy(false); });
-  };
-
-  return (
-    <div className="clb-auth">
-      <div className="clb-auth__card">
-        <h2 className="clb-auth__title">Welcome</h2>
-        <p className="clb-auth__sub">Set up an admin PIN to protect this board. You can change it anytime.</p>
-        <input className="clb-auth__input" type="password" inputMode="numeric"
-               placeholder="New PIN" value={pin}  onChange={e => setPin(e.target.value)} autoFocus />
-        <input className="clb-auth__input" type="password" inputMode="numeric"
-               placeholder="Confirm PIN" value={pin2} onChange={e => setPin2(e.target.value)}
-               onKeyDown={e => e.key === "Enter" && submit()} />
-        <button className="clb-auth__btn" onClick={submit} disabled={busy}>
-          {busy ? "Saving…" : "Create PIN"}
-        </button>
-        {error && <div className="clb-auth__err">{error}</div>}
-      </div>
-    </div>
-  );
-}
-
-function PinLogin({ expected, onSuccess }) {
-  const [pin,   setPin]   = useState("");
+function RoleLogin({ onLogin }) {
+  const [mode,  setMode]  = useState("choose");   // choose | viewer | admin
+  const [name,  setName]  = useState("");
+  const [code,  setCode]  = useState("");
   const [error, setError] = useState("");
 
-  const submit = () => {
-    if (pin === expected) {
-      try { localStorage.setItem(STORAGE.authPin, pin); } catch (e) {}
-      onSuccess();
-    } else {
-      setError("Incorrect PIN");
-      setPin("");
-    }
+  const enterViewer = () => {
+    if (!name.trim()) { setError("Please enter your name"); return; }
+    onLogin({ role: "viewer", name: name.trim() });
+  };
+  const enterAdmin = () => {
+    if (code !== ADMIN_PASSCODE) { setError("Incorrect passcode"); setCode(""); return; }
+    onLogin({ role: "admin", name: name.trim() || "Admin" });
   };
 
   return (
     <div className="clb-auth">
       <div className="clb-auth__card">
         <h2 className="clb-auth__title">Contracted Lanes</h2>
-        <p className="clb-auth__sub">Enter admin PIN to continue.</p>
-        <input className="clb-auth__input" type="password" inputMode="numeric"
-               placeholder="••••" value={pin} autoFocus
-               onChange={e => { setPin(e.target.value); setError(""); }}
-               onKeyDown={e => e.key === "Enter" && submit()} />
-        <button className="clb-auth__btn" onClick={submit}>Unlock</button>
+
+        {mode === "choose" && (
+          <React.Fragment>
+            <p className="clb-auth__sub">Choose how you want to sign in.</p>
+            <button className="clb-auth__btn" onClick={() => { setMode("viewer"); setError(""); }}>
+              Continue as Viewer / Dispatcher
+            </button>
+            <button className="clb-auth__btn clb-auth__btn--ghost" onClick={() => { setMode("admin"); setError(""); }}>
+              Continue as Admin
+            </button>
+          </React.Fragment>
+        )}
+
+        {mode === "viewer" && (
+          <React.Fragment>
+            <p className="clb-auth__sub">Enter your name so loads you claim are tagged to you.</p>
+            <input className="clb-auth__input" placeholder="Your name" value={name} autoFocus
+                   onChange={e => { setName(e.target.value); setError(""); }}
+                   onKeyDown={e => e.key === "Enter" && enterViewer()} />
+            <button className="clb-auth__btn" onClick={enterViewer}>Enter board</button>
+            <button className="clb-auth__btn clb-auth__btn--ghost" onClick={() => { setMode("choose"); setError(""); }}>
+              Back
+            </button>
+          </React.Fragment>
+        )}
+
+        {mode === "admin" && (
+          <React.Fragment>
+            <p className="clb-auth__sub">Enter the admin passcode.</p>
+            <input className="clb-auth__input" placeholder="Your name (optional)" value={name}
+                   onChange={e => setName(e.target.value)} />
+            <input className="clb-auth__input" type="password" inputMode="numeric"
+                   placeholder="Admin passcode" value={code} autoFocus
+                   onChange={e => { setCode(e.target.value); setError(""); }}
+                   onKeyDown={e => e.key === "Enter" && enterAdmin()} />
+            <button className="clb-auth__btn" onClick={enterAdmin}>Enter as Admin</button>
+            <button className="clb-auth__btn clb-auth__btn--ghost" onClick={() => { setMode("choose"); setError(""); }}>
+              Back
+            </button>
+          </React.Fragment>
+        )}
+
         {error && <div className="clb-auth__err">{error}</div>}
       </div>
     </div>
@@ -1673,13 +1791,16 @@ function PhotosSlot({ load, onChange }) {
 // COMPONENTS — LOAD CARD
 // ============================================================
 
-function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, checkDuplicate, expanded, onToggle, onChange, onDelete }) {
+function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, checkDuplicate, role, userName, expanded, onToggle, onChange, onDelete }) {
   const [pendingDriver, setPendingDriver] = useState(load.otrDriver || "");
   useEffect(() => { setPendingDriver(load.otrDriver || ""); }, [load.otrDriver]);
 
   const update = (field, value) => onChange({ ...load, [field]: value });
 
   const updateStatus = (status) => onChange({ ...load, status });
+
+  const claimLoad   = () => onChange({ ...load, claimedBy: userName || "Someone", claimedAt: Date.now() });
+  const releaseLoad = () => onChange({ ...load, claimedBy: "", claimedAt: 0 });
 
   const updateOtrDriver = (otrDriver) => {
     const next = { ...load, otrDriver };
@@ -1708,7 +1829,8 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
   return (
     <div className={"clb-card" +
                     (load.status === "Delivered" ? " clb-card--delivered" : "") +
-                    (load.waitingUpdate ? " clb-card--waiting" : "")}
+                    (load.waitingUpdate ? " clb-card--waiting" : "") +
+                    (load.claimedBy ? " clb-card--claimed" : "")}
          style={{ "--bucket-color": bucketColor }}>
       <div className="clb-card__head" onClick={onToggle}>
         <span className="clb-card__caret">{expanded ? "▼" : "▶"}</span>
@@ -1721,6 +1843,29 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
             : "Click to mark this load as waiting for updated info (rate, appt times, etc.). Marked loads group at the top of the board."}>
           {load.waitingUpdate ? "⏳ Waiting update" : "⏳ Mark waiting"}
         </button>
+        {load.claimedBy ? (() => {
+          const mine      = !!userName && load.claimedBy === userName;
+          const canRelease = role === "admin" || mine;
+          return (
+            <span className="clb-card__claim clb-card__claim--taken"
+                  title={"Claimed by " + load.claimedBy +
+                         (canRelease ? " — click ✕ to release" : " — only the dispatcher who claimed it, or an admin, can release this")}>
+              🙋 {load.claimedBy}{mine ? " (you)" : ""}
+              {canRelease && (
+                <button type="button" className="clb-card__claim-x"
+                        onClick={e => { e.stopPropagation(); releaseLoad(); }}
+                        title={mine ? "Release your claim — frees this load for others"
+                                    : "Release this claim (admin)"}>✕</button>
+              )}
+            </span>
+          );
+        })() : (
+          <button type="button" className="clb-card__claim clb-card__claim--free"
+                  onClick={e => { e.stopPropagation(); claimLoad(); }}
+                  title="Claim this load so other dispatchers know you're handling it">
+            + Claim load
+          </button>
+        )}
         <span className="clb-card__broker">{load.broker || "—"}</span>
         {load.loadNum && <span className="clb-card__loadnum">#{load.loadNum}</span>}
         <span className="clb-card__lane">{summarizeLane(load)}</span>
@@ -1849,7 +1994,7 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
 // COMPONENTS — BUCKET
 // ============================================================
 
-function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, allTrucks, truckAssignments, checkDuplicate, onChange, onDelete }) {
+function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, allTrucks, truckAssignments, checkDuplicate, role, userName, onChange, onDelete }) {
   if (!loads.length) return null;
   const total = loads.reduce((s, l) => s + (parseFloat(l.rate) || 0), 0);
   return (
@@ -1869,6 +2014,8 @@ function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, al
             allTrucks={allTrucks}
             truckAssignments={truckAssignments}
             checkDuplicate={checkDuplicate}
+            role={role}
+            userName={userName}
             expanded={expandedIds.has(l.id)}
             onToggle={() => setExpanded(prev => {
               const next = new Set(prev);
@@ -1888,7 +2035,7 @@ function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, al
 // COMPONENTS — HEADER
 // ============================================================
 
-function Header({ data, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onChangePin, onImportFromFreight, onSwitchWeek, onNewWeek, onArchiveWeek, storageSize, online }) {
+function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onImportFromFreight, onSwitchWeek, onNewWeek, onArchiveWeek, storageSize, online }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const saveLbl =
     saveStatus === "saving" ? "Saving…" :
@@ -1958,6 +2105,17 @@ function Header({ data, saveStatus, lastSync, search, setSearch, onAddLoad, onLo
 
       <input className="clb-search" placeholder="Search loads…" value={search} onChange={e => setSearch(e.target.value)} />
       <button className="clb-btn" onClick={onAddLoad}>+ Add Load</button>
+      {session && (
+        <span className="clb-save"
+              style={ session.role === "admin"
+                ? { background:"rgba(99,102,241,.28)", color:"#e0e7ff" }
+                : { background:"rgba(148,163,184,.28)", color:"#e2e8f0" } }
+              title={ session.role === "admin"
+                ? "Signed in as Admin — you can release claimed loads"
+                : "Signed in as Viewer / Dispatcher" }>
+          {session.role === "admin" ? "🔑" : "👤"} {session.name}
+        </span>
+      )}
       <div style={{ position: "relative" }}>
         <button className="clb-btn clb-btn--ghost" onClick={() => setMenuOpen(o => !o)}>⋯</button>
         {menuOpen && (
@@ -1982,10 +2140,6 @@ function Header({ data, saveStatus, lastSync, search, setSearch, onAddLoad, onLo
               ⬇ Import drivers/trucks from Freight Board
             </button>
             <div style={{ height:1, background:"#f1f5f9", margin:"4px 0" }} />
-            <button onClick={() => { setMenuOpen(false); onChangePin(); }}
-                    style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13 }}>
-              Change admin PIN
-            </button>
             <button onClick={() => { setMenuOpen(false); onLogout(); }}
                     style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13, color:"#dc2626" }}>
               Log out
@@ -2032,53 +2186,16 @@ function SummaryBar({ data, today, tomorrow, buckets }) {
 }
 
 // ============================================================
-// PIN MODAL (change PIN)
-// ============================================================
-
-function ChangePinModal({ current, onCancel, onSave }) {
-  const [oldP, setOld] = useState("");
-  const [newP, setNew] = useState("");
-  const [newP2, setNew2] = useState("");
-  const [err, setErr] = useState("");
-
-  const submit = () => {
-    setErr("");
-    if (oldP !== current)  return setErr("Current PIN is incorrect");
-    if (newP.length < 4)   return setErr("New PIN must be at least 4 digits");
-    if (newP !== newP2)    return setErr("New PINs do not match");
-    onSave(newP);
-  };
-
-  return (
-    <div className="clb-modal-bg" onClick={onCancel}>
-      <div className="clb-modal" onClick={e => e.stopPropagation()}>
-        <h3>Change admin PIN</h3>
-        <p>This PIN is shared across all users of this board.</p>
-        <input className="clb-auth__input" type="password" placeholder="Current PIN" value={oldP}  onChange={e => setOld(e.target.value)} autoFocus />
-        <input className="clb-auth__input" type="password" placeholder="New PIN"     value={newP}  onChange={e => setNew(e.target.value)} />
-        <input className="clb-auth__input" type="password" placeholder="Confirm new" value={newP2} onChange={e => setNew2(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} />
-        {err && <div className="clb-auth__err">{err}</div>}
-        <div className="clb-modal__row" style={{ marginTop: 14 }}>
-          <button className="clb-actions__btn" onClick={onCancel}>Cancel</button>
-          <button className="clb-auth__btn" style={{ width: "auto", padding: "8px 16px" }} onClick={submit}>Save</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ============================================================
 // MAIN APP
 // ============================================================
 
 function App() {
   const [data,        setData]        = useState(null);
-  const [authed,      setAuthed]      = useState(false);
+  const [session,     setSession]     = useState(null);   // { role:"viewer"|"admin", name }
   const [saveStatus,  setSaveStatus]  = useState("idle");
   const [lastSync,    setLastSync]    = useState(0);
   const [expandedIds, setExpandedIds] = useState(() => new Set());
   const [search,      setSearch]      = useState("");
-  const [showPinModal, setShowPinModal] = useState(false);
   const [loadError,   setLoadError]   = useState("");
 
   const allDrivers = useMemo(() => {
@@ -2123,14 +2240,17 @@ function App() {
     apiLoad()
       .then(d => {
         if (dead) return;
-        const merged = normalizeData(d);
-        setData(merged);
-        // Auth check
-        let stored = "";
-        try { stored = localStorage.getItem(STORAGE.authPin) || ""; } catch (e) {}
-        if (merged.adminPin && stored && stored === merged.adminPin) {
-          setAuthed(true);
-        }
+        setData(normalizeData(d));
+        // Restore a previous Viewer/Admin session for this device
+        try {
+          const raw = localStorage.getItem(STORAGE.session);
+          if (raw) {
+            const s = JSON.parse(raw);
+            if (s && (s.role === "viewer" || s.role === "admin") && s.name) {
+              setSession(s);
+            }
+          }
+        } catch (e) {}
       })
       .catch(e => {
         if (!dead) setLoadError("Could not reach backend: " + e.message);
@@ -2139,24 +2259,24 @@ function App() {
   }, []);
 
   // ---- Polling: refresh from server every N seconds ----
-  // Skip if any input/textarea/select is focused, to avoid eating user input.
+  // Merges server data with local instead of replacing it wholesale, so a
+  // poll never reverts a local edit that hasn't finished saving yet.
   useEffect(() => {
-    if (!data || !authed) return;
+    if (!data || !session) return;
     const timer = setInterval(async () => {
       const active = document.activeElement;
       if (active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return;
       if (saveStatus === "saving") return;
       try {
-        const fresh = await apiLoad();
-        const freshAt = fresh.updatedAt || 0;
-        const localAt = data.updatedAt || 0;
-        if (freshAt > localAt) {
-          setData(normalizeData(fresh));
+        const fresh  = await apiLoad();
+        const merged = mergeClientData(fresh, dataRef.current);
+        if (JSON.stringify(merged) !== JSON.stringify(dataRef.current)) {
+          setData(merged);
         }
       } catch (e) { /* swallow — periodic poll */ }
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [data && data.updatedAt, authed, saveStatus]);
+  }, [session, saveStatus]);
 
   // ---- Debounced save ----
   const saveTimerRef = useRef(null);
@@ -2169,7 +2289,13 @@ function App() {
       const snapshot = { ...dataRef.current, updatedAt: Date.now() };
       setSaveStatus("saving");
       try {
-        await apiSave(snapshot);
+        const resp = await apiSave(snapshot);
+        // Server returns the merged result. Merge it with our current local
+        // state (which may have changed during the round-trip) so nothing
+        // is lost in either direction.
+        if (resp && resp.data) {
+          setData(mergeClientData(resp.data, dataRef.current));
+        }
         setSaveStatus("saved");
         setLastSync(Date.now());
       } catch (e) {
@@ -2180,7 +2306,7 @@ function App() {
   }, []);
 
   const mutate = useCallback((next) => {
-    setData(next);
+    setData({ ...next, updatedAt: Date.now() });
     persist();
   }, [persist]);
 
@@ -2192,9 +2318,13 @@ function App() {
   }, [mutate]);
 
   const onLoadDelete = useCallback((id) => {
-    mutate(updateCurrentWeekLoads(dataRef.current, loads =>
-      loads.filter(l => l.id !== id)
-    ));
+    const cur = dataRef.current;
+    const withoutLoad = updateCurrentWeekLoads(cur, loads => loads.filter(l => l.id !== id));
+    // Record a tombstone — without it, another user's concurrent save (which
+    // still has this load) would resurrect it on the next merge.
+    const tombstones = (cur.tombstones || []).filter(t => t.id !== id)
+      .concat([{ id, at: Date.now() }]);
+    mutate({ ...withoutLoad, tombstones });
   }, [mutate]);
 
   const onAddLoad = useCallback(() => {
@@ -2212,6 +2342,8 @@ function App() {
       truck: "",
       notes: "",
       waitingUpdate: false,
+      claimedBy: "",
+      claimedAt: 0,
       pickups:    [{ location:"", datetime:"", commodity:"", weight:"", pallets:"", notes:"" }],
       deliveries: [{ location:"", datetime:"", notes:"" }],
       rateConUrl: "",
@@ -2290,28 +2422,14 @@ function App() {
   }, [mutate]);
 
   // ---- Auth handlers ----
-  const setupPin = async (pin) => {
-    const next = { ...dataRef.current, adminPin: pin, updatedAt: Date.now() };
-    setSaveStatus("saving");
-    await apiSave(next);
-    setSaveStatus("saved");
-    setLastSync(Date.now());
-    setData(next);
-    try { localStorage.setItem(STORAGE.authPin, pin); } catch (e) {}
-    setAuthed(true);
-  };
-
-  const changePin = (newPin) => {
-    const next = { ...dataRef.current, adminPin: newPin, updatedAt: Date.now() };
-    setData(next);
-    try { localStorage.setItem(STORAGE.authPin, newPin); } catch (e) {}
-    setShowPinModal(false);
-    persist();
+  const handleLogin = (sess) => {
+    try { localStorage.setItem(STORAGE.session, JSON.stringify(sess)); } catch (e) {}
+    setSession(sess);
   };
 
   const logout = () => {
-    try { localStorage.removeItem(STORAGE.authPin); } catch (e) {}
-    setAuthed(false);
+    try { localStorage.removeItem(STORAGE.session); } catch (e) {}
+    setSession(null);
   };
 
   // ---- One-click import of drivers/trucks/assignments from the freight board ----
@@ -2452,20 +2570,19 @@ function App() {
     );
   }
   if (!data) return <LoadingScreen msg="Loading board…" />;
-  if (!data.adminPin) return <PinSetup onSetup={setupPin} />;
-  if (!authed) return <PinLogin expected={data.adminPin} onSuccess={() => setAuthed(true)} />;
+  if (!session) return <RoleLogin onLogin={handleLogin} />;
 
   return (
     <div className="clb-app">
       <Header
         data={data}
+        session={session}
         saveStatus={saveStatus}
         lastSync={lastSync}
         search={search}
         setSearch={setSearch}
         onAddLoad={onAddLoad}
         onLogout={logout}
-        onChangePin={() => setShowPinModal(true)}
         onImportFromFreight={importFromFreight}
         onSwitchWeek={switchWeek}
         onNewWeek={createNewWeek}
@@ -2495,18 +2612,12 @@ function App() {
           allTrucks={allTrucks}
           truckAssignments={data.truckAssignments || {}}
           checkDuplicate={checkDuplicate}
+          role={session.role}
+          userName={session.name}
           onChange={onLoadChange}
           onDelete={onLoadDelete}
         />
       ))}
-
-      {showPinModal && (
-        <ChangePinModal
-          current={data.adminPin}
-          onCancel={() => setShowPinModal(false)}
-          onSave={changePin}
-        />
-      )}
     </div>
   );
 }
