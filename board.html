@@ -136,6 +136,50 @@ function localCharge(m){if(m==null||m==="")return null;const v=parseFloat(m);if(
 function parsePickupDate(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return null;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);d.setHours(0,0,0,0);return d;}
 function parseTS(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return Infinity;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);if(tm){let h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}else{d.setHours(0,0,0,0);}return d.getTime();}
 function parseSR(t=""){const i=t.indexOf(" - ");return i<0?{s:t.trim(),r:""}:{s:t.slice(0,i).trim(),r:t.slice(i+3).trim()};}
+// Parse the ending date out of a week label (handles "3.30.2026 - 4.6.2026", "Week of 5/12/2026", "4-6-26")
+function weekEndDate(label){
+  if(!label)return null;
+  var ms=String(label).match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/g);
+  if(!ms||!ms.length)return null;
+  var p=ms[ms.length-1].match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/);
+  if(!p)return null;
+  var yr=+p[3];if(yr<100)yr+=2000;
+  var d=new Date(yr,+p[1]-1,+p[2]);d.setHours(0,0,0,0);
+  return isNaN(d.getTime())?null:d;
+}
+
+// Suggest a label for the week AFTER the given one, in the user's "M.D.YYYY - M.D.YYYY" style.
+// Starts the day after the last date in lastLabel; falls back to the upcoming Mon-Mon from today.
+function suggestNextWeekLabel(lastLabel){
+  var fmt=function(d){return (d.getMonth()+1)+"."+d.getDate()+"."+d.getFullYear();};
+  var start;
+  var end=weekEndDate(lastLabel);
+  if(end){
+    start=new Date(end.getTime());
+    start.setDate(start.getDate()+1); // day after previous week's end
+  } else {
+    // No parseable previous label — use the coming Monday
+    start=new Date();start.setHours(0,0,0,0);
+    var dow=start.getDay(); // 0 Sun .. 6 Sat
+    start.setDate(start.getDate()+((8-dow)%7||7));
+  }
+  var finish=new Date(start.getTime());
+  finish.setDate(finish.getDate()+6);
+  return fmt(start)+" - "+fmt(finish);
+}
+
+// Return the chronologically newest week (by the last date in its label).
+// The weeks array is NOT date-ordered, so never trust weeks[length-1].
+function newestWeekByDate(weeksArr){
+  if(!weeksArr||!weeksArr.length)return null;
+  var best=null,bestT=-Infinity;
+  weeksArr.forEach(function(w){
+    var e=weekEndDate(w&&w.label);
+    var t=e?e.getTime():-Infinity;
+    if(t>=bestT){bestT=t;best=w;}
+  });
+  return best||weeksArr[0];
+}
 
 // SHA-256 PIN hashing — uses Web Crypto when available (HTTPS), falls back to djb2 on file://
 function hashPin(pin){
@@ -644,6 +688,14 @@ function App(){
   const[rcLoading,setRcLoading]=useState({});
   const[notifications,setNotifications]=useState([]);
   const[showNotif,setShowNotif]=useState(false);
+  const[showAttention,setShowAttention]=useState(false);
+  const[dismissedNotifs,setDismissedNotifs]=useState(()=>{try{return new Set(JSON.parse(localStorage.getItem("fcbv2_dismissedNotifs")||"[]"));}catch(e){return new Set();}});
+  const dismissNotif=(key)=>{setDismissedNotifs(p=>{const n=new Set(p);n.add(key);try{localStorage.setItem("fcbv2_dismissedNotifs",JSON.stringify([...n]));}catch(e){}return n;});};
+  const restoreAllNotifs=()=>{setDismissedNotifs(new Set());try{localStorage.removeItem("fcbv2_dismissedNotifs");}catch(e){}};
+  const[showArchivePrompt,setShowArchivePrompt]=useState(false);
+  const[archiveCandidates,setArchiveCandidates]=useState([]);
+  const[showNextWeekPrompt,setShowNextWeekPrompt]=useState(false);
+  const[nextWeekLabel,setNextWeekLabel]=useState("");
   // Pick up claim notifications from localStorage (written by viewer/dashboard Claim button)
   React.useEffect(()=>{
     const checkClaims=()=>{
@@ -939,18 +991,47 @@ function App(){
           // Viewer sees full data — they are locked to Dashboard only (no tab navigation)
           const finalWeeks=rawWithPhotos;
           setWeeks(finalWeeks);
-          if(data.customDrivers)setCustomDrivers(data.customDrivers);
-          // Merge Sheets + local emails — Sheets never overwrites local-only saves
+          // Archive sync: Sheets is authoritative once it carries an archive.
+          // On the first sync after this feature shipped, Sheets may not have an
+          // archive yet but the device might — so merge by week id so no archived
+          // week is ever lost. After that, Sheets wins.
           (()=>{
-            const sheetsEmails=Array.isArray(data.dispatcherEmails)?data.dispatcherEmails:[];
-            let localEmails=[];try{localEmails=JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch(ex){}
-            // Use whichever list is longer, or merge if both have entries
-            const merged=[...new Set([...sheetsEmails,...localEmails])];
-            const final=merged.length>0?merged:(sheetsEmails.length>0?sheetsEmails:localEmails);
-            if(final.length>0||sheetsEmails.length>0){
-              setDispatcherEmails(final);
-              localStorage.setItem("fcbv2_disp_emails",JSON.stringify(final));
+            const sheetsArch=Array.isArray(data.archive)?data.archive:null;
+            let localArch=[];try{localArch=JSON.parse(localStorage.getItem("fcbv2_archive")||"[]");}catch(ex){}
+            let finalArch;
+            if(sheetsArch===null){
+              // Sheets has no archive key yet — keep whatever this device has,
+              // and let the next save push it up to Sheets.
+              finalArch=localArch;
+            }else{
+              // Merge: every archived week from both sources, de-duplicated by id.
+              const byId={};
+              [...sheetsArch,...localArch].forEach(w=>{if(w&&w.id&&!byId[w.id])byId[w.id]=w;});
+              finalArch=Object.values(byId);
             }
+            setArchivedWeeks(finalArch);
+            try{localStorage.setItem("fcbv2_archive",JSON.stringify(finalArch));}catch(ex){}
+          })();
+          if(data.customDrivers)setCustomDrivers(data.customDrivers);
+          // Dispatcher emails: Sheets is the source of truth once it has data.
+          // A union-merge would resurrect removed emails, so we don't merge —
+          // we take the Sheets list (deduplicated) and only fall back to local
+          // if Sheets has nothing at all (first run / offline).
+          (()=>{
+            const dedupe=arr=>{
+              const seen={},out=[];
+              (Array.isArray(arr)?arr:[]).forEach(e=>{
+                const k=((e||"")+"").trim().toLowerCase();
+                if(k&&!seen[k]){seen[k]=1;out.push(((e||"")+"").trim());}
+              });
+              return out;
+            };
+            const sheetsEmails=dedupe(data.dispatcherEmails);
+            let localEmails=[];try{localEmails=dedupe(JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]"));}catch(ex){}
+            // data.dispatcherEmails present (even if empty array) => Sheets is authoritative.
+            const final=Array.isArray(data.dispatcherEmails)?sheetsEmails:localEmails;
+            setDispatcherEmails(final);
+            localStorage.setItem("fcbv2_disp_emails",JSON.stringify(final));
           })();
           if(data.customTrucks)setCustomTrucks(data.customTrucks);
           if(data.adminEmail&&!localStorage.getItem("fcbv2_adminEmail")){localStorage.setItem("fcbv2_adminEmail",data.adminEmail);}
@@ -1037,43 +1118,89 @@ function App(){
   },[weeks,appMode,isViewer]);
 
   const handleRateCon=async(file,groupId)=>{
-    const key=apiKeyRef.current;if(!key){alert("Please add your Anthropic API key first.");return;}
+    const key=apiKeyRef.current;
+    const proxyUrl=localStorage.getItem("fcbv2_proxyUrl")||"";
+    // Need EITHER a proxy URL or an API key. If neither, say so clearly.
+    if(!proxyUrl&&!key){
+      alert("Rate-con reading needs setup first.\n\nOpen Menu → Connection Setup and either:\n• paste your proxy URL (recommended), or\n• paste an Anthropic API key.\n\nWithout one of these, the PDF can't be read.");
+      return;
+    }
     setRcLoading(p=>({...p,[groupId]:true}));
     try{
-      const base64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
+      const base64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=()=>rej(new Error("Could not read the file"));r.readAsDataURL(file);});
       const mediaType=file.type||"application/pdf";
-      // Use proxy URL if configured (preferred — key stays server-side)
-      // Fallback: direct Anthropic call using user-provided key (legacy)
-      const proxyUrl=localStorage.getItem("fcbv2_proxyUrl")||"";
       let response;
       if(proxyUrl){
-        // Proxy only receives the file + prompt — no API key in browser
         response=await fetch(proxyUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mediaType,base64,prompt:`Extract from this rate confirmation: shipper city+state, receiver city+state, pickup date/time, delivery date/time, product/commodity, pallets, weight, rate amount, broker name, load number. Return JSON only: {"shipper":"","receiver":"","pickup":"","delivery":"","product":"","pallets":"","weight":"","rate":"","broker":"","loadNum":""}`})});
       } else {
-        if(!key){alert("Enter an Anthropic API key or proxy URL in Menu → Settings.");setRcLoading(p=>({...p,[groupId]:false}));return;}
-        // Legacy: direct browser call (API key visible in network tab — use proxy instead)
         response=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:[{type:mediaType==="application/pdf"?"document":"image",source:{type:"base64",media_type:mediaType,data:base64}},{type:"text",text:`Extract from this rate confirmation: shipper city+state, receiver city+state, pickup date/time, delivery date/time, product/commodity, pallets, weight, rate amount, broker name, load number. Return JSON only: {"shipper":"","receiver":"","pickup":"","delivery":"","product":"","pallets":"","weight":"","rate":"","broker":"","loadNum":""}`}]}]})});
       }
-      const data=await response.json();const text=data.content?.[0]?.text||"";const match=text.match(/\{[\s\S]*\}/);if(!match)throw new Error("No JSON");
-      const parsed=JSON.parse(match[0]);const sr=`${parsed.shipper||""} - ${parsed.receiver||""}`.trim().replace(/^-\s*|-\s*$/g,"");
+      if(!response.ok){
+        const errTxt=await response.text().catch(()=>"");
+        throw new Error("Server returned "+response.status+(errTxt?" — "+errTxt.slice(0,200):""));
+      }
+      const data=await response.json();
+      const text=data.content?.[0]?.text||data.text||"";
+      const match=text.match(/\{[\s\S]*\}/);
+      if(!match)throw new Error("The AI reply had no readable data. Raw reply: "+(text||"(empty)").slice(0,200));
+      const parsed=JSON.parse(match[0]);
+      const sr=`${parsed.shipper||""} - ${parsed.receiver||""}`.trim().replace(/^-\s*|-\s*$/g,"");
       const brokerStr=parsed.broker&&parsed.loadNum?`${parsed.broker} & ${parsed.loadNum}`:parsed.broker||parsed.loadNum||"";
       setWeeksAndSave(p=>p.map((w,i)=>i!==activeWeek?w:{...w,groups:w.groups.map(g=>{if(g.id!==groupId)return g;const newLoad=mkLoad({sr,broker:brokerStr,pickup:parsed.pickup||"",delivery:parsed.delivery||"",product:parsed.product||"",pallets:parsed.pallets||"",weight:parsed.weight||"",rate:parsed.rate||""});return{...g,loads:[...g.loads,newLoad]};})}));
-    }catch(e){alert("Could not read rate confirmation: "+e.message);}
+    }catch(e){
+      alert("Could not read the rate confirmation.\n\n"+(e.message||e)+"\n\nIf this keeps happening, check Menu → Connection Setup.");
+    }
     setRcLoading(p=>({...p,[groupId]:false}));
   };
 
   const archiveWeek=(weekIdx)=>{
     if(!confirm("Archive this week?"))return;
     const w=weeks[weekIdx];const entry={...w,archivedAt:new Date().toLocaleString()};
-    const newArchive=[entry,...archivedWeeks];setArchivedWeeks(newArchive);localStorage.setItem("fcbv2_archive",JSON.stringify(newArchive));
-    setWeeksAndSave(p=>p.filter((_,i)=>i!==weekIdx));setActiveWeek(0);
+    const newArchive=[entry,...archivedWeeks];
+    setArchivedWeeks(newArchive);localStorage.setItem("fcbv2_archive",JSON.stringify(newArchive));
+    const remaining=weeks.filter((_,i)=>i!==weekIdx);
+    setWeeks(remaining);setActiveWeek(0);
+    // Save weeks AND archive together so the archive syncs to Sheets immediately.
+    saveToSheets({weeks:remaining,archive:newArchive});
+  };
+
+  // Batch-archive several old weeks at once (used by the auto-archive prompt)
+  const archiveOldWeeks=(cands)=>{
+    if(!cands||!cands.length)return;
+    const ids=new Set(cands.map(c=>c.id));
+    const stamped=cands.map(c=>({...c,archivedAt:new Date().toLocaleString()}));
+    const newArchive=[...stamped,...archivedWeeks];
+    setArchivedWeeks(newArchive);
+    localStorage.setItem("fcbv2_archive",JSON.stringify(newArchive));
+    const remaining=weeks.filter(w=>!ids.has(w.id));
+    const finalWeeks=remaining.length?remaining:weeks;
+    setWeeks(finalWeeks);setActiveWeek(0);
+    setShowArchivePrompt(false);
+    saveToSheets({weeks:finalWeeks,archive:newArchive});
+  };
+
+  // Restore an archived week back to the live board — syncs both arrays.
+  const restoreArchivedWeek=(archIdx)=>{
+    const w=archivedWeeks[archIdx];
+    if(!w)return;
+    const newArchive=archivedWeeks.filter((_,j)=>j!==archIdx);
+    const newWeeks=[w,...weeks];
+    setArchivedWeeks(newArchive);localStorage.setItem("fcbv2_archive",JSON.stringify(newArchive));
+    setWeeks(newWeeks);setActiveWeek(0);
+    saveToSheets({weeks:newWeeks,archive:newArchive});
+  };
+  // Permanently delete an archived week — syncs the archive.
+  const deleteArchivedWeek=(archIdx)=>{
+    const newArchive=archivedWeeks.filter((_,j)=>j!==archIdx);
+    setArchivedWeeks(newArchive);localStorage.setItem("fcbv2_archive",JSON.stringify(newArchive));
+    saveToSheets({archive:newArchive});
   };
 
   const LS_KEY="fcbv2_localdata";
   // Keep a ref with latest state so saveToSheets never has stale closure
   const latestState=useRef({});
   const weeksSnapshot=useRef([]); // tracks weeks for undo capture
-  useEffect(()=>{latestState.current={weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails};weeksSnapshot.current=weeks;},[weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails]);
+  useEffect(()=>{latestState.current={weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks};weeksSnapshot.current=weeks;},[weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks]);
 
   const saveToSheets=useCallback((data)=>{
     const isArr=Array.isArray(data);
@@ -1084,6 +1211,8 @@ function App(){
     const ctr=isArr?(ls.customTrailers||[]):(data.customTrailers!==undefined?data.customTrailers:(ls.customTrailers||[]));
     const disp=isArr?(ls.dispatchers||[]):(data.dispatchers!==undefined?data.dispatchers:(ls.dispatchers||[]));
     const ta=isArr?(ls.truckAssignments||{}):(data.truckAssignments!==undefined?data.truckAssignments:(ls.truckAssignments||{}));
+    // archive syncs too — never silently lost, and consistent across devices
+    const arch=isArr?(ls.archivedWeeks||[]):(data.archive!==undefined?data.archive:(ls.archivedWeeks||[]));
     clearTimeout(saveTimer.current);setSaveStatus("saving");
     // F1: Quick check — has server been updated since we last loaded?
     // We check by re-loading savedAt only (fast, no-cors so we can't read response directly)
@@ -1108,12 +1237,12 @@ function App(){
           })};
         });
         try{localStorage.setItem("fcbv2_photos",JSON.stringify(photoStore));}catch(e){}
-        localStorage.setItem(LS_KEY,JSON.stringify({weeks:wNoPhotos,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,savedAt:Date.now()}));
+        localStorage.setItem(LS_KEY,JSON.stringify({weeks:wNoPhotos,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,savedAt:Date.now()}));
         localStorage.setItem("fcbv2_truckassign",JSON.stringify(ta));
       }catch(e){}
       // Sheets save — no-cors fetch always throws TypeError on redirect but data still saves
       try{
-        await sheetsSave({weeks:w,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,dispatcherEmails:(ls.dispatcherEmails&&ls.dispatcherEmails.length?ls.dispatcherEmails:(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch(e){return[];}})()),
+        await sheetsSave({weeks:w,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,dispatcherEmails:(ls.dispatcherEmails&&ls.dispatcherEmails.length?ls.dispatcherEmails:(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch(e){return[];}})()),
         adminPin:localStorage.getItem(ADMIN_PIN_KEY)||"",viewerPin:localStorage.getItem(VIEWER_PIN_KEY)||""});
         setSaveStatus("saved");setTimeout(()=>setSaveStatus("idle"),3000);
       }catch(err){
@@ -1228,7 +1357,14 @@ function App(){
     const updated=(week.groups||[]).map(g=>{
       if(g.isCombined||g.groupStatus==="In Transit"||g.groupStatus==="Delivered")return g;
       const newLoads=(g.loads||[]).map(l=>{
-        if(l.status)return l; // already has a status — don't override
+        const drv=((l.driver||g.groupDriver||"")+"").trim();
+        const st=l.status||"";
+        // Auto-advance: a driver is assigned but the load isn't dispatched yet → "Dispatched"
+        if(drv&&(st===""||st==="Need to pickup")){
+          changed=true;
+          return{...l,status:"Dispatched"};
+        }
+        if(st)return l; // already has a status — don't override
         const pd=parsePickupDate(l.pickup);
         const pt=pd?pd.getTime():null;
         if(pt&&(pt===todayTs||pt===tomorrowTs||pt<todayTs)){
@@ -1241,6 +1377,207 @@ function App(){
     });
     if(changed)setW("groups",updated);
   },[week?.id]); // Run when week changes (switching weeks), not on every render
+
+  // ── NEEDS ATTENTION + DUPLICATE DETECTION ─────────────────────────
+  const attention=useMemo(()=>{
+    const PROGRESS_ST=["Dispatched","Dock","Yard","Picked Up","In Transit","Loaded"];
+    const items=[],dups=[];
+    const todayT=today.getTime();
+    (weeks||[]).forEach((w,wi)=>{
+      // problem scan
+      (w.groups||[]).forEach(g=>{
+        if(g.groupStatus==="Delivered")return;
+        (g.loads||[]).forEach(l=>{
+          const driver=((l.driver||g.groupDriver||"")+"").trim();
+          const st=((l.status||"")+"").trim();
+          const pd=parsePickupDate(l.pickup);
+          const dd=parsePickupDate(l.delivery);
+          const pt=pd?pd.getTime():null;
+          const dt=dd?dd.getTime():null;
+          const inProg=PROGRESS_ST.indexOf(st)>=0;
+          let reason=null,sev=0;
+          if(pt&&pt<=todayT&&!driver&&st!=="Delivered"&&!inProg){
+            reason=pt<todayT?"No driver — pickup overdue":"No driver — pickup is today";sev=3;
+          } else if(dt&&dt<todayT&&st!=="Delivered"){
+            reason="Delivery date passed — mark delivered?";sev=2;
+          } else if(pt&&pt<todayT&&st===""){
+            reason="Pickup date passed — no status set";sev=1;
+          }
+          if(reason){
+            // key includes a reason code so a genuinely DIFFERENT problem on the same load resurfaces after dismissal
+            const rk="s"+sev;
+            items.push({key:w.id+"_"+l.id+"_"+rk,weekId:w.id,weekIdx:wi,weekLabel:w.label||"Week",loadId:l.id,sr:l.sr||"\u2014",pickup:l.pickup||"",delivery:l.delivery||"",reason,sev});
+          }
+        });
+      });
+      // duplicate scan — within this week only; broker + load # exact match only
+      const bm={},seen={};
+      (w.groups||[]).forEach(g=>(g.loads||[]).forEach(l=>{
+        const bk=((l.broker||"")+"").trim().toLowerCase();
+        // require BOTH a broker name and a load # (the "&" separator) — bare broker alone is normal business
+        if(bk&&bk.indexOf("&")>=0){
+          const parts=bk.split("&");
+          if(parts[0].trim()&&parts[1]&&parts[1].trim())(bm[bk]=bm[bk]||[]).push(l);
+        }
+      }));
+      const flag=(map,kind)=>{Object.keys(map).forEach(k=>{const arr=map[k];if(arr.length>1)arr.forEach(l=>{if(seen[l.id])return;seen[l.id]=1;dups.push({key:w.id+"_d_"+l.id,weekId:w.id,weekIdx:wi,weekLabel:w.label||"Week",loadId:l.id,sr:l.sr||"\u2014",broker:l.broker||"",kind});});});};
+      flag(bm,"broker / load #");
+    });
+    items.sort((a,b)=>b.sev-a.sev||a.weekIdx-b.weekIdx);
+    const visItems=items.filter(it=>!dismissedNotifs.has(it.key));
+    const visDups=dups.filter(d=>!dismissedNotifs.has(d.key));
+    return {items:visItems,dups:visDups,count:visItems.length+visDups.length,hiddenCount:(items.length-visItems.length)+(dups.length-visDups.length)};
+  },[weeks,today,dismissedNotifs]);
+  const dupLoadIds=useMemo(()=>{
+    const s=new Set();
+    if(week){
+      const bm={};
+      (week.groups||[]).forEach(g=>(g.loads||[]).forEach(l=>{
+        const bk=((l.broker||"")+"").trim().toLowerCase();
+        if(bk&&bk.indexOf("&")>=0){
+          const parts=bk.split("&");
+          if(parts[0].trim()&&parts[1]&&parts[1].trim())(bm[bk]=bm[bk]||[]).push(l.id);
+        }
+      }));
+      Object.keys(bm).forEach(k=>{if(bm[k].length>1)bm[k].forEach(id=>s.add(id));});
+    }
+    return s;
+  },[week]);
+
+  // ── SUGGESTIONS SCANNER: audits the current week for data-quality issues ──
+  // Severity: 3=error (red), 2=warning (orange), 1=tip (yellow).
+  const suggestionScan=useMemo(()=>{
+    const issues=[];
+    const w=week;
+    if(!w)return {issues:[],total:0,bySev:{3:0,2:0,1:0}};
+    const todayT=today.getTime();
+    const add=(sev,cat,code,refId,title,detail,jump)=>issues.push({sev,cat,code,refId,title,detail,jump});
+
+    const groups=w.groups||[];
+    const allLoads=[];
+    groups.forEach(g=>(g.loads||[]).forEach(l=>allLoads.push({l,g})));
+
+    // ---- OTR loads: data gaps ----
+    allLoads.forEach(({l,g})=>{
+      const sr=(l.sr||"").trim();
+      const label=sr||"(load with no route)";
+      const driver=((l.driver||g.groupDriver||"")+"").trim();
+      const st=((l.status||"")+"").trim();
+      const pd=parsePickupDate(l.pickup);
+      if(!sr) add(2,"OTR","noroute",l.id,"Load missing route","A load has no shipper/receiver filled in.",{loadId:l.id,weekId:w.id});
+      if(!l.pickup||!(l.pickup+"").trim()) add(3,"OTR","nopickup",l.id,"No pickup date — "+label,"This load has no pickup date set.",{loadId:l.id,weekId:w.id});
+      if(!l.delivery||!(l.delivery+"").trim()) add(2,"OTR","nodelivery",l.id,"No delivery date — "+label,"This load has no delivery date set.",{loadId:l.id,weekId:w.id});
+      if((!l.rate||!(l.rate+"").trim()||parseFloat(l.rate)===0)&&st!=="Delivered") add(2,"OTR","norate",l.id,"No rate — "+label,"This load has no rate entered.",{loadId:l.id,weekId:w.id});
+      if(!driver&&st!=="Delivered") add(2,"OTR","nodriver",l.id,"No driver — "+label,"This load has no driver assigned.",{loadId:l.id,weekId:w.id});
+      if(!l.broker||!(l.broker+"").trim()) add(1,"OTR","nobroker",l.id,"No broker/load # — "+label,"Broker and load number are blank.",{loadId:l.id,weekId:w.id});
+      if(pd&&pd.getTime()<todayT-3*86400000&&st!=="Delivered") add(2,"OTR","stale",l.id,"Stale load — "+label,"Pickup was over 3 days ago and it is not marked Delivered.",{loadId:l.id,weekId:w.id});
+    });
+
+    // ---- empty trailers ----
+    groups.forEach(g=>{
+      const loads=g.loads||[];
+      const real=loads.filter(l=>(l.sr||"").trim()||(l.broker||"").trim());
+      if(loads.length===0||real.length===0) add(1,"OTR","emptytrailer",g.id,"Empty trailer","A trailer group has no real loads in it — consider removing it.",null);
+    });
+
+    // ---- duplicates (reuse the same broker+load# logic) ----
+    const bm={};
+    allLoads.forEach(({l})=>{
+      const bk=((l.broker||"")+"").trim().toLowerCase();
+      if(bk&&bk.indexOf("&")>=0){const p=bk.split("&");if(p[0].trim()&&p[1]&&p[1].trim())(bm[bk]=bm[bk]||[]).push(l);}
+    });
+    Object.keys(bm).forEach(k=>{if(bm[k].length>1){const l=bm[k][0];add(2,"Duplicate","dup",l.id,"Possible duplicate load","Two or more loads share the same broker and load # ("+(l.broker||"")+").",{loadId:l.id,weekId:w.id});}});
+
+    // ---- local deliveries ----
+    (w.localDeliveries||[]).forEach(r=>{
+      if(!r.destination||!(r.destination+"").trim()) add(2,"Local","nodest",r.id,"Local delivery missing destination","A local delivery row has no destination.",null);
+      if(!r.datetime||!(r.datetime+"").trim()) add(1,"Local","nodate",r.id,"Local delivery missing date","A local delivery has no date/time.",null);
+      if((!r.driver||!(r.driver+"").trim())&&r.status!=="Delivered") add(1,"Local","nodriver",r.id,"Local delivery has no driver","A local delivery is missing its driver.",null);
+    });
+
+    // ---- crossdock drops ----
+    (w.crossdockDrops||[]).forEach(r=>{
+      if(!r.location||!(r.location+"").trim()) add(2,"Crossdock","noloc",r.id,"Crossdock drop missing location","A crossdock drop row has no location.",null);
+      if(!r.datetime||!(r.datetime+"").trim()) add(1,"Crossdock","nodate",r.id,"Crossdock drop missing date","A crossdock drop has no date/time.",null);
+    });
+
+    // ---- accessorials ----
+    (w.accessorials||[]).forEach(r=>{
+      const amt=parseFloat(r.amount);
+      if(!r.amount||isNaN(amt)||amt===0) add(2,"Accessorial","noamount",r.id,"Accessorial has no amount","An accessorial ("+(r.type||"item")+") has no dollar amount.",null);
+      if(!r.broker||!(r.broker+"").trim()) add(1,"Accessorial","nobroker",r.id,"Accessorial missing broker","An accessorial has no broker filled in.",null);
+    });
+
+    // ---- week-level ----
+    if(!w.label||/new week/i.test(w.label||"")) add(1,"Week","genericlabel","wk","Week has a generic label","This week is still labelled \u201CNew Week\u201D \u2014 set a proper date range.",null);
+    if(groups.length===0) add(2,"Week","notrailers","wk","Week has no trailers","This week has no trailer groups at all.",null);
+
+    issues.sort((a,b)=>b.sev-a.sev);
+    // Stable, unique key per issue: week + check-code + the specific row/load id.
+    issues.forEach(it=>{
+      it.key="scan_"+(w.id||"w")+"_"+it.code+"_"+(it.refId||"x");
+    });
+    const visible=issues.filter(it=>!dismissedNotifs.has(it.key));
+    const bySev={3:0,2:0,1:0};
+    visible.forEach(i=>bySev[i.sev]++);
+    return {issues:visible,total:visible.length,bySev,hiddenCount:issues.length-visible.length};
+  },[week,today,dismissedNotifs]);
+  const archivePromptShown=useRef(false);
+  React.useEffect(()=>{
+    if(loading||!isAdmin||archivePromptShown.current)return;
+    if(!weeks||weeks.length<4)return;
+    const snooze=parseInt(localStorage.getItem("fcbv2_archivePromptSnooze")||"0");
+    if(snooze&&Date.now()<snooze)return;
+    const cutoff=today.getTime()-28*86400000;
+    const cands=weeks.filter((w,i)=>{
+      if(i===activeWeek)return false;
+      const ed=weekEndDate(w.label);
+      return ed&&ed.getTime()<cutoff;
+    }).slice(0,Math.max(0,weeks.length-2));
+    if(cands.length>0){
+      archivePromptShown.current=true;
+      setArchiveCandidates(cands);
+      setShowArchivePrompt(true);
+    }
+  },[loading,weeks,isAdmin]);
+
+  // ── AUTO-CREATE NEXT WEEK: on Fri/Sat/Sun, offer to create the upcoming week ──
+  const nextWeekPromptShown=useRef(false);
+  React.useEffect(()=>{
+    if(loading||!isAdmin||nextWeekPromptShown.current)return;
+    if(!weeks||!weeks.length)return;
+    const dow=today.getDay(); // 0 Sun .. 6 Sat
+    if(dow!==5&&dow!==6&&dow!==0)return; // only Fri, Sat, Sun
+    // Snooze: "Not Now" hides it for 24h
+    const snooze=parseInt(localStorage.getItem("fcbv2_nextWeekSnooze")||"0");
+    if(snooze&&Date.now()<snooze)return;
+    // Figure out the start of the week AFTER the newest week on the board.
+    const lastWk=newestWeekByDate(weeks)||{};
+    const lastEnd=weekEndDate(lastWk.label);
+    // If the newest week already ends 6+ days from now, the upcoming week is
+    // effectively already covered — nothing to prompt.
+    if(lastEnd&&lastEnd.getTime()>=today.getTime()+6*86400000)return;
+    // Don't re-offer a label that already exists on the board.
+    const suggestion=suggestNextWeekLabel(lastWk.label);
+    if(weeks.some(w=>(w.label||"")===suggestion))return;
+    nextWeekPromptShown.current=true;
+    setNextWeekLabel(suggestion);
+    setShowNextWeekPrompt(true);
+  },[loading,weeks,isAdmin]);
+
+  const createNextWeekFromPrompt=()=>{
+    const label=(nextWeekLabel||"").trim();
+    if(!label){alert("Enter a week label first.");return;}
+    if(weeks.some(w=>(w.label||"")===label)){alert("A week with that label already exists.");setShowNextWeekPrompt(false);return;}
+    const {newWk,carried,counts}=buildCarriedWeek(label);
+    const warn=carryForwardWarnings(counts);
+    if(warn&&!confirm(warn))return; // user cancelled — nothing created
+    setWeeksAndSave(p=>[...p,newWk]);
+    setActiveWeek(weeks.length);
+    setShowNextWeekPrompt(false);
+    if(carried.length)alert("New week created. Carried forward: "+carried.join(", "));
+    else alert("New week created. (Nothing from the previous week needed carrying forward.)");
+  };
 
   const generateWeeklyPDF=(targetWeek)=>{
     const w=targetWeek||week;
@@ -1456,20 +1793,88 @@ ${accRows.length>0?`
   const updSub=(sec,id,f,v)=>setW(sec,(week[sec]||[]).map(r=>r.id!==id?r:{...r,[f]:v}));
   const addSub=(sec,mk)=>setW(sec,[...(week[sec]||[]),mk()]);
   const removeSub=(sec,id)=>setW(sec,(week[sec]||[]).filter(r=>r.id!==id));
-  const addWeek=()=>{
-    const l=prompt("Week label (e.g. 3.30.2026 - 4.6.2026)");
-    if(!l)return;
-    const lastWk=weeks[weeks.length-1]||{};
+  // Shared carry-forward builder — used by both the manual "+ Add Week" button
+  // and the Friday auto-create prompt, so they behave identically.
+  // Safety check: compare what the previous week had OPEN against what the
+  // carry-forward actually produced. Returns a warning string if a meaningful
+  // amount was dropped, or "" if everything looks fine.
+  const carryForwardWarnings=(counts)=>{
+    const lastWk=weeks[Math.min(activeWeek,weeks.length-1)]||weeks[0]||{};
+    // Count OPEN items in the previous week (things that SHOULD carry).
+    let openOTR=0;
+    (lastWk.groups||[]).forEach(g=>{
+      const hasReal=(g.loads||[]).some(l=>(l.sr||"").trim()||(l.broker||"").trim());
+      if(!hasReal)return;
+      const gs=(g.groupStatus||"").trim();
+      if(gs==="Delivered"||gs==="Completed"||gs==="Paid"){
+        const anyOpen=(g.loads||[]).some(l=>{
+          const real=(l.sr||"").trim()||(l.broker||"").trim();
+          return real&&(l.status||"").trim()!=="Delivered";
+        });
+        if(anyOpen)openOTR++;
+      }else openOTR++;
+    });
+    const openLocal=(lastWk.localDeliveries||[]).filter(r=>r.status!=="Delivered").length;
+    const openXdock=(lastWk.crossdockDrops||[]).filter(r=>!["Delivered","Paid","Completed"].includes(r.status||"")).length;
+    const openAcc=(lastWk.accessorials||[]).filter(r=>r.status!=="Paid").length;
+
+    const lines=[];
+    if(openOTR>counts.otr) lines.push("• OTR trailers: "+counts.otr+" carried, but "+openOTR+" looked unfinished ("+(openOTR-counts.otr)+" not carried)");
+    if(openLocal>counts.local) lines.push("• Local deliveries: "+counts.local+" carried of "+openLocal+" open");
+    if(openXdock>counts.xdock) lines.push("• Crossdock: "+counts.xdock+" carried of "+openXdock+" open");
+    if(openAcc>counts.acc) lines.push("• Accessorials: "+counts.acc+" carried of "+openAcc+" open");
+    if(!lines.length)return "";
+    return "Heads up — the new week carried fewer items than the previous week had open:\n\n"
+      +lines.join("\n")
+      +"\n\nYour original loads are NOT deleted — they stay in the previous week. "
+      +"But you may want to check before continuing.\n\nCreate the week anyway?";
+  };
+
+  const buildCarriedWeek=(label)=>{
+    // Source week = the week the user is currently viewing. The weeks array is
+    // NOT in chronological order (new weeks get appended), so weeks[length-1] is
+    // unreliable — it can point at an old week and carry nothing. Using the
+    // active week is unambiguous: it's the week in front of the user.
+    const lastWk=weeks[Math.min(activeWeek,weeks.length-1)]||weeks[0]||{};
     const DONE=["Delivered","Paid","Completed"];
+    // A load counts as "real" (not a blank placeholder) if ANY meaningful field
+    // is filled — not just route/broker. A planned load might only have a
+    // pickup date or a driver so far, and that still must carry forward.
+    const loadHasContent=(l)=>{
+      if(!l)return false;
+      const f=["sr","broker","pickup","delivery","product","pallets","weight","rate","driver","truck","trailer","status","notes"];
+      return f.some(k=>((l[k]||"")+"").trim()!=="");
+    };
     const carryXdock=(lastWk.crossdockDrops||[]).filter(r=>!DONE.includes(r.status||"")).map(r=>({...r,id:uid(),carriedFrom:lastWk.label||"prev"}));
     const carryAcc=(lastWk.accessorials||[]).filter(r=>r.status!=="Paid").map(r=>({...r,id:uid(),carriedFrom:lastWk.label||"prev"}));
-    const carryOTR=(lastWk.groups||[]).filter(g=>["In Transit","Driver assigned","Loaded"].includes(g.groupStatus||"")).map(g=>({...g,id:uid(),carriedFrom:lastWk.label||"prev"}));
+    // Carry forward every OTR group that is NOT fully finished. Finished = status
+    // Delivered/Completed AND every real load delivered. Everything else carries.
+    const carryOTR=(lastWk.groups||[]).filter(g=>{
+      const gs=(g.groupStatus||"").trim();
+      const realLoads=(g.loads||[]).filter(loadHasContent);
+      if(realLoads.length===0)return false; // genuinely empty placeholder group
+      if(DONE.includes(gs)){
+        // a Delivered group still carries if any real load is not yet delivered
+        return realLoads.some(l=>(l.status||"").trim()!=="Delivered");
+      }
+      return true; // Pending / blank / In Transit / Loaded / Issue / Dispatched — carry
+    }).map(g=>({...g,id:uid(),carriedFrom:lastWk.label||"prev"}));
     const carryLocal=(lastWk.localDeliveries||[]).filter(r=>r.status!=="Delivered").map(r=>({...r,id:uid(),carriedFrom:lastWk.label||"prev"}));
-    const newWk={...mkWeek(l),crossdockDrops:carryXdock,accessorials:carryAcc,groups:[mkGroup(),...carryOTR],localDeliveries:carryLocal};
+    const newWk={...mkWeek(label),crossdockDrops:carryXdock,accessorials:carryAcc,groups:[mkGroup(),...carryOTR],localDeliveries:carryLocal};
+    const carried=[carryOTR.length&&carryOTR.length+" OTR",carryLocal.length&&carryLocal.length+" local",carryXdock.length&&carryXdock.length+" crossdock",carryAcc.length&&carryAcc.length+" accessorials"].filter(Boolean);
+    return {newWk,carried,counts:{otr:carryOTR.length,local:carryLocal.length,xdock:carryXdock.length,acc:carryAcc.length}};
+  };
+  const addWeek=()=>{
+    const last=weeks[Math.min(activeWeek,weeks.length-1)]||weeks[0]||{};
+    const l=prompt("Week label (e.g. 3.30.2026 - 4.6.2026)",suggestNextWeekLabel(last.label));
+    if(!l)return;
+    const {newWk,carried,counts}=buildCarriedWeek(l);
+    const warn=carryForwardWarnings(counts);
+    if(warn&&!confirm(warn))return; // user cancelled
     setWeeksAndSave(p=>[...p,newWk]);
     setActiveWeek(weeks.length);
-    const carried=[carryOTR.length&&carryOTR.length+" OTR",carryLocal.length&&carryLocal.length+" local",carryXdock.length&&carryXdock.length+" crossdock",carryAcc.length&&carryAcc.length+" accessorials"].filter(Boolean);
     if(carried.length)alert("Carried to new week: "+carried.join(", "));
+    else alert("New week created. (Nothing needed carrying forward.)");
   };
   const removeWeek=i=>{if(weeks.length<=1){alert("Cannot remove last week.");return;}if(!confirm("Remove this week?"))return;setWeeksAndSave(p=>p.filter((_,j)=>j!==i));setActiveWeek(0);};
 
@@ -1804,15 +2209,23 @@ ${accRows.length>0?`
                 type="email"
                 placeholder="dispatcher@company.com"
                 style={{flex:1,border:"1px solid #e2e8f0",borderRadius:"7px",padding:"8px 12px",fontSize:"12px",outline:"none"}}
-                onKeyDown={e=>{if(e.key==="Enter"){const v=e.target.value.trim();if(v&&v.includes("@")&&!dispatcherEmails.includes(v)){const next=[...dispatcherEmails,v];setDispatcherEmails(next);localStorage.setItem("fcbv2_disp_emails",JSON.stringify(next));e.target.value="";}}}}
+                onKeyDown={e=>{if(e.key==="Enter"){const v=e.target.value.trim();const dup=dispatcherEmails.some(x=>((x||"")+"").trim().toLowerCase()===v.toLowerCase());if(v&&v.includes("@")&&!dup){const next=[...dispatcherEmails,v];setDispatcherEmails(next);localStorage.setItem("fcbv2_disp_emails",JSON.stringify(next));e.target.value="";}else if(dup){alert("That email is already in the list.");}}}}
               />
-              <button onClick={()=>{const inp=document.getElementById("new-email-input");const v=(inp?.value||"").trim();if(v&&v.includes("@")&&!dispatcherEmails.includes(v)){const next=[...dispatcherEmails,v];setDispatcherEmails(next);localStorage.setItem("fcbv2_disp_emails",JSON.stringify(next));if(inp)inp.value="";}}} style={{background:"#0f1f3d",color:"#fff",border:"none",borderRadius:"7px",padding:"8px 16px",fontSize:"12px",fontWeight:"700",cursor:"pointer",whiteSpace:"nowrap"}}>+ Add</button>
+              <button onClick={()=>{const inp=document.getElementById("new-email-input");const v=(inp?.value||"").trim();const dup=dispatcherEmails.some(x=>((x||"")+"").trim().toLowerCase()===v.toLowerCase());if(v&&v.includes("@")&&!dup){const next=[...dispatcherEmails,v];setDispatcherEmails(next);localStorage.setItem("fcbv2_disp_emails",JSON.stringify(next));if(inp)inp.value="";}else if(dup){alert("That email is already in the list.");}}} style={{background:"#0f1f3d",color:"#fff",border:"none",borderRadius:"7px",padding:"8px 16px",fontSize:"12px",fontWeight:"700",cursor:"pointer",whiteSpace:"nowrap"}}>+ Add</button>
             </div>
             <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:"8px",padding:"10px 14px",fontSize:"11px",color:"#92400e",marginBottom:"16px",lineHeight:"1.5"}}>
               ⚠️ <strong>To activate email alerts:</strong> In your Google Apps Script, paste the <strong>checkNewCombinedLoads()</strong> function and add a time-driven trigger to run it every 5–10 minutes. The emails saved here are automatically synced to your Sheets data.
             </div>
             <div style={{display:"flex",justifyContent:"space-between",gap:"8px"}}>
-              <button onClick={()=>{const next=[...dispatcherEmails];setWeeksAndSave(p=>p);sheetsSave({weeks:weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,adminPin:localStorage.getItem(ADMIN_PIN_KEY)||"",viewerPin:localStorage.getItem(VIEWER_PIN_KEY)||""});}} style={{background:"#059669",color:"#fff",border:"none",borderRadius:"7px",padding:"8px 20px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>💾 Save to Sheets</button>
+              <button onClick={()=>{
+                // Dedupe (case-insensitive) before saving so existing duplicates get cleaned out.
+                const seen={},clean=[];
+                dispatcherEmails.forEach(e=>{const k=((e||"")+"").trim().toLowerCase();if(k&&!seen[k]){seen[k]=1;clean.push(((e||"")+"").trim());}});
+                setDispatcherEmails(clean);
+                localStorage.setItem("fcbv2_disp_emails",JSON.stringify(clean));
+                sheetsSave({weeks:weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails:clean,adminPin:localStorage.getItem(ADMIN_PIN_KEY)||"",viewerPin:localStorage.getItem(VIEWER_PIN_KEY)||""});
+                alert("Dispatcher emails saved to Sheets ("+clean.length+" email"+(clean.length!==1?"s":"")+").");
+              }} style={{background:"#059669",color:"#fff",border:"none",borderRadius:"7px",padding:"8px 20px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>💾 Save to Sheets</button>
               <button onClick={()=>setShowEmailModal(false)} style={{background:"#f1f5f9",color:"#475569",border:"none",borderRadius:"7px",padding:"8px 20px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Close</button>
             </div>
           </div>
@@ -1891,10 +2304,130 @@ ${accRows.length>0?`
   else{
     try{const ta=JSON.parse(localStorage.getItem("fcbv2_truckassign")||"{}");setTruckAssignments(ta);}catch(e2){}
   }
-  if(d.archive){setArchivedWeeks(d.archive);localStorage.setItem("fcbv2_archive",JSON.stringify(d.archive));}
+  if(d.archive){setArchivedWeeks(d.archive);localStorage.setItem("fcbv2_archive",JSON.stringify(d.archive));saveToSheets({weeks:w,archive:d.archive});}
   alert("✅ Imported successfully!");
   setShowRecover(false);
-}catch(err){alert("Could not read file: "+err.message);}};r.readAsText(f);e.target.value="";}} /></label></div>{archivedWeeks.length>0&&<div style={{marginBottom:"12px"}}><div style={{fontSize:"11px",fontWeight:"700",color:"#374151",marginBottom:"8px"}}>📦 Archived Weeks ({archivedWeeks.length})</div>{archivedWeeks.map((w,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:"8px",padding:"6px 10px",background:"#f8fafc",borderRadius:"6px",marginBottom:"4px",border:"1px solid #e2e8f0"}}><span style={{fontSize:"11px",fontWeight:"600",flex:1}}>{w.label}</span><span style={{fontSize:"10px",color:"#94a3b8"}}>{w.archivedAt}</span><button onClick={()=>{if(!confirm("Restore?"))return;setWeeksAndSave(p=>[w,...p]);setArchivedWeeks(p=>p.filter((_,j)=>j!==i));localStorage.setItem("fcbv2_archive",JSON.stringify(archivedWeeks.filter((_,j)=>j!==i)));setShowRecover(false);}} style={{background:"#eff6ff",color:"#2563eb",border:"1px solid #bfdbfe",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",cursor:"pointer"}}>Restore</button><button onClick={()=>{if(!confirm("Delete permanently?"))return;setArchivedWeeks(p=>{const n=p.filter((_,j)=>j!==i);localStorage.setItem("fcbv2_archive",JSON.stringify(n));return n;});}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",cursor:"pointer"}}>Delete</button></div>))}</div>}<div style={{display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setShowRecover(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Close</button></div></div></div>)}
+}catch(err){alert("Could not read file: "+err.message);}};r.readAsText(f);e.target.value="";}} /></label></div>{archivedWeeks.length>0&&<div style={{marginBottom:"12px"}}><div style={{fontSize:"11px",fontWeight:"700",color:"#374151",marginBottom:"8px"}}>📦 Archived Weeks ({archivedWeeks.length})</div>{archivedWeeks.map((w,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:"8px",padding:"6px 10px",background:"#f8fafc",borderRadius:"6px",marginBottom:"4px",border:"1px solid #e2e8f0"}}><span style={{fontSize:"11px",fontWeight:"600",flex:1}}>{w.label}</span><span style={{fontSize:"10px",color:"#94a3b8"}}>{w.archivedAt}</span><button onClick={()=>{if(!confirm("Restore?"))return;restoreArchivedWeek(i);setShowRecover(false);}} style={{background:"#eff6ff",color:"#2563eb",border:"1px solid #bfdbfe",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",cursor:"pointer"}}>Restore</button><button onClick={()=>{if(!confirm("Delete permanently?"))return;deleteArchivedWeek(i);}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",cursor:"pointer"}}>Delete</button></div>))}</div>}<div style={{display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setShowRecover(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Close</button></div></div></div>)}
+
+    {/* NEEDS ATTENTION MODAL */}
+    {showAttention&&(<div className="modal-bg" onClick={()=>setShowAttention(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"560px"}}>
+      <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"12px"}}>
+        <div style={{fontWeight:"700",fontSize:"16px",color:"#b45309"}}>⚠ Needs Attention</div>
+        <span style={{fontSize:"11px",color:"#94a3b8"}}>{attention.count+suggestionScan.total} item{(attention.count+suggestionScan.total)!==1?"s":""}</span>
+        <button onClick={()=>setShowAttention(false)} style={{marginLeft:"auto",background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"6px",padding:"4px 11px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>Close</button>
+      </div>
+      {attention.count+suggestionScan.total===0&&<div style={{color:"#166534",background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:"8px",fontSize:"12px",padding:"18px",textAlign:"center",fontWeight:"600"}}>✓ All clear — nothing needs attention right now.{(attention.hiddenCount+suggestionScan.hiddenCount)>0&&<div style={{fontSize:"10px",fontWeight:"500",color:"#15803d",marginTop:"4px"}}>({attention.hiddenCount+suggestionScan.hiddenCount} dismissed — restore below)</div>}</div>}
+      {attention.items.length>0&&(<div style={{marginBottom:"16px"}}>
+        <div style={{fontSize:"10px",fontWeight:"700",color:"#92400e",textTransform:"uppercase",letterSpacing:".06em",marginBottom:"7px"}}>⏰ Urgent — Loads ({attention.items.length})</div>
+        {attention.items.map(it=>{
+          const sevC=it.sev>=3?{bg:"#fee2e2",bd:"#ef4444",c:"#991b1b"}:it.sev===2?{bg:"#ffedd5",bd:"#f97316",c:"#9a3412"}:{bg:"#fef9c3",bd:"#eab308",c:"#713f12"};
+          return(<div key={it.key} style={{background:sevC.bg,border:`1px solid ${sevC.bd}`,borderRadius:"8px",padding:"8px 12px",marginBottom:"6px",display:"flex",alignItems:"flex-start",gap:"8px"}}>
+            <div onClick={()=>{setShowAttention(false);setLoadDetailId({loadId:it.loadId,weekId:it.weekId});}} style={{flex:1,cursor:"pointer",minWidth:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                <span style={{fontWeight:"700",fontSize:"12px",color:"#0f1f3d",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{it.sr}</span>
+                <span style={{fontSize:"9px",fontWeight:"700",color:"#1a2e50",background:"#fff",border:"1px solid rgba(0,0,0,.1)",padding:"1px 7px",borderRadius:"8px",whiteSpace:"nowrap"}}>{it.weekLabel}</span>
+              </div>
+              <div style={{fontSize:"11px",fontWeight:"700",color:sevC.c,marginTop:"3px"}}>{it.reason}</div>
+              {(it.pickup||it.delivery)&&<div style={{fontSize:"10px",color:"#64748b",marginTop:"2px"}}>{it.pickup?"🛫 "+it.pickup:""}{it.pickup&&it.delivery?"   ":""}{it.delivery?"📦 "+it.delivery:""}</div>}
+            </div>
+            <button onClick={e=>{e.stopPropagation();dismissNotif(it.key);}} title="Dismiss — I've checked this, it's fine" style={{background:"rgba(255,255,255,.7)",border:`1px solid ${sevC.bd}`,color:sevC.c,borderRadius:"5px",width:"22px",height:"22px",fontSize:"13px",fontWeight:"700",cursor:"pointer",flexShrink:0,lineHeight:1,padding:0}}>×</button>
+          </div>);
+        })}
+      </div>)}
+      {suggestionScan.issues.length>0&&(<div style={{marginBottom:"16px"}}>
+        <div style={{fontSize:"10px",fontWeight:"700",color:"#92400e",textTransform:"uppercase",letterSpacing:".06em",marginBottom:"7px"}}>🔎 Review — Data Quality ({suggestionScan.issues.length})</div>
+        {suggestionScan.issues.map(it=>{
+          const sc=it.sev>=3?{bg:"#fef2f2",bd:"#ef4444",c:"#991b1b",tag:"ERROR"}:it.sev===2?{bg:"#fff7ed",bd:"#f97316",c:"#9a3412",tag:"WARNING"}:{bg:"#fefce8",bd:"#eab308",c:"#713f12",tag:"TIP"};
+          return(<div key={it.key} style={{background:sc.bg,border:`1px solid ${sc.bd}`,borderRadius:"8px",padding:"8px 12px",marginBottom:"6px",display:"flex",alignItems:"flex-start",gap:"8px"}}>
+            <div onClick={()=>{if(it.jump){setShowAttention(false);setActiveTab("weeks");setLoadDetailId({loadId:it.jump.loadId,weekId:it.jump.weekId});}}} style={{flex:1,cursor:it.jump?"pointer":"default",minWidth:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                <span style={{fontSize:"8px",fontWeight:"800",color:"#fff",background:sc.bd,padding:"2px 6px",borderRadius:"4px",flexShrink:0}}>{sc.tag}</span>
+                <span style={{fontWeight:"700",fontSize:"12px",color:"#0f1f3d",flex:1}}>{it.title}</span>
+                <span style={{fontSize:"9px",fontWeight:"700",color:"#1a2e50",background:"#fff",border:"1px solid rgba(0,0,0,.1)",padding:"1px 7px",borderRadius:"8px",whiteSpace:"nowrap"}}>{it.cat}</span>
+                {it.jump&&<span style={{fontSize:"10px",color:"#2563eb",fontWeight:"600",flexShrink:0}}>Open →</span>}
+              </div>
+              <div style={{fontSize:"11px",color:sc.c,marginTop:"3px"}}>{it.detail}</div>
+            </div>
+            <button onClick={e=>{e.stopPropagation();dismissNotif(it.key);}} title="Dismiss — this is fine as-is" style={{background:"rgba(255,255,255,.7)",border:`1px solid ${sc.bd}`,color:sc.c,borderRadius:"5px",width:"22px",height:"22px",fontSize:"13px",fontWeight:"700",cursor:"pointer",flexShrink:0,lineHeight:1,padding:0}}>×</button>
+          </div>);
+        })}
+      </div>)}
+      {attention.dups.length>0&&(<div>
+        <div style={{fontSize:"10px",fontWeight:"700",color:"#92400e",textTransform:"uppercase",letterSpacing:".06em",marginBottom:"7px"}}>Possible Duplicates ({attention.dups.length})</div>
+        {attention.dups.map(d=>(<div key={d.key} style={{background:"#fdf2f8",border:"1px solid #f9a8d4",borderRadius:"8px",padding:"8px 12px",marginBottom:"6px",display:"flex",alignItems:"flex-start",gap:"8px"}}>
+          <div onClick={()=>{setShowAttention(false);setLoadDetailId({loadId:d.loadId,weekId:d.weekId});}} style={{flex:1,cursor:"pointer",minWidth:0}}>
+            <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+              <span style={{fontWeight:"700",fontSize:"12px",color:"#0f1f3d",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.sr}</span>
+              <span style={{fontSize:"9px",fontWeight:"700",color:"#1a2e50",background:"#fff",border:"1px solid rgba(0,0,0,.1)",padding:"1px 7px",borderRadius:"8px",whiteSpace:"nowrap"}}>{d.weekLabel}</span>
+            </div>
+            <div style={{fontSize:"11px",fontWeight:"700",color:"#be185d",marginTop:"3px"}}>Matches another load by {d.kind}{d.broker&&d.broker.split("&")[0].trim()?" — "+d.broker.split("&")[0].trim():""}</div>
+          </div>
+          <button onClick={e=>{e.stopPropagation();dismissNotif(d.key);}} title="Dismiss — not a duplicate, it's fine" style={{background:"rgba(255,255,255,.7)",border:"1px solid #f9a8d4",color:"#be185d",borderRadius:"5px",width:"22px",height:"22px",fontSize:"13px",fontWeight:"700",cursor:"pointer",flexShrink:0,lineHeight:1,padding:0}}>×</button>
+        </div>))}
+      </div>)}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"10px",marginTop:"12px",flexWrap:"wrap"}}>
+        <span style={{fontSize:"10px",color:"#94a3b8"}}>{(attention.count+suggestionScan.total)>0?"Tap a card to open it · tap × to dismiss":"Tap × on any card to dismiss it"}</span>
+        {(attention.hiddenCount+suggestionScan.hiddenCount)>0&&<button onClick={restoreAllNotifs} title="Un-hide all dismissed items" style={{background:"#f1f5f9",color:"#475569",border:"1px solid #cbd5e1",borderRadius:"6px",padding:"3px 10px",fontSize:"10px",fontWeight:"600",cursor:"pointer"}}>↩ Restore {attention.hiddenCount+suggestionScan.hiddenCount} dismissed</button>}
+      </div>
+    </div></div>)}
+
+    {/* AUTO-ARCHIVE PROMPT */}
+    {showArchivePrompt&&archiveCandidates.length>0&&(<div className="modal-bg" onClick={e=>e.stopPropagation()}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"460px"}}>
+      <div style={{fontWeight:"700",fontSize:"16px",color:"#4c1d95",marginBottom:"8px"}}>📦 Tidy Up Old Weeks?</div>
+      <div style={{fontSize:"12px",color:"#374151",marginBottom:"12px",lineHeight:"1.55"}}>
+        {archiveCandidates.length===1?"This week":"These "+archiveCandidates.length+" weeks"} ended more than 4 weeks ago. Archiving keeps the live board fast — archived weeks stay safe and can be restored anytime from the Archive tab.
+      </div>
+      <div style={{maxHeight:"200px",overflowY:"auto",marginBottom:"14px"}}>
+        {archiveCandidates.map(c=>(<div key={c.id} style={{display:"flex",alignItems:"center",gap:"8px",background:"#faf5ff",border:"1px solid #e9d5ff",borderRadius:"7px",padding:"7px 10px",marginBottom:"5px"}}>
+          <span style={{fontSize:"13px"}}>📅</span>
+          <span style={{fontSize:"12px",fontWeight:"600",color:"#4c1d95",flex:1}}>{c.label}</span>
+          <span style={{fontSize:"10px",color:"#94a3b8"}}>{(c.groups||[]).length} trailers</span>
+        </div>))}
+      </div>
+      <div style={{display:"flex",gap:"8px",justifyContent:"flex-end"}}>
+        <button onClick={()=>{localStorage.setItem("fcbv2_archivePromptSnooze",String(Date.now()+86400000));setShowArchivePrompt(false);}} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"8px 16px",borderRadius:"7px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Not Now</button>
+        <button onClick={()=>archiveOldWeeks(archiveCandidates)} style={{background:"#7c3aed",color:"#fff",border:"none",padding:"8px 18px",borderRadius:"7px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Archive {archiveCandidates.length} Week{archiveCandidates.length!==1?"s":""}</button>
+      </div>
+      <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"10px",textAlign:"center"}}>"Not Now" hides this for 24 hours.</div>
+    </div></div>)}
+
+    {/* CREATE NEXT WEEK PROMPT */}
+    {showNextWeekPrompt&&(()=>{
+      // Use the SAME carry-forward logic as the actual create, so the preview
+      // can never disagree with what really gets carried.
+      const preview=buildCarriedWeek(nextWeekLabel||"preview");
+      const cOTR=preview.counts.otr,cLocal=preview.counts.local,cXdock=preview.counts.xdock,cAcc=preview.counts.acc;
+      const carries=[cOTR&&cOTR+" OTR load"+(cOTR!==1?"s":""),cLocal&&cLocal+" local",cXdock&&cXdock+" crossdock",cAcc&&cAcc+" accessorial"+(cAcc!==1?"s":"")].filter(Boolean);
+      return(<div className="modal-bg" onClick={e=>e.stopPropagation()}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"440px"}}>
+        <div style={{fontWeight:"700",fontSize:"16px",color:"#1e40af",marginBottom:"8px"}}>📅 Start Next Week?</div>
+        <div style={{fontSize:"12px",color:"#374151",marginBottom:"12px",lineHeight:"1.55"}}>
+          It's the end of the week — want to create the upcoming week now? Anything unfinished carries forward automatically, same as the manual "+ Add Week" button.
+        </div>
+        <div style={{marginBottom:"12px"}}>
+          <div style={{fontSize:"10px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".05em",marginBottom:"4px"}}>Week Label</div>
+          <input value={nextWeekLabel} onChange={e=>setNextWeekLabel(e.target.value)} style={{width:"100%",border:"1px solid #cbd5e1",borderRadius:"7px",padding:"8px 10px",fontSize:"13px",fontWeight:"600",color:"#0f1f3d",outline:"none",fontFamily:"inherit"}} placeholder="e.g. 3.30.2026 - 4.6.2026"/>
+        </div>
+        <div style={{background:carries.length?"#eff6ff":"#f8fafc",border:"1px solid "+(carries.length?"#bfdbfe":"#e2e8f0"),borderRadius:"7px",padding:"9px 12px",marginBottom:"10px"}}>
+          <div style={{fontSize:"11px",fontWeight:"700",color:carries.length?"#1e40af":"#64748b"}}>
+            {carries.length?"↪ Carrying forward: "+carries.join(", "):"Nothing to carry forward — starts fresh."}
+          </div>
+        </div>
+        {suggestionScan.total>0&&(
+          <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:"7px",padding:"9px 12px",marginBottom:"14px",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}}>
+            <span style={{fontSize:"11px",fontWeight:"700",color:"#92400e",flex:1}}>
+              🔎 This week has {suggestionScan.total} issue{suggestionScan.total!==1?"s":""} worth reviewing first
+              {suggestionScan.bySev[3]>0?" ("+suggestionScan.bySev[3]+" error"+(suggestionScan.bySev[3]!==1?"s":"")+")":""}.
+            </span>
+            <button onClick={()=>{setShowNextWeekPrompt(false);setShowAttention(true);}} style={{background:"#b45309",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer",whiteSpace:"nowrap"}}>Review</button>
+          </div>
+        )}
+        <div style={{display:"flex",gap:"8px",justifyContent:"flex-end"}}>
+          <button onClick={()=>{localStorage.setItem("fcbv2_nextWeekSnooze",String(Date.now()+86400000));setShowNextWeekPrompt(false);}} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"8px 16px",borderRadius:"7px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Not Now</button>
+          <button onClick={createNextWeekFromPrompt} style={{background:"#2563eb",color:"#fff",border:"none",padding:"8px 18px",borderRadius:"7px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Create Week</button>
+        </div>
+        <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"10px",textAlign:"center"}}>"Not Now" hides this for 24 hours.</div>
+      </div></div>);
+    })()}
 
     {/* NOTIFICATION MODAL */}
     {showNotif&&(<div className="modal-bg" onClick={()=>setShowNotif(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontWeight:"700",fontSize:"16px",color:"#1a2e50",marginBottom:"8px"}}>🔔 Pickup Alerts</div>{notifications.length===0?<div style={{color:"#64748b",fontSize:"12px",padding:"20px 0",textAlign:"center"}}>No upcoming pickups within 2 hours</div>:notifications.map(n=>(<div key={n.id} style={{background:"#fef9c3",border:"2px solid #eab308",borderRadius:"8px",padding:"10px 14px",marginBottom:"8px"}}><div style={{fontWeight:"700",fontSize:"12px",color:"#713f12"}}>{n.sr||"—"}</div><div style={{fontSize:"11px",color:"#92400e",marginTop:"3px"}}>⏰ Pickup: {n.pickup} · {n.week}</div><div style={{fontSize:"10px",color:"#b45309",marginTop:"2px",fontWeight:"600"}}>⚠ No status set — action needed!</div></div>))}<div style={{display:"flex",justifyContent:"flex-end",marginTop:"12px"}}><button onClick={()=>setShowNotif(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Close</button></div></div></div>)}
@@ -1980,6 +2513,11 @@ ${accRows.length>0?`
         {/* Notifications — always visible */}
         {!isViewer&&<button onClick={()=>setShowNotif(true)} style={{background:notifications.length>0?"#dc2626":"#1e3a5f",border:"1px solid #374151",color:"#fff",padding:"5px 11px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer",position:"relative"}}>
           🔔{notifications.length>0&&<span style={{background:"#fbbf24",color:"#000",borderRadius:"50%",width:"16px",height:"16px",fontSize:"9px",fontWeight:"800",display:"inline-flex",alignItems:"center",justifyContent:"center",marginLeft:"4px"}}>{notifications.length}</span>}
+        </button>}
+
+        {/* Needs Attention — loads with problems */}
+        {!isViewer&&<button onClick={()=>setShowAttention(true)} title="Loads that need attention" style={{background:(attention.count+suggestionScan.total)>0?"#b45309":"#1e3a5f",border:"1px solid #374151",color:"#fff",padding:"5px 11px",borderRadius:"6px",fontSize:"11px",fontWeight:"600",cursor:"pointer",position:"relative"}}>
+          ⚠{(attention.count+suggestionScan.total)>0&&<span style={{background:"#fbbf24",color:"#000",borderRadius:"50%",minWidth:"16px",height:"16px",fontSize:"9px",fontWeight:"800",display:"inline-flex",alignItems:"center",justifyContent:"center",marginLeft:"4px",padding:"0 3px"}}>{attention.count+suggestionScan.total}</span>}
         </button>}
 
 
@@ -2241,23 +2779,20 @@ ${accRows.length>0?`
                         const sr=parseSR(load.sr||"");
                         const showBroker=canSeeBroker(group,load);
                         const brokerName=load.broker?load.broker.split("&")[0].trim():"";
-                        const loadNum=load.broker&&load.broker.includes("&")?load.broker.split("&")[1]?.trim():"";
                         const isExp=!!otrExpanded[load.id];
-                        const photoCount=(load.photos||[]).filter(p=>p&&typeof p==="object"&&(p.url||p.data)).length;
                         return(
                           <div key={load.id}>
-                            {/* Summary row — clickable to expand */}
+                            {/* Summary row */}
                             <div
-                              onClick={e=>{e.stopPropagation();setOtrExpanded(p=>({...p,[load.id]:!p[load.id]}));}}
-                              style={{display:"flex",alignItems:"center",gap:"6px",padding:"6px 12px",borderTop:"1px solid #f1f5f9",flexWrap:"nowrap",cursor:"pointer",background:isExp?"#eff6ff":"transparent",userSelect:"none"}}
+                              onClick={()=>setOtrExpanded(p=>({...p,[load.id]:!p[load.id]}))}
+                              style={{display:"flex",alignItems:"center",gap:"6px",padding:"6px 12px",borderTop:"1px solid #f1f5f9",flexWrap:"nowrap",cursor:"pointer",background:isExp?"#eff6ff":"transparent"}}
                             >
                               <span style={{fontSize:"8px",color:"#94a3b8",flexShrink:0,lineHeight:1,width:"8px"}}>{isExp?"▼":"▶"}</span>
                               <span style={{width:"15px",height:"15px",borderRadius:"50%",background:lrc.barBg,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"8px",fontWeight:"800",color:lrc.tc,flexShrink:0}}>{li+1}</span>
                               <div style={{flex:1,minWidth:0}}>
                                 <div style={{display:"flex",alignItems:"center",gap:"4px",marginBottom:"1px"}}>
                                   <div style={{fontSize:"10px",color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{sr.s||""}</div>
-                                  {showBroker&&loadNum&&<span style={{fontSize:"8px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 5px",borderRadius:"3px",flexShrink:0}}>#{loadNum}</span>}
-                                  {photoCount>0&&<span style={{fontSize:"8px",fontWeight:"700",color:"#2563eb",background:"#eff6ff",padding:"1px 5px",borderRadius:"3px",flexShrink:0}}>📷 {photoCount}</span>}
+                                  {load.loadNum&&<span style={{fontSize:"8px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 5px",borderRadius:"3px",flexShrink:0}}>#{load.loadNum}</span>}
                                 </div>
                                 <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>→ {sr.r||sr.s||"—"}</div>
                               </div>
@@ -2265,44 +2800,33 @@ ${accRows.length>0?`
                               {(parseFloat(load.rate)||0)>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#059669",whiteSpace:"nowrap",flexShrink:0}}>${(parseFloat(load.rate)||0).toLocaleString()}</span>}
                             </div>
 
-                            {/* Detail panel — expanded with all fields like Planned Shipments */}
+                            {/* Detail panel */}
                             {isExp&&(
-                              <div style={{padding:"10px 14px 12px",background:"#f8fafc",borderTop:"1px solid #bfdbfe",borderLeft:"3px solid #3b82f6",marginBottom:"2px"}} onClick={e=>e.stopPropagation()}>
-                                {/* Driver bar */}
+                              <div style={{padding:"10px 14px 12px",background:"#f8fafc",borderTop:"1px solid #bfdbfe",marginBottom:"2px"}} onClick={e=>e.stopPropagation()}>
                                 <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"8px",padding:"5px 9px",background:"#0f1f3d",borderRadius:"6px"}}>
                                   <span style={{fontSize:"10px",color:"rgba(255,255,255,.5)"}}>Driver</span>
                                   <span style={{fontSize:"12px",fontWeight:"700",color:"#86efac",flex:1}}>{group.groupDriver||"—"}</span>
                                   {group.groupTruck&&<span style={{fontSize:"10px",color:"#fff",background:"rgba(255,255,255,.12)",padding:"1px 7px",borderRadius:"4px"}}>#{group.groupTruck}</span>}
                                   {group.groupTrailer&&<span style={{fontSize:"10px",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"1px 7px",borderRadius:"4px"}}>T{group.groupTrailer}</span>}
                                 </div>
-
-                                {/* Detail grid — broker, load#, pickup, delivery, weight, pallets, product, rate */}
-                                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 14px",fontSize:"11px"}}>
-                                  {showBroker&&brokerName&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Broker</div><div style={{fontSize:"12px",fontWeight:"600",color:"#0f1f3d"}}>{brokerName}</div></div>}
-                                  {showBroker&&loadNum&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Load #</div><div style={{fontSize:"12px",fontWeight:"600",color:"#7c3aed"}}>#{loadNum}</div></div>}
-                                  {load.pickup&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Pickup</div><div style={{fontSize:"12px",color:"#374151"}}>{load.pickup}</div></div>}
-                                  {load.delivery&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Delivery</div><div style={{fontSize:"12px",color:"#374151"}}>{load.delivery}</div></div>}
-                                  {load.weight&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Weight</div><div style={{fontSize:"12px",color:"#374151"}}>{load.weight} lbs</div></div>}
-                                  {load.pallets&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Pallets</div><div style={{fontSize:"12px",color:"#374151"}}>{load.pallets}</div></div>}
-                                  {load.product&&<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Product</div><div style={{fontSize:"12px",color:"#374151"}}>{load.product}</div></div>}
-                                  {(parseFloat(load.rate)||0)>0&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Rate</div><div style={{fontSize:"12px",fontWeight:"700",color:"#059669"}}>${(parseFloat(load.rate)||0).toLocaleString()}</div></div>}
-                                  {load.trailer&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Trailer #</div><div style={{fontSize:"12px",fontWeight:"600",color:"#7c3aed"}}>#{load.trailer}</div></div>}
-                                  {load.notes&&<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Notes</div><div style={{fontSize:"12px",color:"#374151",fontStyle:"italic"}}>{load.notes}</div></div>}
+                                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 12px",fontSize:"11px"}}>
+                                  {load.loadNum&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div><div style={{fontWeight:"600",color:"#7c3aed"}}>#{load.loadNum}</div></div>}
+                                  {load.broker&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div><div style={{color:"#374151"}}>{load.broker.split("&")[0].trim()}{load.broker.split("&")[1]&&<span style={{color:"#6366f1",marginLeft:"4px"}}>#{load.broker.split("&")[1].trim()}</span>}</div></div>}
+                                  {load.pickup&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Pickup</div><div style={{color:"#374151"}}>{load.pickup}</div></div>}
+                                  {load.delivery&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Delivery</div><div style={{color:"#374151"}}>{load.delivery}</div></div>}
+                                  {load.weight&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Weight</div><div style={{color:"#374151"}}>{load.weight} lbs</div></div>}
+                                  {load.pallets&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Pallets</div><div style={{color:"#374151"}}>{load.pallets}</div></div>}
+                                  {load.product&&<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Product</div><div style={{color:"#374151"}}>{load.product}</div></div>}
+                                  {(parseFloat(load.rate)||0)>0&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Rate</div><div style={{fontWeight:"700",color:"#059669"}}>${(parseFloat(load.rate)||0).toLocaleString()}</div></div>}
+                                  {load.notes&&<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div><div style={{color:"#374151",fontStyle:"italic"}}>{load.notes}</div></div>}
                                 </div>
-
-                                {/* Action row — Photos + Status */}
-                                <div style={{marginTop:"10px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap",paddingTop:"8px",borderTop:"1px solid #bfdbfe"}}>
-                                  <button onClick={e=>{e.stopPropagation();setPhotoModal({...load,groupId:group.id});}} style={{background:photoCount>0?"#eff6ff":"#f8fafc",border:`1px solid ${photoCount>0?"#3b82f6":"#d1d5db"}`,color:photoCount>0?"#2563eb":"#64748b",borderRadius:"5px",padding:"3px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>📷 {photoCount>0?"Photos ("+photoCount+")":"Photos"}</button>
-                                  {isAdmin&&<button onClick={e=>{e.stopPropagation();setLoadDetailId({loadId:load.id,weekId:week.id});}} style={{background:"#f8fafc",border:"1px solid #d1d5db",color:"#374151",borderRadius:"5px",padding:"3px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>📋 Detail</button>}
-                                  {isAdmin&&<>
-                                    <span style={{flex:1}}/>
-                                    <span style={{fontSize:"9px",color:"#94a3b8",fontWeight:"600",textTransform:"uppercase",letterSpacing:".04em"}}>Status</span>
-                                    <select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:"11px",fontWeight:"600",color:lrc.tc,background:lrc.barBg,border:`1px solid ${lrc.bar}`,borderRadius:"5px",padding:"3px 8px",cursor:"pointer",outline:"none",minWidth:"130px"}}>
-                                      <option value="">— status —</option>
-                                      {LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}
-                                    </select>
-                                  </>}
-                                </div>
+                                {isAdmin&&<div style={{marginTop:"8px",display:"flex",alignItems:"center",gap:"6px"}}>
+                                  <span style={{fontSize:"9px",color:"#94a3b8",fontWeight:"600",textTransform:"uppercase",flexShrink:0}}>Status</span>
+                                  <select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{fontSize:"11px",fontWeight:"600",color:lrc.tc,background:lrc.barBg,border:`1px solid ${lrc.bar}`,borderRadius:"5px",padding:"3px 8px",cursor:"pointer",outline:"none",flex:1}} disabled={!isAdmin}>
+                                    <option value="">— status —</option>
+                                    {LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}
+                                  </select>
+                                </div>}
                               </div>
                             )}
                           </div>
@@ -2322,42 +2846,67 @@ ${accRows.length>0?`
         {!(week.localDeliveries||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No local deliveries</div>}
         {(week.localDeliveries||[]).map((row,i)=>{
           const dt=parsePickupDate(row.datetime);const dtT=dt?dt.getTime():null;const todayT=today.getTime();
-          const isDelivered=row.status==="Delivered";
-          const isTransit=row.status==="In Transit";
-          const isWaiting=row.status==="Waiting Appointment";
           let sp;
-          if(isDelivered){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
-          else if(isTransit){sp={bg:"#ffedd5",c:"#9a3412",bd:"#fb923c"};}
-          else if(isWaiting){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
-          else if(dtT&&dtT>todayT){sp={bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"};}
-          else if(dtT){sp={bg:"#fef9c3",c:"#713f12",bd:"#eab308"};}
-          else{sp={bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
-          const isDone=isDelivered;
+          if(row.status==="Delivered"){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
+          else if(row.status==="In Transit"){sp={bg:"#ede9fe",c:"#5b21b6",bd:"#7c3aed"};}
+          else if(row.status==="Waiting Appointment"){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
+          else{sp=dtT&&dtT<=todayT?{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}:{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
+          const isDone=row.status==="Delivered";
           return(
             <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${sp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDone?.65:1}}>
               <div style={{background:"#065f46",padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
                 {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>T{row.trailer}</span>}
                 {row.truck&&<span style={{fontSize:"10px",fontWeight:"700",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"2px 7px",borderRadius:"4px"}}>#{row.truck}{row.driver?` · ${row.driver.split(" ")[0]}`:""}</span>}
-                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
                 {row.carriedFrom&&<span style={{fontSize:"8px",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>&#8617; carried</span>}
-                <select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"110px"}} disabled={isViewer}>
+                <select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"100px"}} disabled={isViewer}>
                   <option value="">-- status --</option>
                   {["Need to deliver","In Transit","Waiting Appointment","Delivered"].map(s=>(<option key={s}>{s}</option>))}
                 </select>
               </div>
               <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
-                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Destination</div>
-                <input value={row.destination||""} onChange={e=>updSub("localDeliveries",row.id,"destination",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="123 Main St, City, IL" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div>
                 <input value={row.broker||""} onChange={e=>updSub("localDeliveries",row.id,"broker",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Broker" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div>
                 <input value={row.loadNum||""} onChange={e=>updSub("localDeliveries",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
                 <input value={row.datetime||""} onChange={e=>updSub("localDeliveries",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Driver</div>
-                <input list={`local-drv-${row.id}`} value={row.driver||""} onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/>
-                <datalist id={`local-drv-${row.id}`}>{[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}/>))}</datalist></div>
-                {row.amount?<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
+                <div style={{gridColumn:"1/-1"}}>
+                  <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Truck</div>
+                  <select
+                    value={row.truck||""}
+                    onChange={e=>{
+                      const tk=e.target.value;
+                      updSub("localDeliveries",row.id,"truck",tk);
+                      // Picking a truck that has an assigned driver auto-fills the driver,
+                      // but only if no driver is set yet (don't clobber a manual choice).
+                      if(tk&&truckAssignments[tk]&&!row.driver){updSub("localDeliveries",row.id,"driver",truckAssignments[tk]);}
+                    }}
+                    style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 6px",fontSize:"11px",background:"#f8fafc",outline:"none",fontFamily:"inherit"}}
+                    disabled={isViewer}
+                  >
+                    <option value="">— select truck —</option>
+                    {allTrucks.map(t=>(
+                      <option key={t} value={t}>
+                        {truckAssignments[t]?`Truck #${t} — ${truckAssignments[t]}`:`Truck #${t} (no driver assigned)`}
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",margin:"6px 0 2px"}}>Driver</div>
+                  <select
+                    value={row.driver||""}
+                    onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)}
+                    style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 6px",fontSize:"11px",background:"#f8fafc",outline:"none",fontFamily:"inherit"}}
+                    disabled={isViewer}
+                  >
+                    <option value="">— select driver —</option>
+                    {allDrivers.map(d=>(<option key={d} value={d}>{d}</option>))}
+                    {row.driver&&allDrivers.indexOf(row.driver)<0&&<option value={row.driver}>{row.driver}</option>}
+                  </select>
+                  {row.truck&&row.driver&&<div style={{fontSize:"10px",color:"#059669",marginTop:"3px",fontWeight:"600"}}>✓ Truck #{row.truck} · {row.driver}</div>}
+                  {row.truck&&!row.driver&&<div style={{fontSize:"10px",color:"#f59e0b",marginTop:"3px"}}>No driver selected</div>}
+                </div>
+                {row.amount?<div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
                 <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
                 <input value={row.notes||""} onChange={e=>updSub("localDeliveries",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
               </div>
@@ -2540,7 +3089,22 @@ ${accRows.length>0?`
                   <span style={{background:"#2563eb",padding:"1px 8px",borderRadius:"4px",fontWeight:"700",flexShrink:0}}>T{gi+1}</span>
                   
                   {isAdmin&&<button onClick={()=>addLoad(group.id)} style={{background:"rgba(59,130,246,.25)",color:"#93c5fd",border:"1px solid rgba(59,130,246,.4)",borderRadius:"4px",padding:"1px 5px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>+Load</button>}
-                  {isAdmin&&<div onDragOver={e=>{e.preventDefault();e.currentTarget.style.background="rgba(251,191,36,.2)";}} onDragLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.05)";}} onDrop={e=>{e.preventDefault();e.currentTarget.style.background="rgba(255,255,255,.05)";const f=e.dataTransfer.files[0];if(f)handleRateCon(f,group.id);}} onClick={()=>{const inp=document.createElement("input");inp.type="file";inp.accept=".pdf,image/*";inp.onchange=ev=>{const f=ev.target.files[0];if(f)handleRateCon(f,group.id);};inp.click();}} style={{display:"flex",alignItems:"center",gap:"3px",background:"rgba(255,255,255,.05)",border:"1px dashed rgba(255,255,255,.2)",borderRadius:"4px",padding:"1px 7px",cursor:"pointer",flexShrink:0}}>
+                  {isAdmin&&<div
+                    onDragEnter={e=>{e.preventDefault();e.stopPropagation();}}
+                    onDragOver={e=>{e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect="copy";e.currentTarget.style.background="rgba(251,191,36,.35)";}}
+                    onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background="rgba(255,255,255,.05)";}}
+                    onDrop={e=>{
+                      e.preventDefault();e.stopPropagation();
+                      e.currentTarget.style.background="rgba(255,255,255,.05)";
+                      const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];
+                      if(!f){alert("No file detected. Try clicking the RC box to pick the file instead.");return;}
+                      const okType=/pdf$/i.test(f.type)||/^image\//i.test(f.type)||/\.(pdf|png|jpe?g|webp)$/i.test(f.name||"");
+                      if(!okType){alert("That doesn't look like a PDF or image. Rate-con must be a PDF or photo.");return;}
+                      handleRateCon(f,group.id);
+                    }}
+                    onClick={()=>{const inp=document.createElement("input");inp.type="file";inp.accept=".pdf,image/*";inp.onchange=ev=>{const f=ev.target.files[0];if(f)handleRateCon(f,group.id);};inp.click();}}
+                    title="Drop a rate confirmation PDF here, or click to pick one"
+                    style={{display:"flex",alignItems:"center",gap:"3px",background:"rgba(255,255,255,.05)",border:"1px dashed rgba(255,255,255,.2)",borderRadius:"4px",padding:"1px 7px",cursor:"pointer",flexShrink:0}}>
                     {rcLoading[group.id]?<span style={{fontSize:"9px",color:"#fbbf24"}}>↻ Reading...</span>:<><span style={{fontSize:"10px"}}>📄</span><span style={{fontSize:"9px",color:"rgba(255,255,255,.5)"}}>RC</span></>}
                   </div>}
                   <div style={{display:"flex",alignItems:"center",gap:"3px",background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",borderRadius:"4px",padding:"1px 5px",flexShrink:0}}>
@@ -2574,8 +3138,8 @@ ${accRows.length>0?`
                             list={`otr-quick-${group.id}`}
                             placeholder="Assign OTR driver..."
                             defaultValue=""
-                            onBlur={e=>{const v=e.target.value.trim();if(v&&canEdit){const mt=Object.entries(truckAssignments||{}).find(([t,d])=>d===v)?.[0];setW("groups",week.groups.map(g=>g.id!==group.id?g:{...g,groupDriver:v,...(mt?{groupTruck:mt}:{})}));e.target.value="";}}}
-                            onKeyDown={e=>{if(e.key==="Enter"){const v=e.target.value.trim();if(v&&canEdit){const mt=Object.entries(truckAssignments||{}).find(([t,d])=>d===v)?.[0];setW("groups",week.groups.map(g=>g.id!==group.id?g:{...g,groupDriver:v,...(mt?{groupTruck:mt}:{})}));e.target.value="";};}}}
+                            onBlur={e=>{const v=e.target.value.trim();if(v&&canEdit){setGroup(group.id,"groupDriver",v);e.target.value="";}}}
+                            onKeyDown={e=>{if(e.key==="Enter"){const v=e.target.value.trim();if(v&&canEdit){setGroup(group.id,"groupDriver",v);e.target.value="";};}}}
                             onClick={e=>e.stopPropagation()}
                             disabled={!canEdit}
                             style={{fontSize:"9px",background:"rgba(134,239,172,.1)",border:"1px solid rgba(134,239,172,.3)",borderRadius:"4px",padding:"2px 6px",color:"#86efac",outline:"none",width:"120px",fontFamily:"inherit",opacity:canEdit?1:.5,cursor:canEdit?"text":"not-allowed"}}
@@ -2640,7 +3204,7 @@ ${accRows.length>0?`
                         style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 55px 75px 55px 65px 78px 22px",gap:"10px",padding:"7px 12px",alignItems:"center",fontSize:"12px",background:isExp?"#eff6ff":li%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #e5edf5",cursor:"pointer",transition:"background .1s",borderLeft:isExp?"3px solid #3b82f6":"3px solid transparent"}}
                       >
                         {/* Stop dot */}
-                        <div style={{width:"18px",height:"18px",borderRadius:"50%",background:isExp?"#bfdbfe":isAdmin?"#c7d2fe":"#e2e8f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"10px",fontWeight:"700",color:isExp?"#1e40af":isAdmin?"#4338ca":"#64748b",flexShrink:0,cursor:isAdmin?"grab":"default",userSelect:"none"}} draggable={isAdmin} onDragStart={e=>{if(!isAdmin)return;e.stopPropagation();dragLoad.current={loadId:load.id,fromGroupId:group.id};dragGroupIdx.current=null;e.dataTransfer.effectAllowed="move";const row=e.currentTarget.closest("[id='load-"+load.id+"']");if(row){row.style.opacity="0.5";row.style.outline="2px solid #3b82f6";}}} onDragEnd={e=>{e.stopPropagation();const row=document.getElementById("load-"+load.id);if(row){row.style.opacity="1";row.style.outline="";}dragLoad.current=null;dragGroupIdx.current=null;}} title="Drag to combine with another trailer">{load.stop||li+1}</div>
+                        <div style={{width:"18px",height:"18px",borderRadius:"50%",background:dupLoadIds.has(load.id)?"#fbcfe8":isExp?"#bfdbfe":isAdmin?"#c7d2fe":"#e2e8f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"10px",fontWeight:"700",color:dupLoadIds.has(load.id)?"#9d174d":isExp?"#1e40af":isAdmin?"#4338ca":"#64748b",flexShrink:0,cursor:isAdmin?"grab":"default",userSelect:"none"}} draggable={isAdmin} onDragStart={e=>{if(!isAdmin)return;e.stopPropagation();dragLoad.current={loadId:load.id,fromGroupId:group.id};dragGroupIdx.current=null;e.dataTransfer.effectAllowed="move";const row=e.currentTarget.closest("[id='load-"+load.id+"']");if(row){row.style.opacity="0.5";row.style.outline="2px solid #3b82f6";}}} onDragEnd={e=>{e.stopPropagation();const row=document.getElementById("load-"+load.id);if(row){row.style.opacity="1";row.style.outline="";}dragLoad.current=null;dragGroupIdx.current=null;}} title={dupLoadIds.has(load.id)?"⚠ Possible duplicate — matches another load this week":"Drag to combine with another trailer"}>{load.stop||li+1}</div>
 
                         {/* Route — shipper / receiver */}
                         <div style={{minWidth:0}}>
@@ -2783,6 +3347,10 @@ ${accRows.length>0?`
                       {/* EXPAND PANEL — broker, load#, commodity, rate, trailer#, quick buttons */}
                       {isExp&&(
                         <div onClick={e=>e.stopPropagation()} style={{background:"#eff6ff",borderBottom:"1px solid #bfdbfe",borderLeft:"3px solid #3b82f6",padding:"10px 12px 12px 28px"}}>
+                          {dupLoadIds.has(load.id)&&<div style={{background:"#fdf2f8",border:"1px solid #f9a8d4",borderRadius:"7px",padding:"7px 10px",marginBottom:"10px",display:"flex",alignItems:"center",gap:"7px"}}>
+                            <span style={{fontSize:"13px"}}>⚠️</span>
+                            <span style={{fontSize:"11px",fontWeight:"700",color:"#be185d"}}>Possible duplicate — another load this week has the same broker and load #.</span>
+                          </div>}
                           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:"8px 16px",marginBottom:"10px"}}>
                             {showBroker&&(<><div>
                               <div style={{fontSize:"9px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"2px"}}>Broker</div>
@@ -2915,10 +3483,7 @@ ${accRows.length>0?`
                                   const all=[...DRIVERS,...customDrivers];
                                   const matched=all.find(d=>d.toLowerCase()===val.toLowerCase());
                                   const final=matched||val;
-                                  if(final!==group.groupDriver){
-                                    const mt=final?Object.entries(truckAssignments||{}).find(([t,d])=>d===final)?.[0]:null;
-                                    setW("groups",week.groups.map(g=>g.id!==group.id?g:{...g,groupDriver:final||"",...(mt?{groupTruck:mt}:{})}));
-                                  }
+                                  if(final!==group.groupDriver)setGroup(group.id,"groupDriver",final||"");
                                 }}
                                 style={{flex:1,border:"1px solid #bfdbfe",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",fontWeight:"600",color:group.groupDriver?"#0369a1":"#374151",background:"#fff",outline:"none",fontStyle:"italic"}}
                               />
@@ -3286,73 +3851,29 @@ ${accRows.length>0?`
                         </div>
                       </div>
 
-                      {/* Load rows — collapsible card + expandable rows */}
+                      {/* Load rows — collapsible */}
                       {!collapsedOtrIds[group.id]&&loads.map((load,li)=>{
                         const lrc=rowColor(load,today,tomorrow);
                         const sr=parseSR(load.sr||"");
                         const showBroker=canSeeBroker(group,load);
                         const brokerName=load.broker?load.broker.split("&")[0].trim():"";
-                        const loadNum=load.broker&&load.broker.includes("&")?load.broker.split("&")[1]?.trim():"";
-                        const isExp=!!otrExpanded[load.id];
-                        const photoCount=(load.photos||[]).filter(p=>p&&typeof p==="object"&&(p.url||p.data)).length;
                         return(
-                          <div key={load.id}>
-                            {/* Summary row — clickable to expand */}
-                            <div
-                              onClick={e=>{e.stopPropagation();setOtrExpanded(p=>({...p,[load.id]:!p[load.id]}));}}
-                              style={{display:"flex",alignItems:"center",gap:"6px",padding:"6px 12px",borderTop:"1px solid #f1f5f9",flexWrap:"nowrap",cursor:"pointer",background:isExp?"#eff6ff":"transparent",userSelect:"none"}}
-                            >
-                              <span style={{fontSize:"8px",color:"#94a3b8",flexShrink:0,lineHeight:1,width:"8px"}}>{isExp?"▼":"▶"}</span>
-                              <span style={{width:"15px",height:"15px",borderRadius:"50%",background:lrc.barBg,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"8px",fontWeight:"800",color:lrc.tc,flexShrink:0}}>{li+1}</span>
-                              <div style={{flex:1,minWidth:0}}>
-                                <div style={{display:"flex",alignItems:"center",gap:"4px",marginBottom:"1px"}}>
-                                  <div style={{fontSize:"10px",color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{sr.s||""}</div>
-                                  {showBroker&&loadNum&&<span style={{fontSize:"8px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 5px",borderRadius:"3px",flexShrink:0,whiteSpace:"nowrap"}}>#{loadNum}</span>}
-                                  {photoCount>0&&<span style={{fontSize:"8px",fontWeight:"700",color:"#2563eb",background:"#eff6ff",padding:"1px 5px",borderRadius:"3px",flexShrink:0}}>📷 {photoCount}</span>}
-                                </div>
-                                <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>→ {sr.r||sr.s||"—"}</div>
+                          <div key={load.id} style={{display:"flex",alignItems:"center",gap:"6px",padding:"6px 12px",borderTop:"1px solid #f1f5f9",flexWrap:"nowrap"}}>
+                            <span style={{width:"15px",height:"15px",borderRadius:"50%",background:lrc.barBg,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"8px",fontWeight:"800",color:lrc.tc,flexShrink:0}}>{li+1}</span>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{display:"flex",alignItems:"center",gap:"4px",marginBottom:"1px"}}>
+                                <div style={{fontSize:"10px",color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{sr.s||""}</div>
+                                {load.loadNum&&<span style={{fontSize:"8px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 5px",borderRadius:"3px",flexShrink:0,whiteSpace:"nowrap"}}>#{load.loadNum}</span>}
                               </div>
-                              {load.delivery&&<span style={{fontSize:"9px",color:"#64748b",whiteSpace:"nowrap",flexShrink:0}}>📦 {load.delivery}</span>}
-                              {showBroker&&brokerName&&<span style={{fontSize:"9px",color:"#94a3b8",whiteSpace:"nowrap",flexShrink:0}}>{brokerName}</span>}
-                              {(parseFloat(load.rate)||0)>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#059669",whiteSpace:"nowrap",flexShrink:0}}>${(parseFloat(load.rate)||0).toLocaleString()}</span>}
-                              {isAdmin&&<select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:"9px",fontWeight:"600",color:lrc.tc,background:lrc.barBg,border:`1px solid ${lrc.bar}`,borderRadius:"4px",padding:"1px 3px",cursor:"pointer",outline:"none",flexShrink:0}} disabled={!isAdmin}>
-                                <option value="">— set —</option>
-                                {LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}
-                              </select>}
+                              <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>→ {sr.r||sr.s||"—"}</div>
                             </div>
-
-                            {/* Detail panel — expanded with all fields like Planned Shipments */}
-                            {isExp&&(
-                              <div style={{padding:"10px 14px 12px",background:"#f8fafc",borderTop:"1px solid #bfdbfe",borderLeft:"3px solid #3b82f6",marginBottom:"2px"}} onClick={e=>e.stopPropagation()}>
-                                {/* Driver bar */}
-                                <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"8px",padding:"5px 9px",background:"#0f1f3d",borderRadius:"6px"}}>
-                                  <span style={{fontSize:"10px",color:"rgba(255,255,255,.5)"}}>Driver</span>
-                                  <span style={{fontSize:"12px",fontWeight:"700",color:"#86efac",flex:1}}>{group.groupDriver||"—"}</span>
-                                  {group.groupTruck&&<span style={{fontSize:"10px",color:"#fff",background:"rgba(255,255,255,.12)",padding:"1px 7px",borderRadius:"4px"}}>#{group.groupTruck}</span>}
-                                  {group.groupTrailer&&<span style={{fontSize:"10px",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"1px 7px",borderRadius:"4px"}}>T{group.groupTrailer}</span>}
-                                </div>
-
-                                {/* Detail grid — broker, load#, pickup, delivery, weight, pallets, product, rate */}
-                                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 14px",fontSize:"11px"}}>
-                                  {showBroker&&brokerName&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Broker</div><div style={{fontSize:"12px",fontWeight:"600",color:"#0f1f3d"}}>{brokerName}</div></div>}
-                                  {showBroker&&loadNum&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Load #</div><div style={{fontSize:"12px",fontWeight:"600",color:"#7c3aed"}}>#{loadNum}</div></div>}
-                                  {load.pickup&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Pickup</div><div style={{fontSize:"12px",color:"#374151"}}>{load.pickup}</div></div>}
-                                  {load.delivery&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Delivery</div><div style={{fontSize:"12px",color:"#374151"}}>{load.delivery}</div></div>}
-                                  {load.weight&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Weight</div><div style={{fontSize:"12px",color:"#374151"}}>{load.weight} lbs</div></div>}
-                                  {load.pallets&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Pallets</div><div style={{fontSize:"12px",color:"#374151"}}>{load.pallets}</div></div>}
-                                  {load.product&&<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Product</div><div style={{fontSize:"12px",color:"#374151"}}>{load.product}</div></div>}
-                                  {(parseFloat(load.rate)||0)>0&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Rate</div><div style={{fontSize:"12px",fontWeight:"700",color:"#059669"}}>${(parseFloat(load.rate)||0).toLocaleString()}</div></div>}
-                                  {load.trailer&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Trailer #</div><div style={{fontSize:"12px",fontWeight:"600",color:"#7c3aed"}}>#{load.trailer}</div></div>}
-                                  {load.notes&&<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px",letterSpacing:".04em"}}>Notes</div><div style={{fontSize:"12px",color:"#374151",fontStyle:"italic"}}>{load.notes}</div></div>}
-                                </div>
-
-                                {/* Action row — Photos + Detail */}
-                                <div style={{marginTop:"10px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap",paddingTop:"8px",borderTop:"1px solid #bfdbfe"}}>
-                                  <button onClick={e=>{e.stopPropagation();setPhotoModal({...load,groupId:group.id});}} style={{background:photoCount>0?"#eff6ff":"#f8fafc",border:`1px solid ${photoCount>0?"#3b82f6":"#d1d5db"}`,color:photoCount>0?"#2563eb":"#64748b",borderRadius:"5px",padding:"3px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>📷 {photoCount>0?"Photos ("+photoCount+")":"Photos"}</button>
-                                  {isAdmin&&<button onClick={e=>{e.stopPropagation();setLoadDetailId({loadId:load.id,weekId:week.id});}} style={{background:"#f8fafc",border:"1px solid #d1d5db",color:"#374151",borderRadius:"5px",padding:"3px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>📋 Detail</button>}
-                                </div>
-                              </div>
-                            )}
+                            {load.delivery&&<span style={{fontSize:"9px",color:"#64748b",whiteSpace:"nowrap",flexShrink:0}}>📦 {load.delivery}</span>}
+                            {showBroker&&brokerName&&<span style={{fontSize:"9px",color:"#94a3b8",whiteSpace:"nowrap",flexShrink:0}}>{brokerName}</span>}
+                            {(parseFloat(load.rate)||0)>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#059669",whiteSpace:"nowrap",flexShrink:0}}>${(parseFloat(load.rate)||0).toLocaleString()}</span>}
+                            {isAdmin&&<select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"600",color:lrc.tc,background:lrc.barBg,border:`1px solid ${lrc.bar}`,borderRadius:"4px",padding:"1px 3px",cursor:"pointer",outline:"none",flexShrink:0}} disabled={!isAdmin}>
+                              <option value="">— set —</option>
+                              {LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}
+                            </select>}
                           </div>
                         );
                       })}
@@ -3371,32 +3892,25 @@ ${accRows.length>0?`
         {!(week.localDeliveries||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No local deliveries</div>}
         {(week.localDeliveries||[]).map((row,i)=>{
           const dt=parsePickupDate(row.datetime);const dtT=dt?dt.getTime():null;const todayT=today.getTime();
-          const isDelivered=row.status==="Delivered";
-          const isTransit=row.status==="In Transit";
-          const isWaiting=row.status==="Waiting Appointment";
           let sp;
-          if(isDelivered){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
-          else if(isTransit){sp={bg:"#ffedd5",c:"#9a3412",bd:"#fb923c"};}
-          else if(isWaiting){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
-          else if(dtT&&dtT>todayT){sp={bg:"#fee2e2",c:"#991b1b",bd:"#ef4444"};}
-          else if(dtT){sp={bg:"#fef9c3",c:"#713f12",bd:"#eab308"};}
-          else{sp={bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
-          const isDone=isDelivered;
+          if(row.status==="Delivered"){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
+          else if(row.status==="In Transit"){sp={bg:"#ede9fe",c:"#5b21b6",bd:"#7c3aed"};}
+          else if(row.status==="Waiting Appointment"){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
+          else{sp=dtT&&dtT<=todayT?{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}:{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
+          const isDone=row.status==="Delivered";
           return(
             <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${sp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDone?.65:1}}>
               <div style={{background:"#065f46",padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
                 {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>T{row.trailer}</span>}
-                {row.truck&&<span style={{fontSize:"10px",fontWeight:"700",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"2px 7px",borderRadius:"4px"}}>#{row.truck}{row.driver?` · ${row.driver.split(" ")[0]}`:""}</span>}
-                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
+                {row.truck&&<span style={{fontSize:"11px",fontWeight:"700",color:"#6ee7b7",background:"rgba(110,231,183,.1)",padding:"2px 7px",borderRadius:"4px"}}>#{row.truck}</span>}
+                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
                 {row.carriedFrom&&<span style={{fontSize:"8px",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>&#8617; carried</span>}
-                <select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"110px"}} disabled={isViewer}>
+                <select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"100px"}} disabled={isViewer}>
                   <option value="">-- status --</option>
                   {["Need to deliver","In Transit","Waiting Appointment","Delivered"].map(s=>(<option key={s}>{s}</option>))}
                 </select>
               </div>
               <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
-                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Destination</div>
-                <input value={row.destination||""} onChange={e=>updSub("localDeliveries",row.id,"destination",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="123 Main St, City, IL" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div>
                 <input value={row.broker||""} onChange={e=>updSub("localDeliveries",row.id,"broker",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Broker" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div>
@@ -3404,9 +3918,8 @@ ${accRows.length>0?`
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
                 <input value={row.datetime||""} onChange={e=>updSub("localDeliveries",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Driver</div>
-                <input list={`local-drv-${row.id}`} value={row.driver||""} onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/>
-                <datalist id={`local-drv-${row.id}`}>{[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}/>))}</datalist></div>
-                {row.amount?<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
+                <input value={row.driver||""} onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/></div>
+                {row.amount?<div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
                 <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
                 <input value={row.notes||""} onChange={e=>updSub("localDeliveries",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
               </div>
@@ -3985,7 +4498,7 @@ ${accRows.length>0?`
   )}
 
     {/* ARCHIVE TAB */}
-    {activeTab==="archive"&&isAdmin&&(<div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}><div style={{fontWeight:"700",fontSize:"14px",color:"#4c1d95",marginBottom:"4px"}}>📦 Archived Weeks</div><div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px"}}>Weeks moved here from the main board.</div>{archivedWeeks.length===0?<div style={{textAlign:"center",padding:"40px",color:"#94a3b8",fontSize:"12px",border:"2px dashed #e2e8f0",borderRadius:"8px"}}>No archived weeks yet. Click 📦 on a week tab to archive it.</div>:archivedWeeks.map((w,i)=>(<div key={i} style={{border:"1px solid #e9d5ff",borderRadius:"10px",padding:"14px",marginBottom:"12px",background:"#faf5ff"}}><div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"10px"}}><span style={{fontWeight:"700",fontSize:"13px",color:"#4c1d95",flex:1}}>{w.label}</span><span style={{fontSize:"10px",color:"#94a3b8"}}>{w.archivedAt}</span><button onClick={()=>{if(!confirm("Restore?"))return;setWeeksAndSave(p=>[w,...p]);setArchivedWeeks(p=>{const n=p.filter((_,j)=>j!==i);localStorage.setItem("fcbv2_archive",JSON.stringify(n));return n;});setActiveTab("weeks");}} style={{background:"#eff6ff",color:"#2563eb",border:"1px solid #bfdbfe",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>Restore</button><button onClick={()=>{if(!confirm("Permanently delete?"))return;setArchivedWeeks(p=>{const n=p.filter((_,j)=>j!==i);localStorage.setItem("fcbv2_archive",JSON.stringify(n));return n;});}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>Delete</button></div><div style={{display:"flex",gap:"12px",flexWrap:"wrap",fontSize:"11px",color:"#6b7280"}}><span>{(w.groups||[]).length} trailers</span><span>{(w.groups||[]).flatMap(g=>g.loads||[]).length} loads</span><span style={{fontWeight:"700",color:"#059669"}}>${(w.groups||[]).flatMap(g=>g.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0).toLocaleString()} gross</span></div></div>))}</div>)}
+    {activeTab==="archive"&&isAdmin&&(<div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}><div style={{fontWeight:"700",fontSize:"14px",color:"#4c1d95",marginBottom:"4px"}}>📦 Archived Weeks</div><div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px"}}>Weeks moved here from the main board.</div>{archivedWeeks.length===0?<div style={{textAlign:"center",padding:"40px",color:"#94a3b8",fontSize:"12px",border:"2px dashed #e2e8f0",borderRadius:"8px"}}>No archived weeks yet. Click 📦 on a week tab to archive it.</div>:archivedWeeks.map((w,i)=>(<div key={i} style={{border:"1px solid #e9d5ff",borderRadius:"10px",padding:"14px",marginBottom:"12px",background:"#faf5ff"}}><div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"10px"}}><span style={{fontWeight:"700",fontSize:"13px",color:"#4c1d95",flex:1}}>{w.label}</span><span style={{fontSize:"10px",color:"#94a3b8"}}>{w.archivedAt}</span><button onClick={()=>{if(!confirm("Restore?"))return;restoreArchivedWeek(i);setActiveTab("weeks");}} style={{background:"#eff6ff",color:"#2563eb",border:"1px solid #bfdbfe",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>Restore</button><button onClick={()=>{if(!confirm("Permanently delete?"))return;deleteArchivedWeek(i);}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>Delete</button></div><div style={{display:"flex",gap:"12px",flexWrap:"wrap",fontSize:"11px",color:"#6b7280"}}><span>{(w.groups||[]).length} trailers</span><span>{(w.groups||[]).flatMap(g=>g.loads||[]).length} loads</span><span style={{fontWeight:"700",color:"#059669"}}>${(w.groups||[]).flatMap(g=>g.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0).toLocaleString()} gross</span></div></div>))}</div>)}
 
     {/* INSIGHTS TAB */}
     {activeTab==="insights"&&isAdmin&&(
@@ -4169,15 +4682,18 @@ ${accRows.length>0?`
           const drvFrom=driverDateFrom?new Date(driverDateFrom):null;
           const drvTo=driverDateTo?new Date(driverDateTo):null;
           if(drvTo)drvTo.setHours(23,59,59,999);
+          // "All Time" includes archived weeks — archiving is a housekeeping
+          // action and must not erase a driver/dispatcher's lifetime earnings.
+          const allTimeWeeks=[...weeks,...archivedWeeks];
           const allDriverGross={};
-          weeks.forEach(w=>{
+          const CG_OK=new Set(["Delivered","In Transit"]); // committed work counts
+          allTimeWeeks.forEach(w=>{
             (w.groups||[]).forEach(g=>{
               // groupDriver = OTR driver who owns and delivers the trailer
               const gDrv=(g.groupDriver||"").trim();
               if(!gDrv||LOCAL_DRV.has(gDrv))return;
               const grpStatus=(g.groupStatus||"").trim();
-              const isDelivered=grpStatus==="Delivered";
-              if(!isDelivered)return;
+              if(!CG_OK.has(grpStatus))return;
               (g.loads||[]).forEach(l=>{
                 const rate=parseFloat(l.rate)||0;
                 if(!rate)return;
@@ -4193,38 +4709,54 @@ ${accRows.length>0?`
           });
           const topDrivers=Object.entries(allDriverGross).sort((a,b)=>b[1]-a[1]).slice(0,10);
           const maxDriverGross=topDrivers.length>0?topDrivers[0][1]:1;
-          // Top Dispatchers — sum gross for each dispatcher's drivers
-          const dispGross={};
+          // Top Dispatchers — credit each delivered/in-transit load to its
+          // driver's dispatcher. Name matching is tolerant of minor variants
+          // (e.g. "Lucson" vs "Lucson Auguste"). Any gross from a driver not on
+          // any dispatcher's roster is collected into a visible "Unassigned"
+          // row, so the dispatcher total always reconciles with the driver total.
+          const _norm=s=>((s||"")+"").toLowerCase().split(/\s+/).filter(Boolean).join(" ");
+          const driverToDisp={};
           dispatchers.forEach(disp=>{
-            const dSet=new Set(disp.drivers||[]);
-            let total=0;
-            weeks.forEach(w=>{
-              (w.groups||[]).forEach(g=>{
-                // Use ONLY groupDriver — that's the OTR driver assigned to the trailer
-                // who actually delivers it. l.driver = local pickup driver, not relevant here.
-                const gDrv=(g.groupDriver||"").trim();
-                if(!gDrv||!dSet.has(gDrv))return;
-                const grpStatus=(g.groupStatus||"").trim();
-                const isDelivered=grpStatus==="Delivered";
-                if(!isDelivered)return;
-                // Sum all loads on this trailer
-                (g.loads||[]).forEach(l=>{
-                  const rate=parseFloat(l.rate)||0;
-                  if(!rate)return;
-                  if(drvFrom||drvTo){
-                    const pd=parsePickupDate(l.delivery||l.pickup);
-                    if(!pd)return;
-                    if(drvFrom&&pd<drvFrom)return;
-                    if(drvTo&&pd>drvTo)return;
-                  }
-                  total+=rate;
-                });
+            (disp.drivers||[]).forEach(dr=>{driverToDisp[_norm(dr)]=disp.name;});
+          });
+          const findDisp=(gDrv)=>{
+            const n=_norm(gDrv);
+            if(!n)return null;
+            if(driverToDisp[n])return driverToDisp[n];
+            // tolerant: roster name starts with load name, or vice versa
+            const keys=Object.keys(driverToDisp);
+            for(let i=0;i<keys.length;i++){
+              const rn=keys[i];
+              if(rn.indexOf(n+" ")===0||n.indexOf(rn+" ")===0)return driverToDisp[rn];
+            }
+            return null;
+          };
+          const dispGross={};
+          let unassignedGross=0;
+          allTimeWeeks.forEach(w=>{
+            (w.groups||[]).forEach(g=>{
+              const gDrv=(g.groupDriver||"").trim();
+              if(!gDrv||LOCAL_DRV.has(gDrv))return;
+              const grpStatus=(g.groupStatus||"").trim();
+              if(!CG_OK.has(grpStatus))return;
+              (g.loads||[]).forEach(l=>{
+                const rate=parseFloat(l.rate)||0;
+                if(!rate)return;
+                if(drvFrom||drvTo){
+                  const pd=parsePickupDate(l.delivery||l.pickup);
+                  if(!pd)return;
+                  if(drvFrom&&pd<drvFrom)return;
+                  if(drvTo&&pd>drvTo)return;
+                }
+                const dn=findDisp(gDrv);
+                if(dn)dispGross[dn]=(dispGross[dn]||0)+rate;
+                else unassignedGross+=rate;
               });
             });
-            if(total>0)dispGross[disp.name]=total;
           });
           const topDispatchers=Object.entries(dispGross).sort((a,b)=>b[1]-a[1]);
-          const maxDispGross=topDispatchers.length>0?topDispatchers[0][1]:1;
+          if(unassignedGross>0)topDispatchers.push(["⚠ Unassigned drivers",unassignedGross]);
+          const maxDispGross=topDispatchers.length>0?Math.max(...topDispatchers.map(d=>d[1])):1;
           const maxStat=Math.max(...statCards.map(s=>Math.max(s.cur,s.prev)),1);
           return(
             <div style={{maxWidth:"1400px",margin:"0 auto",padding:"16px"}}>
@@ -4376,8 +4908,7 @@ ${accRows.length>0?`
                                             const wkIdx=weeks.findIndex(w=>(w.groups||[]).some(g=>g.id===group.id));
                                             if(wkIdx<0){btn.textContent="Claim";btn.disabled=false;return;}
                                             const now=Date.now();
-                                            const matchTk=Object.entries(truckAssignments||{}).find(([t,d])=>d===name)?.[0];
-                                            const updated=weeks.map((w,i)=>i!==wkIdx?w:{...w,groups:(w.groups||[]).map(g=>g.id!==group.id?g:{...g,groupDriver:name,securedBy:name,securedAt:now,...(matchTk?{groupTruck:matchTk}:{})})});
+                                            const updated=weeks.map((w,i)=>i!==wkIdx?w:{...w,groups:(w.groups||[]).map(g=>g.id!==group.id?g:{...g,groupDriver:name,securedBy:name,securedAt:now})});
                                             // Update React state immediately
                                             setWeeks(updated);
                                             // Save to localStorage immediately (no debounce)
@@ -4444,11 +4975,9 @@ ${accRows.length>0?`
               })()}
 
               {/* Header */}
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"20px",flexWrap:"wrap",gap:"8px"}}>
-                <div>
-                  <div style={{fontSize:"22px",fontWeight:"800",color:"#0f1f3d"}}>📊 Weekly Dashboard</div>
-                  <div style={{fontSize:"12px",color:"#64748b",marginTop:"2px"}}>{curLabel} vs {prevLabel}</div>
-                </div>
+              <div style={{marginBottom:"20px"}}>
+                <div style={{fontSize:"22px",fontWeight:"800",color:"#0f1f3d"}}>📊 Weekly Dashboard</div>
+                <div style={{fontSize:"12px",color:"#64748b",marginTop:"2px"}}>{curLabel} vs {prevLabel}</div>
               </div>
 
               {/* Week Comparison Header */}
@@ -4520,7 +5049,8 @@ ${accRows.length>0?`
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"16px",marginBottom:"16px"}}>
                 {/* Top Drivers */}
                 <div style={{background:"#fff",borderRadius:"12px",padding:"16px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #e2e8f0"}}>
-                  <div style={{fontWeight:"700",fontSize:"14px",color:"#0f1f3d",marginBottom:"14px"}}>🧑 Top Drivers{driverDateFrom||driverDateTo?" — Custom Range":" — All Time"}</div>
+                  <div style={{fontWeight:"700",fontSize:"14px",color:"#0f1f3d",marginBottom:"2px"}}>🧑 Top Drivers{driverDateFrom||driverDateTo?" — Custom Range":" — All Time"}</div>
+                  <div style={{fontSize:"10px",color:"#94a3b8",marginBottom:"12px"}}>Delivered + In Transit loads · includes archived weeks</div>
                   {topDrivers.length===0?(<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"20px"}}>No driver data yet</div>):(
                     <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
                       {topDrivers.map((dr,i)=>(
@@ -4539,52 +5069,23 @@ ${accRows.length>0?`
 
                 {/* Top Dispatchers */}
                 <div style={{background:"#fff",borderRadius:"12px",padding:"16px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #e2e8f0"}}>
-                  <div style={{fontWeight:"700",fontSize:"14px",color:"#0f1f3d",marginBottom:"14px"}}>🎯 Top Dispatchers{driverDateFrom||driverDateTo?" — Custom Range":" — All Time"}</div>
+                  <div style={{fontWeight:"700",fontSize:"14px",color:"#0f1f3d",marginBottom:"2px"}}>🎯 Top Dispatchers{driverDateFrom||driverDateTo?" — Custom Range":" — All Time"}</div>
+                  <div style={{fontSize:"10px",color:"#94a3b8",marginBottom:"12px"}}>Delivered + In Transit loads · includes archived weeks</div>
                   {topDispatchers.length===0?(<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"20px"}}>No dispatcher data yet — assign drivers to dispatchers in the Dispatchers tab</div>):(
                     <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
-                      {topDispatchers.map((dp,i)=>(
-                        <div key={dp[0]} style={{display:"flex",alignItems:"center",gap:"8px"}}>
-                          <span style={{fontSize:"13px",fontWeight:"800",color:i===0?"#f59e0b":i===1?"#94a3b8":i===2?"#d97706":"#cbd5e1",minWidth:"20px"}}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":"#"+(i+1)}</span>
-                          <span style={{fontSize:"12px",fontWeight:"600",color:"#5b21b6",minWidth:"100px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{dp[0]}</span>
-                          <div style={{flex:1,height:"8px",background:"#f1f5f9",borderRadius:"4px",overflow:"hidden"}}>
-                            <div style={{height:"100%",width:Math.round(dp[1]/maxDispGross*100)+"%",background:i===0?"#f59e0b":"#7c3aed",borderRadius:"4px"}}/>
-                          </div>
-                          <span style={{fontSize:"11px",fontWeight:"700",color:"#7c3aed",minWidth:"60px",textAlign:"right"}}>${dp[1].toLocaleString()}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div style={{marginBottom:"16px"}}>
-                {/* States Map */}
-                <div style={{background:"#fff",borderRadius:"12px",padding:"16px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #e2e8f0"}}>
-                  <div style={{fontWeight:"700",fontSize:"14px",color:"#0f1f3d",marginBottom:"14px"}}>🗺 Deliveries by State</div>
-                  {allStates.length===0?(<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"20px"}}>No delivery data yet — enter receiver cities like "Kernersville, NC"</div>):(
-                    <div style={{display:"flex",flexDirection:"column",gap:"8px",maxHeight:"280px",overflowY:"auto"}}>
-                      {allStates.sort((a,b)=>(cur.states[b]||0)-(cur.states[a]||0)).map((st)=>{
-                        const c=cur.states[st]||0;const p=prev.states[st]||0;const mx=Math.max(...allStates.map(s=>Math.max(cur.states[s]||0,prev.states[s]||0)),1);
-                        const stNames={"AL":"Alabama","AZ":"Arizona","AR":"Arkansas","CA":"California","CO":"Colorado","CT":"Connecticut","DE":"Delaware","FL":"Florida","GA":"Georgia","ID":"Idaho","IL":"Illinois","IN":"Indiana","IA":"Iowa","KS":"Kansas","KY":"Kentucky","LA":"Louisiana","ME":"Maine","MD":"Maryland","MA":"Massachusetts","MI":"Michigan","MN":"Minnesota","MS":"Mississippi","MO":"Missouri","MT":"Montana","NE":"Nebraska","NV":"Nevada","NH":"New Hampshire","NJ":"New Jersey","NM":"New Mexico","NY":"New York","NC":"North Carolina","ND":"North Dakota","OH":"Ohio","OK":"Oklahoma","OR":"Oregon","PA":"Pennsylvania","RI":"Rhode Island","SC":"South Carolina","SD":"South Dakota","TN":"Tennessee","TX":"Texas","UT":"Utah","VT":"Vermont","VA":"Virginia","WA":"Washington","WV":"West Virginia","WI":"Wisconsin","WY":"Wyoming"};
+                      {topDispatchers.map((dp,i)=>{
+                        const isUnassigned=dp[0]==="⚠ Unassigned drivers";
                         return(
-                          <div key={st}>
-                            <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"3px"}}>
-                              <span style={{fontSize:"13px",fontWeight:"800",color:"#1e40af",minWidth:"30px"}}>{st}</span>
-                              <span style={{fontSize:"11px",color:"#64748b",flex:1}}>{stNames[st]||""}</span>
-                              <span style={{fontSize:"13px",fontWeight:"800",color:"#2563eb"}}>{c}</span>
-                              {p>0&&<span style={{fontSize:"11px",color:"#94a3b8"}}>/ {p}</span>}
-                            </div>
-                            <div style={{display:"flex",gap:"3px",alignItems:"center",height:"14px"}}>
-                              {p>0&&<div style={{height:"8px",background:"#bfdbfe",borderRadius:"2px",width:Math.round(p/mx*100)+"%",minWidth:"4px"}}/>}
-                              {c>0&&<div style={{height:"8px",background:"#2563eb",borderRadius:"2px",width:Math.round(c/mx*100)+"%",minWidth:"4px"}}/>}
-                            </div>
+                        <div key={dp[0]} style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                          <span style={{fontSize:"13px",fontWeight:"800",color:isUnassigned?"#d97706":i===0?"#f59e0b":i===1?"#94a3b8":i===2?"#d97706":"#cbd5e1",minWidth:"20px"}}>{isUnassigned?"⚠":i===0?"🥇":i===1?"🥈":i===2?"🥉":"#"+(i+1)}</span>
+                          <span style={{fontSize:"12px",fontWeight:"600",color:isUnassigned?"#b45309":"#5b21b6",minWidth:"100px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isUnassigned?"Unassigned":dp[0]}</span>
+                          <div style={{flex:1,height:"8px",background:"#f1f5f9",borderRadius:"4px",overflow:"hidden"}}>
+                            <div style={{height:"100%",width:Math.round(dp[1]/maxDispGross*100)+"%",background:isUnassigned?"#f59e0b":i===0?"#f59e0b":"#7c3aed",borderRadius:"4px"}}/>
                           </div>
+                          <span style={{fontSize:"11px",fontWeight:"700",color:isUnassigned?"#b45309":"#7c3aed",minWidth:"60px",textAlign:"right"}}>${dp[1].toLocaleString()}</span>
+                        </div>
                         );
                       })}
-                      <div style={{display:"flex",gap:"16px",marginTop:"6px",paddingTop:"8px",borderTop:"1px solid #e2e8f0"}}>
-                        <div style={{display:"flex",alignItems:"center",gap:"5px"}}><div style={{width:"12px",height:"8px",background:"#2563eb",borderRadius:"2px"}}/><span style={{fontSize:"11px",color:"#64748b",fontWeight:"600"}}>Week A</span></div>
-                        <div style={{display:"flex",alignItems:"center",gap:"5px"}}><div style={{width:"12px",height:"8px",background:"#bfdbfe",borderRadius:"2px"}}/><span style={{fontSize:"11px",color:"#64748b",fontWeight:"600"}}>Week B</span></div>
-                      </div>
                     </div>
                   )}
                 </div>
