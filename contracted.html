@@ -2049,25 +2049,21 @@ function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddL
     saveStatus === "error"  ? "Save failed" :
     "Synced";
 
-  // Storage warning thresholds — measured against the biggest single week,
-  // which is what hits the 50KB Sheets cell cap (post-multi-cell upgrade).
-  // Pre-upgrade, the cap applies to total; for that case we factor it in too.
-  const watermark = Math.max(storageSize.biggestWeek, storageSize.total);
-  const sizeKb = (watermark / 1024).toFixed(1);
+  // Storage usage — informational. Weeks are now chunked across as many
+  // cells as needed server-side, so the old 50KB-per-cell limit no longer
+  // applies. A large *total* only affects save speed, so the soft heads-up
+  // sits high and is just advisory.
+  const sizeKb = (storageSize.total / 1024).toFixed(0);
   const sizeLevel =
-    watermark > 42000 ? "critical" :
-    watermark > 32000 ? "warning"  :
-    watermark > 20000 ? "info"     : null;
+    storageSize.total > 4000000 ? "warning" :
+    storageSize.total > 2000000 ? "info"    : null;
   const sizeColors = {
-    critical: { bg: "rgba(248,113,113,.25)", color: "#fecaca" },
-    warning:  { bg: "rgba(251,191,36,.22)",  color: "#fcd34d" },
-    info:     { bg: "rgba(255,255,255,.08)", color: "rgba(255,255,255,.65)" }
+    warning: { bg: "rgba(251,191,36,.22)",  color: "#fcd34d" },
+    info:    { bg: "rgba(255,255,255,.08)", color: "rgba(255,255,255,.65)" }
   };
-  const sizeTitle = sizeLevel === "critical"
-    ? "Approaching the 50KB Sheets cell limit. Archive old weeks to free space, or upgrade the Apps Script for per-week storage."
-    : sizeLevel === "warning"
-    ? "Data is getting large. Largest week: " + (storageSize.biggestWeek/1024).toFixed(1) + " KB" + (storageSize.biggestWeekLabel ? " (" + storageSize.biggestWeekLabel + ")" : "") + "."
-    : "Storage usage. Largest week: " + (storageSize.biggestWeek/1024).toFixed(1) + " KB · total: " + (storageSize.total/1024).toFixed(1) + " KB.";
+  const sizeTitle = sizeLevel === "warning"
+    ? "Board data is large (" + sizeKb + " KB total) — saves may be slower. Consider deleting or archiving old weeks. There's no hard limit; weeks now split across cells automatically."
+    : "Storage usage: " + sizeKb + " KB total. Weeks split across cells automatically — no per-week size limit.";
 
   const weeks = (data && data.weeks) || [];
   const activeWeeks   = weeks.filter(w => !w.archived);
@@ -2573,23 +2569,14 @@ function App() {
   }, []);
 
   // ---- Storage size monitor ----
-  // Tracks both total payload AND the largest single week. With the current
-  // (single-blob) Apps Script the 50KB cell limit applies to total. With the
-  // multi-cell Apps Script (one row per week) the limit applies per week —
-  // which is `biggestWeek` here. Showing both keeps the warning useful in
-  // either deployment.
+  // Weeks are chunked across cells server-side, so there's no per-week
+  // size limit. We just track total payload size, which only affects
+  // save speed — shown for awareness.
   const storageSize = useMemo(() => {
-    const empty = { total: 0, biggestWeek: 0, biggestWeekLabel: "" };
-    if (!data) return empty;
+    if (!data) return { total: 0 };
     try {
-      const total = JSON.stringify(data).length;
-      let biggestWeek = 0, biggestWeekLabel = "";
-      (data.weeks || []).forEach(w => {
-        const s = JSON.stringify(w).length;
-        if (s > biggestWeek) { biggestWeek = s; biggestWeekLabel = w.label || ""; }
-      });
-      return { total, biggestWeek, biggestWeekLabel };
-    } catch (e) { return empty; }
+      return { total: JSON.stringify(data).length };
+    } catch (e) { return { total: 0 }; }
   }, [data]);
 
   // ---- Render ----
