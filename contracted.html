@@ -135,6 +135,13 @@
   }
   .clb-card:hover { box-shadow: 0 4px 14px rgba(15,23,42,.08); }
   .clb-card--delivered { opacity: .62; }
+  .clb-card--unclaimed {
+    background: #fef2f2;
+    border-left: 3px solid #ef4444;
+  }
+  .clb-card--unclaimed .clb-card__head {
+    background: #fee2e2;
+  }
   .clb-card--waiting {
     background: #fffbeb;
     box-shadow: inset 4px 0 0 #f59e0b;
@@ -523,7 +530,7 @@
              broker:    "RJW Logistics",    // free-text — pulled from rate con when possible
              loadNum:   "12345",
              lane:      "IL → GA",          // optional free text
-             status:    "Need to Drop" | "Dispatched" | "Dropped at shipper" | "Yard" | "Enroute to Delivery" | "Delivered",
+             status:    "Need to Drop" | "Dispatched" | "Dropped at shipper" | "Ready at shipper" | "Yard" | "Enroute to Delivery" | "Delivered",
              rate:      2500,               // number
              waitingUpdate: false,          // when true, load lives in ⏳ Waiting Updated bucket regardless of date
              otrDriver: "Jeff Mecha",       // long-haul driver — shown on collapsed card
@@ -593,12 +600,13 @@ const TRUCK_NUMBERS = ["13","15","29","029","407","408","414","422","432","444",
 // This is a read; we never write to the freight board from here.
 const FREIGHT_BOARD_URL = "https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec";
 
-const STATUSES = ["Need to Drop","Dispatched","Dropped at shipper","Yard","Enroute to Delivery","Delivered"];
+const STATUSES = ["Need to Drop","Dispatched","Dropped at shipper","Ready at shipper","Yard","Enroute to Delivery","Delivered"];
 
 const STATUS_STYLES = {
   "Need to Drop":        { bg:"#fef9c3", color:"#854d0e", border:"#eab308" },
   "Dispatched":          { bg:"#dbeafe", color:"#1e40af", border:"#3b82f6" },
   "Dropped at shipper":  { bg:"#ede9fe", color:"#5b21b6", border:"#7c3aed" },
+  "Ready at shipper":    { bg:"#e0e7ff", color:"#3730a3", border:"#6366f1" },
   "Yard":                { bg:"#ffedd5", color:"#9a3412", border:"#fb923c" },
   "Enroute to Delivery": { bg:"#ccfbf1", color:"#115e59", border:"#14b8a6" },
   "Delivered":           { bg:"#dcfce7", color:"#14532d", border:"#16a34a" }
@@ -1836,7 +1844,9 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
     <div className={"clb-card" +
                     (load.status === "Delivered" ? " clb-card--delivered" : "") +
                     (load.waitingUpdate ? " clb-card--waiting" : "") +
-                    (load.claimedBy ? " clb-card--claimed" : "")}
+                    (load.claimedBy
+                      ? " clb-card--claimed"
+                      : (load.status !== "Delivered" ? " clb-card--unclaimed" : ""))}
          style={{ "--bucket-color": bucketColor }}>
       <div className="clb-card__head" onClick={onToggle}>
         <span className="clb-card__caret">{expanded ? "▼" : "▶"}</span>
