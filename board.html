@@ -1348,7 +1348,11 @@ function App(){
 
   // Auto-set load status based on pickup date when status is empty
   // Today/Tomorrow/Overdue → "Need to pickup" | future → stays empty
-  // Also: assigning local driver → "Dispatched" (handled inline in driver onChange)
+  // Auto-advance status. Runs only when switching weeks (week.id dep).
+  // IMPORTANT: a load is only auto-Dispatched if THAT LOAD has its own
+  // driver field set. Inheriting from g.groupDriver here was incorrect —
+  // it caused brand-new loads added to an existing trailer to be silently
+  // flipped to Dispatched even though they had no driver of their own.
   React.useEffect(()=>{
     if(!isAdmin||!week)return;
     const todayTs=today.getTime();
@@ -1357,10 +1361,10 @@ function App(){
     const updated=(week.groups||[]).map(g=>{
       if(g.isCombined||g.groupStatus==="In Transit"||g.groupStatus==="Delivered")return g;
       const newLoads=(g.loads||[]).map(l=>{
-        const drv=((l.driver||g.groupDriver||"")+"").trim();
+        const ownDriver=((l.driver||"")+"").trim();   // ONLY the load's own driver
         const st=l.status||"";
-        // Auto-advance: a driver is assigned but the load isn't dispatched yet → "Dispatched"
-        if(drv&&(st===""||st==="Need to pickup")){
+        // Auto-advance: load has its OWN driver but no dispatched-or-later status
+        if(ownDriver&&(st===""||st==="Need to pickup")){
           changed=true;
           return{...l,status:"Dispatched"};
         }
@@ -1376,7 +1380,7 @@ function App(){
       return newLoads===g.loads?g:{...g,loads:newLoads};
     });
     if(changed)setW("groups",updated);
-  },[week?.id]); // Run when week changes (switching weeks), not on every render
+  },[week?.id]);
 
   // ── NEEDS ATTENTION + DUPLICATE DETECTION ─────────────────────────
   const attention=useMemo(()=>{
