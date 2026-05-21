@@ -51,6 +51,9 @@ input:disabled,select:disabled{opacity:0.72;cursor:not-allowed!important;}
 .hdr-menu-section{font-size:9px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.08em;padding:6px 10px 3px;}
 .hdr-menu-divider{height:1px;background:#f1f5f9;margin:4px 0;}
 </style>
+<!-- PDF.js — extracts text from rate-con PDFs locally, no API needed -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>if(window.pdfjsLib&&window.pdfjsLib.GlobalWorkerOptions)window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
 </head>
 <body>
 <div id="app"></div>
@@ -179,6 +182,434 @@ function newestWeekByDate(weeksArr){
     if(t>=bestT){bestT=t;best=w;}
   });
   return best||weeksArr[0];
+}
+
+// ============================================================================
+//  RATE-CON PARSER — extracts broker, load #, pickup/delivery (city + datetime),
+//  rate, weight, pallets, commodity from a rate-confirmation PDF.
+//  Pure browser: PDF.js for text, regex heuristics for fields. No API needed.
+//  Ported from the contracted-loads board with Arrive added to the broker list.
+// ============================================================================
+
+async function extractPdfText(file){
+  if(!window.pdfjsLib)throw new Error("PDF library not loaded yet — try again in a moment.");
+  const buf=await file.arrayBuffer();
+  const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;
+  const out=[];
+  for(let p=1;p<=pdf.numPages;p++){
+    const page=await pdf.getPage(p);
+    const content=await page.getTextContent();
+    let lines=[],curY=null,curLine=[];
+    for(const it of content.items){
+      const y=it.transform?it.transform[5]:0;
+      if(curY===null||Math.abs(y-curY)>2){
+        if(curLine.length)lines.push(curLine.join(" "));
+        curLine=[it.str];curY=y;
+      } else curLine.push(it.str);
+    }
+    if(curLine.length)lines.push(curLine.join(" "));
+    out.push(lines.join("\n"));
+  }
+  return out.join("\n");
+}
+
+const RC_CITY_STATE=/\b([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,3}),\s*([A-Z]{2})\b(?!\w)/;
+const RC_DATE=/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/;
+const RC_PICKUP_HDR=/\b(pick\s*up|pickup|shipper|origin)\b/i;
+const RC_DELIVERY_HDR=/\b(delivery|deliver|consignee|receiver|destination|drop)\b/i;
+
+function extractTime(text){
+  const m1=text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(AM|PM|am|pm)\b/);
+  if(m1){const h=m1[1],mm=m1[2]||"",ap=m1[3].toUpperCase();return h+(mm?":"+mm:"")+ap;}
+  const m2=text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if(m2)return m2[1]+":"+m2[2];
+  const m3=text.match(/(?:^|\s|[-,;:])([01]\d|2[0-3])([0-5]\d)(?=\s|$|[-,;])/);
+  if(m3)return m3[1]+":"+m3[2];
+  return null;
+}
+
+function extractStopFromSection(section){
+  const out={};
+  // Search line by line so warehouse-name lines above the city don't get
+  // pulled into the match. RC_CITY_STATE can otherwise span newlines and
+  // grab "Acme Distribution Center" along with the actual "City, ST".
+  const lines=section.split(/\r?\n/);
+  for(const line of lines){
+    const csM=line.match(RC_CITY_STATE);
+    if(csM){out.location=csM[1]+", "+csM[2];break;}
+  }
+  const dM=section.match(RC_DATE);
+  const tStr=extractTime(section);
+  if(dM||tStr){
+    let dt="";
+    if(dM)dt+=dM[1]+"/"+dM[2];
+    if(tStr)dt+=(dt?" ":"")+tStr;
+    out.datetime=dt.trim();
+  }
+  return(out.location||out.datetime)?out:null;
+}
+
+// ---- helpers for the broker-specific parsers ----
+
+// "TWIN LAKES" → "Twin Lakes", "des plaines" → "Des Plaines"
+function _rcTitle(s){
+  return String(s||"").trim().toLowerCase().split(/\s+/)
+    .map(w=>w?(w[0].toUpperCase()+w.slice(1)):w).join(" ");
+}
+
+// Format a date/time pair. dStr like "5/26/2026" or "05/26/26", tStr like "13:00", "8:00 AM", "1300".
+// Returns "5/26 13:00" or "5/26 1:00PM" matching how your board displays times.
+function _rcFmtDT(dStr, tStr){
+  let out="";
+  if(dStr){
+    const m=String(dStr).match(/(\d{1,2})[\/\-](\d{1,2})/);
+    if(m)out=parseInt(m[1],10)+"/"+parseInt(m[2],10);
+  }
+  if(tStr){
+    // already-formatted (with colon or AM/PM) — pass through; military 4-digit → "HH:MM"
+    const t=String(tStr).trim();
+    if(/^\d{3,4}$/.test(t)){
+      const padded=t.padStart(4,"0");
+      out+=(out?" ":"")+padded.slice(0,2)+":"+padded.slice(2);
+    } else out+=(out?" ":"")+t;
+  }
+  return out.trim();
+}
+
+// Format an appointment window: same-day window becomes "M/D HH:MM-HH:MM"
+// (e.g. "5/26 13:00-15:00"), multi-day becomes "M/D HH:MM - M/D HH:MM".
+// If end time/date is missing or equals start, returns single _rcFmtDT.
+function _rcFmtWindow(startD, startT, endD, endT){
+  const start=_rcFmtDT(startD,startT);
+  if(!endD&&!endT)return start;
+  if(endD===startD||!endD){
+    // same day — compact format "M/D HH:MM-HH:MM" if end time differs
+    const endTime=endT?String(endT).trim():"";
+    if(!endTime||endTime===String(startT).trim())return start;
+    // Re-format end time the same way as start
+    let formattedEnd=endTime;
+    if(/^\d{3,4}$/.test(endTime)){const p=endTime.padStart(4,"0");formattedEnd=p.slice(0,2)+":"+p.slice(2);}
+    return start+"-"+formattedEnd;
+  }
+  // different days — show full second part
+  const end=_rcFmtDT(endD,endT);
+  return start+" - "+end;
+}
+
+// Pick a single rate from a list of candidate dollar amounts. Filters insurance
+// limits ($1,000,000) and cargo value ($100,000) — anything ≥ $50,000 is treated
+// as not a freight rate unless it's the only number around.
+function _rcPickRate(candidates){
+  const filtered=candidates.filter(n=>n>=100&&n<50000);
+  if(filtered.length)return Math.max(...filtered);
+  return null;
+}
+
+// ---- broker-specific parsers ----
+
+// ECHO Global Logistics — "Line Haul $X.XX" + pickup/drop blocks
+function _parseEcho(text){
+  const r={broker:"Echo Global"};
+  const flat=text.replace(/\s+/g," ");
+
+  // Load # — appears as "ORDER 12345678" or "load number 12345678"
+  const ld=text.match(/ORDER\s+(\d{6,12})/)||flat.match(/load\s+number\s+(\d{6,12})/i);
+  if(ld)r.loadNum=ld[1];
+
+  // Route from the natural-language line "moving on 05/26/2026 from CITY, ST to CITY, ST"
+  // Echo wraps the second city onto the next line ("to FOUNTAIN INN,\nSC ..."). The state
+  // code must be preceded by whitespace (not embedded in another word — e.g. "INN" → "IN").
+  const route=text.match(/moving on\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+from\s+([A-Z][A-Z .'\-]+?),\s*([A-Z]{2})\s+to\s+([A-Z][A-Z .'\-]+?),?\s*(?:^|\s)([A-Z]{2})(?=\s)/im);
+  if(route){
+    r.pickup={location:_rcTitle(route[2])+", "+route[3]};
+    r.delivery={location:_rcTitle(route[4])+", "+route[5]};
+  }
+
+  // Stop times — Echo uses "Earliest: MM/DD/YYYY HH:MM" then "Latest: MM/DD/YYYY HH:MM"
+  // for each stop. Pair them up: 1st Earliest + 1st Latest = pickup window;
+  // 2nd Earliest + 2nd Latest = delivery window.
+  const earl=[...text.matchAll(/Earliest:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2})/g)];
+  const late=[...text.matchAll(/Latest:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2})/g)];
+  if(earl[0]){
+    if(!r.pickup)r.pickup={};
+    r.pickup.datetime=_rcFmtWindow(earl[0][1],earl[0][2],late[0]&&late[0][1],late[0]&&late[0][2]);
+  }
+  if(earl[1]){
+    if(!r.delivery)r.delivery={};
+    r.delivery.datetime=_rcFmtWindow(earl[1][1],earl[1][2],late[1]&&late[1][1],late[1]&&late[1][2]);
+  }
+
+  // Rate — prefer "Line Haul $X.XX" line; fall back to PAY SUMMARY total.
+  const lh=text.match(/Line\s*Haul[^$]*\$\s*([\d,]+(?:\.\d{2})?)/i);
+  if(lh){const v=parseFloat(lh[1].replace(/,/g,""));if(v>=100&&v<50000)r.rate=Math.round(v);}
+  if(!r.rate){
+    const ts=text.match(/Total:?\s*\$\s*([\d,]+(?:\.\d{2})?)/);
+    if(ts){const v=parseFloat(ts[1].replace(/,/g,""));if(v>=100&&v<50000)r.rate=Math.round(v);}
+  }
+
+  // Weight / pallets — labeled "Weight: 7950" / "Pallets: 30"
+  const w=text.match(/Weight:\s*([\d,]+)/i);
+  if(w){const n=parseInt(w[1].replace(/,/g,""),10);if(n>=100&&n<=80000){if(!r.pickup)r.pickup={};r.pickup.weight=String(n);}}
+  const p=text.match(/Pallets:\s*(\d{1,3})\b/i);
+  if(p){const n=parseInt(p[1],10);if(n>=1&&n<=100){if(!r.pickup)r.pickup={};r.pickup.pallets=String(n);}}
+  const cm=text.match(/Item:\s*([A-Za-z][A-Za-z0-9 ,&'\/.\-]{2,60})/);
+  if(cm){if(!r.pickup)r.pickup={};r.pickup.commodity=cm[1].trim();}
+  return r;
+}
+
+// RXO — "Order # 12345678", "PU Arrival ... City, ST", "Total Carrier Pay $X"
+function _parseRXO(text){
+  const r={broker:"RXO"};
+  // Load# is the Order # — it ALSO appears as "Load Confirmation 23091065"
+  const ld=text.match(/Order\s*#?\s*[\r\n]*\s*(\d{6,12})/i)
+        ||text.match(/Load\s+Confirmation\s+(\d{6,12})/i);
+  if(ld)r.loadNum=ld[1];
+
+  // RXO stop table layout:
+  //   "PU  Arrival  N/A     Chicago, IL 60628  Other  31532 ..."
+  //   "       05/27/26   (Street Address will be..."
+  //   "       13:00"
+  // Find each PU/SO line, grab the City,ST on it, then scan next ~6 lines for date and time.
+  const lines=text.split(/\r?\n/);
+  const findStop=(kind)=>{
+    for(let i=0;i<lines.length;i++){
+      // Match a line that STARTS with PU or SO (with optional spaces)
+      if(!new RegExp("^\\s*"+kind+"\\b").test(lines[i]))continue;
+      let location=null,dateStr=null,timeStr=null;
+      // City, ST is on the same row — but RXO's table has wide column gaps, so the city
+      // name must be a CONTIGUOUS word group (no 2+ consecutive spaces inside it).
+      const cm=lines[i].match(/([A-Z][A-Za-z'\-]+(?:[ ][A-Z][A-Za-z'\-]+){0,3}),\s*([A-Z]{2})\s+\d{5}/);
+      if(cm)location=cm[1].trim()+", "+cm[2];
+      // Date and time on the next ~6 lines (date and time are on separate lines in RXO)
+      for(let j=i+1;j<Math.min(i+8,lines.length);j++){
+        if(!dateStr){const dm=lines[j].match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/);if(dm)dateStr=dm[1];}
+        if(!timeStr){const tm=lines[j].match(/\b(\d{1,2}:\d{2})\b/);if(tm)timeStr=tm[1];}
+        if(dateStr&&timeStr)break;
+      }
+      if(location||dateStr||timeStr){
+        const stop={};
+        if(location)stop.location=location;
+        if(dateStr||timeStr)stop.datetime=_rcFmtDT(dateStr,timeStr);
+        return stop;
+      }
+    }
+    return null;
+  };
+  const pu=findStop("PU"),so=findStop("SO");
+  if(pu)r.pickup=pu;
+  if(so)r.delivery=so;
+
+  // Total Carrier Pay — labelled
+  const pay=text.match(/Total\s+Carrier\s+Pay\s*\$?\s*([\d,]+(?:\.\d{2})?)/i)
+         ||text.match(/Line\s*Haul[^$]*\$\s*([\d,]+(?:\.\d{2})?)/i);
+  if(pay){const v=parseFloat(pay[1].replace(/,/g,""));if(v>=100&&v<50000)r.rate=Math.round(v);}
+
+  // Weight — RXO layout puts "Total Weight (lbs.)" header on one row and the value
+  // on the NEXT row in a wide tabular format. Scan within ~5 lines of the header
+  // for the first 4–6 digit number that looks like a freight weight.
+  for(let i=0;i<lines.length;i++){
+    if(/Total\s+Weight/i.test(lines[i])){
+      for(let j=i;j<Math.min(i+5,lines.length);j++){
+        const wm=lines[j].match(/\b([1-9]\d{3,4})(?:\.\d+)?\b/);
+        if(wm){const w=parseInt(wm[1],10);if(w>=500&&w<=80000){if(!r.pickup)r.pickup={};r.pickup.weight=String(w);break;}}
+      }
+      break;
+    }
+  }
+  return r;
+}
+
+// MOLO — "Route # 12345", "Origin <city>", "Destination <city>", "Total Rate: $X"
+function _parseMolo(text){
+  const r={broker:"Molo"};
+  const ld=text.match(/Route\s*#\s*(\d{6,12})/i);
+  if(ld)r.loadNum=ld[1];
+
+  // Origin / Destination labels — they appear with junk after them ("Origin   MC#: 803917"),
+  // so require the label at line start but allow anything after.
+  const lines=text.split(/\r?\n/);
+  const cityRe=/([A-Z][A-Za-z .'\-]+),\s*([A-Z]{2})\s+\d{5}(?:-\d{4})?/;
+  for(let i=0;i<lines.length;i++){
+    if(/^\s*Origin\b/.test(lines[i])){
+      for(let j=i+1;j<Math.min(i+4,lines.length);j++){
+        const cm=lines[j].match(cityRe);
+        if(cm){r.pickup={location:cm[1].trim()+", "+cm[2]};break;}
+      }
+    }
+    if(/^\s*Destination\b/.test(lines[i])){
+      for(let j=i+1;j<Math.min(i+4,lines.length);j++){
+        const cm=lines[j].match(cityRe);
+        if(cm){r.delivery={location:cm[1].trim()+", "+cm[2]};break;}
+      }
+    }
+  }
+
+  // Pickup time = first "Date/Time: MM/DD/YYYY HH:MM"; delivery = second
+  const dts=[...text.matchAll(/Date\/Time:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2})/g)];
+  if(dts[0]){if(!r.pickup)r.pickup={};r.pickup.datetime=_rcFmtDT(dts[0][1],dts[0][2]);}
+  if(dts[1]){if(!r.delivery)r.delivery={};r.delivery.datetime=_rcFmtDT(dts[1][1],dts[1][2]);}
+
+  // Total Rate: $4,350.00 USD
+  const pay=text.match(/Total\s+Rate:?\s*\$\s*([\d,]+(?:\.\d{2})?)/i);
+  if(pay){const v=parseFloat(pay[1].replace(/,/g,""));if(v>=100&&v<50000)r.rate=Math.round(v);}
+
+  // Weight — "Total Wgt: 35000 lb" in commodity table
+  const w=text.match(/Total\s+Wgt:?\s*([\d,]+)\s*lb/i);
+  if(w){const n=parseInt(w[1].replace(/,/g,""),10);if(n>=100&&n<=80000){if(!r.pickup)r.pickup={};r.pickup.weight=String(n);}}
+  return r;
+}
+
+// ARRIVE Logistics — "Arrive Order 12345", "Pickup #1" / "Delivery #1" tables, "LineHaul $X" / "Total $X"
+function _parseArrive(text){
+  const r={broker:"Arrive Logistics"};
+  const ld=text.match(/Arrive\s+(?:Order|order)\s*[#:]?\s*(\d{5,12})/);
+  if(ld)r.loadNum=ld[1];
+
+  // Pickup #N and Delivery #N blocks
+  const lines=text.split(/\r?\n/);
+  // Find a "Month D, YYYY" date with the immediately-following time line.
+  // Returns ["M/D", "HH:MM"] or null.
+  const grabDateTime=(startIdx, endIdx)=>{
+    for(let j=startIdx;j<endIdx;j++){
+      const dm=lines[j].match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(\d{4})/);
+      if(dm){
+        const mo=({Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12})[dm[1]];
+        let time=null;
+        for(let k=j;k<Math.min(j+3,endIdx);k++){
+          const t=lines[k].match(/\b(\d{1,2}:\d{2})\b/);
+          if(t){time=t[1];break;}
+        }
+        return[mo+"/"+parseInt(dm[2],10),time||"",j];
+      }
+    }
+    return null;
+  };
+  const findArriveStop=(headerRe)=>{
+    let startIdx=-1;
+    for(let i=0;i<lines.length;i++){if(headerRe.test(lines[i])){startIdx=i;break;}}
+    if(startIdx<0)return null;
+    const end=Math.min(startIdx+40,lines.length);
+    // Location: first "City, ST 12345" line in the block
+    let location=null;
+    for(let j=startIdx;j<end;j++){
+      const cm=lines[j].match(/^([A-Z][A-Za-z .'\-]+),\s*([A-Z]{2})\s+\d{5}/);
+      if(cm){location=cm[1].trim()+", "+cm[2];break;}
+    }
+    // Times: look for explicit "Earliest Date/Time" and "Latest Date/Time" labels.
+    let datetime="";
+    let earlIdx=-1, lateIdx=-1;
+    for(let j=startIdx;j<end;j++){
+      if(earlIdx<0&&/Earliest\s+Date\/?Time/i.test(lines[j]))earlIdx=j;
+      if(lateIdx<0&&/Latest\s+Date\/?Time/i.test(lines[j]))lateIdx=j;
+    }
+    if(earlIdx>=0){
+      // Earliest block runs to Latest if present, else +6 lines
+      const earlEnd=lateIdx>earlIdx?lateIdx:Math.min(earlIdx+6,end);
+      const startPair=grabDateTime(earlIdx+1, earlEnd);
+      let endPair=null;
+      if(lateIdx>=0){
+        endPair=grabDateTime(lateIdx+1, Math.min(lateIdx+6,end));
+      }
+      if(startPair){
+        const sd=startPair[0],st=startPair[1];
+        if(endPair){
+          datetime=_rcFmtWindow(sd,st,endPair[0],endPair[1]);
+        } else datetime=(sd+(st?" "+st:"")).trim();
+      }
+    } else {
+      // No Earliest/Latest labels — single date/time block (Delivery often does this).
+      const pair=grabDateTime(startIdx, end);
+      if(pair)datetime=(pair[0]+(pair[1]?" "+pair[1]:"")).trim();
+    }
+    return(location||datetime)?{location:location||"",datetime:datetime}:null;
+  };
+  const pu=findArriveStop(/^Pickup\s*#?\s*\d/i);
+  const de=findArriveStop(/^Delivery\s*#?\s*\d/i);
+  if(pu)r.pickup=pu;
+  if(de)r.delivery=de;
+
+  // Rate: "LineHaul $400.00"  or  "Total $400.00"  — EXCLUDE "Cargo Value $100,000"
+  const lh=text.match(/Line\s*Haul[\s\S]{0,40}?\$\s*([\d,]+(?:\.\d{2})?)/i);
+  if(lh){const v=parseFloat(lh[1].replace(/,/g,""));if(v>=100&&v<50000)r.rate=Math.round(v);}
+  if(!r.rate){
+    const ts=text.match(/^\s*Total\s+\$\s*([\d,]+(?:\.\d{2})?)/m);
+    if(ts){const v=parseFloat(ts[1].replace(/,/g,""));if(v>=100&&v<50000)r.rate=Math.round(v);}
+  }
+
+  // Weight — "Total Weight  42000 lbs"
+  const w=text.match(/Total\s+Weight\s+([\d,]+)\s*lbs?/i);
+  if(w){const n=parseInt(w[1].replace(/,/g,""),10);if(n>=100&&n<=80000){if(!r.pickup)r.pickup={};r.pickup.weight=String(n);}}
+  // Pallets — "Total Pallets 25 Pallets"
+  const p=text.match(/Total\s+Pallets\s+(\d{1,3})/i);
+  if(p){const n=parseInt(p[1],10);if(n>=1&&n<=100){if(!r.pickup)r.pickup={};r.pickup.pallets=String(n);}}
+  return r;
+}
+
+function parseRateCon(rawText){
+  if(!rawText)return {};
+  const flat=rawText.replace(/\s+/g," ");
+  // Pick a broker-specific parser when we can identify the broker.
+  if(/Echo\s*Global|EchoDrive|\@echo\.com/i.test(flat)) return _parseEcho(rawText);
+  if(/\bRXO\b|\@rxo\.com|RXO\s*Capacity/i.test(flat))  return _parseRXO(rawText);
+  if(/Molo\s*Solutions|@shipmolo\.com|MoLo\b/i.test(flat)) return _parseMolo(rawText);
+  if(/Arrive\s*Logistics|@arrivelogistics\.com|ARRIVEnow/i.test(flat)) return _parseArrive(rawText);
+  // ---- Generic fallback for unknown brokers ----
+  return _parseGeneric(rawText);
+}
+
+// Generic fallback — original heuristic, kept for unknown brokers.
+function _parseGeneric(rawText){
+  const result={};
+  if(!rawText)return result;
+  const lines=rawText.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  const flat=rawText.replace(/\s+/g," ");
+  if(/RJW\s*Logistics/i.test(flat)) result.broker="RJW Logistics";
+  else if(/\bCoyote\b/i.test(flat)) result.broker="Coyote";
+  else if(/Total\s*Quality\s*Logistics|\bTQL\b/i.test(flat)) result.broker="TQL";
+  const loadPats=[
+    /\b(?:Load|Order|Shipment|Confirmation)\s*(?:Number|#|No\.?|ID)\s*:?\s*([A-Z0-9][A-Z0-9_\-]{2,15})/i,
+    /\b(?:Reference|Ref)\s*(?:Number|#|No\.?)?\s*:?\s*([A-Z0-9][A-Z0-9_\-]{2,15})/i
+  ];
+  for(const pat of loadPats){const m=flat.match(pat);if(m&&m[1]&&!/^\d{10}$/.test(m[1])&&m[1].length>=4){result.loadNum=m[1];break;}}
+  let pickupIdx=-1,deliveryIdx=-1;
+  for(let i=0;i<lines.length;i++){
+    if(pickupIdx<0&&RC_PICKUP_HDR.test(lines[i])&&!RC_DELIVERY_HDR.test(lines[i]))pickupIdx=i;
+    if(deliveryIdx<0&&RC_DELIVERY_HDR.test(lines[i]))deliveryIdx=i;
+    if(pickupIdx>=0&&deliveryIdx>=0)break;
+  }
+  if(pickupIdx>=0){const end=deliveryIdx>pickupIdx?deliveryIdx:lines.length;const stop=extractStopFromSection(lines.slice(pickupIdx,end).join("\n"));if(stop)result.pickup=stop;}
+  if(deliveryIdx>=0){const stop=extractStopFromSection(lines.slice(deliveryIdx).join("\n"));if(stop)result.delivery=stop;}
+  const moneyMatches=[...flat.matchAll(/\$\s*([\d,]+(?:\.\d{2})?)/g)];
+  if(moneyMatches.length){const amounts=moneyMatches.map(m=>parseFloat(m[1].replace(/,/g,""))).filter(n=>n>=100&&n<50000);if(amounts.length)result.rate=Math.max(...amounts);}
+  if(!result.pickup)result.pickup={};
+  const wLabeled=flat.match(/\b(?:weight|wgt|gross\s*wt|total\s*weight)\s*:?\s*([\d,]+)\s*(?:lbs?|pounds|lb)?\b/i);
+  if(wLabeled){const w=parseInt(wLabeled[1].replace(/,/g,""),10);if(w>=100&&w<=80000)result.pickup.weight=String(w);}
+  const pLabeled=flat.match(/\b(?:pallets?|pallet\s*count)\s*:?\s*(\d{1,3})\b/i);
+  if(pLabeled){const n=parseInt(pLabeled[1],10);if(n>=1&&n<=100)result.pickup.pallets=String(n);}
+  if(result.pickup&&Object.keys(result.pickup).length===0)delete result.pickup;
+  return result;
+}
+
+// Map a parseRateCon result into the freight board's load shape.
+// Returns the fields object you'd merge into a load. Non-destructive — only
+// fills fields when we have data for them.
+function rateConToLoadFields(parsed){
+  const out={};
+  // sr = "Shipper city, ST - Receiver city, ST"
+  const ship=parsed.pickup&&parsed.pickup.location||"";
+  const recv=parsed.delivery&&parsed.delivery.location||"";
+  if(ship||recv)out.sr=(ship+" - "+recv).replace(/^\s*-\s*|\s*-\s*$/g,"").trim();
+  // broker = "Broker Name & LoadNum"  (matches your board's combined field)
+  if(parsed.broker&&parsed.loadNum)      out.broker=parsed.broker+" & "+parsed.loadNum;
+  else if(parsed.broker)                  out.broker=parsed.broker;
+  else if(parsed.loadNum)                 out.broker="& "+parsed.loadNum;
+  if(parsed.pickup&&parsed.pickup.datetime)   out.pickup=parsed.pickup.datetime;
+  if(parsed.delivery&&parsed.delivery.datetime) out.delivery=parsed.delivery.datetime;
+  if(parsed.rate)                         out.rate=String(parsed.rate);
+  if(parsed.pickup&&parsed.pickup.weight) out.weight=parsed.pickup.weight;
+  if(parsed.pickup&&parsed.pickup.pallets)out.pallets=parsed.pickup.pallets;
+  if(parsed.pickup&&parsed.pickup.commodity)out.product=parsed.pickup.commodity;
+  return out;
 }
 
 // SHA-256 PIN hashing — uses Web Crypto when available (HTTPS), falls back to djb2 on file://
@@ -1117,40 +1548,125 @@ function App(){
     check();const interval=setInterval(check,60000);return()=>clearInterval(interval);
   },[weeks,appMode,isViewer]);
 
-  const handleRateCon=async(file,groupId)=>{
-    const key=apiKeyRef.current;
-    const proxyUrl=localStorage.getItem("fcbv2_proxyUrl")||"";
-    // Need EITHER a proxy URL or an API key. If neither, say so clearly.
-    if(!proxyUrl&&!key){
-      alert("Rate-con reading needs setup first.\n\nOpen Menu → Connection Setup and either:\n• paste your proxy URL (recommended), or\n• paste an Anthropic API key.\n\nWithout one of these, the PDF can't be read.");
-      return;
-    }
-    setRcLoading(p=>({...p,[groupId]:true}));
+  // Background Drive upload — does NOT block the UI. Adds rateConUrl/Name to
+  // the load when the upload finishes. On failure, marks rateConUploadFailed.
+  const uploadRateConToDrive=async(file,groupId,loadId)=>{
     try{
-      const base64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=()=>rej(new Error("Could not read the file"));r.readAsDataURL(file);});
-      const mediaType=file.type||"application/pdf";
-      let response;
-      if(proxyUrl){
-        response=await fetch(proxyUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mediaType,base64,prompt:`Extract from this rate confirmation: shipper city+state, receiver city+state, pickup date/time, delivery date/time, product/commodity, pallets, weight, rate amount, broker name, load number. Return JSON only: {"shipper":"","receiver":"","pickup":"","delivery":"","product":"","pallets":"","weight":"","rate":"","broker":"","loadNum":""}`})});
-      } else {
-        response=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:[{type:mediaType==="application/pdf"?"document":"image",source:{type:"base64",media_type:mediaType,data:base64}},{type:"text",text:`Extract from this rate confirmation: shipper city+state, receiver city+state, pickup date/time, delivery date/time, product/commodity, pallets, weight, rate amount, broker name, load number. Return JSON only: {"shipper":"","receiver":"","pickup":"","delivery":"","product":"","pallets":"","weight":"","rate":"","broker":"","loadNum":""}`}]}]})});
-      }
-      if(!response.ok){
-        const errTxt=await response.text().catch(()=>"");
-        throw new Error("Server returned "+response.status+(errTxt?" — "+errTxt.slice(0,200):""));
-      }
-      const data=await response.json();
-      const text=data.content?.[0]?.text||data.text||"";
-      const match=text.match(/\{[\s\S]*\}/);
-      if(!match)throw new Error("The AI reply had no readable data. Raw reply: "+(text||"(empty)").slice(0,200));
-      const parsed=JSON.parse(match[0]);
-      const sr=`${parsed.shipper||""} - ${parsed.receiver||""}`.trim().replace(/^-\s*|-\s*$/g,"");
-      const brokerStr=parsed.broker&&parsed.loadNum?`${parsed.broker} & ${parsed.loadNum}`:parsed.broker||parsed.loadNum||"";
-      setWeeksAndSave(p=>p.map((w,i)=>i!==activeWeek?w:{...w,groups:w.groups.map(g=>{if(g.id!==groupId)return g;const newLoad=mkLoad({sr,broker:brokerStr,pickup:parsed.pickup||"",delivery:parsed.delivery||"",product:parsed.product||"",pallets:parsed.pallets||"",weight:parsed.weight||"",rate:parsed.rate||""});return{...g,loads:[...g.loads,newLoad]};})}));
+      const base64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=()=>rej(new Error("read failed"));r.readAsDataURL(file);});
+      const url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
+      const resp=await fetch(url,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({data:{action:"uploadRateCon",mimeType:file.type||"application/pdf",filename:file.name||"ratecon.pdf",base64:base64}})});
+      const j=await resp.json();
+      if(!j||!j.ok||!j.file)throw new Error(j&&j.error||"upload rejected");
+      // Attach the result to the load — quietly. No alerts on success.
+      setWeeksAndSave(p=>p.map(w=>({...w,groups:(w.groups||[]).map(g=>g.id!==groupId?g:{...g,loads:(g.loads||[]).map(l=>l.id!==loadId?l:{...l,rateConUrl:j.file.url,rateConName:j.file.name,rateConUploadFailed:false,rateConUploading:false})})})));
     }catch(e){
-      alert("Could not read the rate confirmation.\n\n"+(e.message||e)+"\n\nIf this keeps happening, check Menu → Connection Setup.");
+      // Mark failed so the UI can offer "retry"; data is still safe locally.
+      setWeeksAndSave(p=>p.map(w=>({...w,groups:(w.groups||[]).map(g=>g.id!==groupId?g:{...g,loads:(g.loads||[]).map(l=>l.id!==loadId?l:{...l,rateConUploadFailed:true,rateConUploading:false,rateConUploadError:String(e.message||e).slice(0,200)})})})));
     }
+  };
+
+  const handleRateCon=async(file,groupId)=>{
+    setRcLoading(p=>({...p,[groupId]:true}));
+    let fields=null;
+    let usedSource="";
+
+    // ---- 1. Try LOCAL PDF.js + regex parser first (free, no API) ----
+    if(/pdf$/i.test(file.type)||/\.pdf$/i.test(file.name||"")){
+      try{
+        const text=await extractPdfText(file);
+        const parsed=parseRateCon(text);
+        const candidate=rateConToLoadFields(parsed);
+        // Use the local result only if we got SOMETHING meaningful out of it.
+        const meaningful=(candidate.sr&&candidate.sr.length>3)||candidate.broker||candidate.rate||candidate.pickup;
+        if(meaningful){fields=candidate;usedSource="local";}
+      }catch(e){/* local parse failed — fall through to AI / no-op */}
+    }
+
+    // ---- 2. Fall back to AI API only if local got nothing AND a key is set ----
+    if(!fields){
+      const key=apiKeyRef.current;
+      const proxyUrl=localStorage.getItem("fcbv2_proxyUrl")||"";
+      if(!key&&!proxyUrl){
+        // Local parse couldn't read this PDF (probably scanned/image-only) and no AI configured.
+        // Don't block — still upload the PDF to Drive so it's saved, just no fields filled.
+        const placeholder=mkLoad({});
+        setWeeksAndSave(p=>p.map((w,i)=>i!==activeWeek?w:{...w,groups:w.groups.map(g=>g.id!==groupId?g:{...g,loads:[...g.loads,{...placeholder,rateConUploading:true}]})}));
+        uploadRateConToDrive(file,groupId,placeholder.id);
+        setRcLoading(p=>({...p,[groupId]:false}));
+        alert("Couldn't read fields from this PDF (it may be a scanned image).\n\nThe PDF is being uploaded to Drive so the link is saved on the load — you can fill the fields manually.");
+        return;
+      }
+      try{
+        const base64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=()=>rej(new Error("Could not read the file"));r.readAsDataURL(file);});
+        const mediaType=file.type||"application/pdf";
+        let response;
+        if(proxyUrl){
+          response=await fetch(proxyUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mediaType,base64,prompt:`Extract from this rate confirmation: shipper city+state, receiver city+state, pickup date/time, delivery date/time, product/commodity, pallets, weight, rate amount, broker name, load number. Return JSON only: {"shipper":"","receiver":"","pickup":"","delivery":"","product":"","pallets":"","weight":"","rate":"","broker":"","loadNum":""}`})});
+        } else {
+          response=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:[{type:mediaType==="application/pdf"?"document":"image",source:{type:"base64",media_type:mediaType,data:base64}},{type:"text",text:`Extract from this rate confirmation: shipper city+state, receiver city+state, pickup date/time, delivery date/time, product/commodity, pallets, weight, rate amount, broker name, load number. Return JSON only: {"shipper":"","receiver":"","pickup":"","delivery":"","product":"","pallets":"","weight":"","rate":"","broker":"","loadNum":""}`}]}]})});
+        }
+        if(!response.ok){const errTxt=await response.text().catch(()=>"");throw new Error("Server returned "+response.status+(errTxt?" — "+errTxt.slice(0,200):""));}
+        const data=await response.json();
+        const text=data.content?.[0]?.text||data.text||"";
+        const match=text.match(/\{[\s\S]*\}/);
+        if(!match)throw new Error("The AI reply had no readable data. Raw reply: "+(text||"(empty)").slice(0,200));
+        const parsed=JSON.parse(match[0]);
+        fields={
+          sr:`${parsed.shipper||""} - ${parsed.receiver||""}`.trim().replace(/^-\s*|-\s*$/g,""),
+          broker:parsed.broker&&parsed.loadNum?`${parsed.broker} & ${parsed.loadNum}`:parsed.broker||parsed.loadNum||"",
+          pickup:parsed.pickup||"",delivery:parsed.delivery||"",product:parsed.product||"",
+          pallets:parsed.pallets||"",weight:parsed.weight||"",rate:parsed.rate||""
+        };
+        usedSource="ai";
+      } catch(e){
+        alert("Couldn't read the rate confirmation.\n\n"+(e.message||e));
+        setRcLoading(p=>({...p,[groupId]:false}));
+        return;
+      }
+    }
+
+    // ---- 3. Check for an existing load with the same broker + load number ----
+    // Match across ALL weeks and archived weeks so duplicates from previous
+    // weeks are caught too — not just same-week (which is the render-time check).
+    if(fields&&fields.broker&&fields.broker.indexOf("&")>=0){
+      const key=fields.broker.toLowerCase().trim();
+      let foundIn=null;
+      const scan=(list,kind)=>{
+        for(const w of(list||[])){
+          for(const g of(w.groups||[])){
+            for(const l of(g.loads||[])){
+              if(((l.broker||"")+"").toLowerCase().trim()===key){
+                foundIn={weekLabel:w.label||"(no label)",kind:kind,loadSr:l.sr||"(no route)"};
+                return true;
+              }
+            }
+          }
+        }
+        return false;
+      };
+      scan(weeks,"week")||scan(archivedWeeks,"archived week");
+      if(foundIn){
+        const ok=confirm(
+          "This load already exists.\n\n"+
+          "Broker + load #: "+fields.broker+"\n"+
+          "Route on existing load: "+foundIn.loadSr+"\n"+
+          "Found in "+foundIn.kind+": "+foundIn.weekLabel+"\n\n"+
+          "Add this rate-con as a NEW load anyway?"
+        );
+        if(!ok){
+          setRcLoading(p=>({...p,[groupId]:false}));
+          return; // cancelled — nothing added, no PDF uploaded
+        }
+      }
+    }
+
+    // ---- 4. Create the load with the extracted fields + upload mark ----
+    const newLoad=mkLoad({...fields,rateConUploading:true});
+    setWeeksAndSave(p=>p.map((w,i)=>i!==activeWeek?w:{...w,groups:w.groups.map(g=>g.id!==groupId?g:{...g,loads:[...g.loads,newLoad]})}));
     setRcLoading(p=>({...p,[groupId]:false}));
+
+    // ---- 5. Kick off Drive upload in the background (non-blocking) ----
+    uploadRateConToDrive(file,groupId,newLoad.id);
   };
 
   const archiveWeek=(weekIdx)=>{
@@ -3355,6 +3871,15 @@ ${accRows.length>0?`
                             <span style={{fontSize:"13px"}}>⚠️</span>
                             <span style={{fontSize:"11px",fontWeight:"700",color:"#be185d"}}>Possible duplicate — another load this week has the same broker and load #.</span>
                           </div>}
+                          {/* Rate-con link / upload status pill */}
+                          {(load.rateConUrl||load.rateConUploading||load.rateConUploadFailed)&&(
+                            <div style={{display:"flex",alignItems:"center",gap:"7px",marginBottom:"10px",fontSize:"11px"}}>
+                              {load.rateConUploading&&<span style={{color:"#92400e",background:"#fef3c7",border:"1px solid #fde68a",padding:"4px 9px",borderRadius:"6px",fontWeight:"600"}}>↻ Uploading rate-con to Drive...</span>}
+                              {load.rateConUrl&&!load.rateConUploading&&<a href={load.rateConUrl} target="_blank" rel="noopener noreferrer" style={{color:"#1e40af",background:"#dbeafe",border:"1px solid #bfdbfe",padding:"4px 9px",borderRadius:"6px",fontWeight:"600",textDecoration:"none"}}>📄 {load.rateConName||"Rate confirmation"}</a>}
+                              {load.rateConUrl&&isAdmin&&<button onClick={()=>{if(confirm("Remove the rate-con link from this load? (The file in Drive is NOT deleted.)"))setLoad(group.id,load.id,"rateConUrl","");}} title="Remove the link from this load" style={{background:"transparent",border:"1px solid #e2e8f0",color:"#64748b",fontSize:"11px",padding:"3px 8px",borderRadius:"5px",cursor:"pointer"}}>×</button>}
+                              {load.rateConUploadFailed&&<span title={load.rateConUploadError||""} style={{color:"#991b1b",background:"#fee2e2",border:"1px solid #fecaca",padding:"4px 9px",borderRadius:"6px",fontWeight:"600"}}>⚠ Drive upload failed{load.rateConUploadError?" — "+load.rateConUploadError.slice(0,60):""}</span>}
+                            </div>
+                          )}
                           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:"8px 16px",marginBottom:"10px"}}>
                             {showBroker&&(<><div>
                               <div style={{fontSize:"9px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"2px"}}>Broker</div>
