@@ -854,7 +854,11 @@ function mergeClientData(serverRaw, localRaw) {
   const server = normalizeData(serverRaw);
   const local  = normalizeData(localRaw);
 
-  // Tombstones — union by id, keep the latest 'at'
+  // Tombstones — union by id, keep the latest 'at'. Load tombstones expire
+  // after 30 min (so the list doesn't grow forever); WEEK tombstones live
+  // forever so an idle tab can't resurrect a deleted week on its next save.
+  const TOMB_TTL = 30 * 60 * 1000;
+  const now = Date.now();
   const tombAt = {};
   [].concat(server.tombstones, local.tombstones).forEach(t => {
     if (t && t.id) {
@@ -862,9 +866,15 @@ function mergeClientData(serverRaw, localRaw) {
       if (!tombAt[t.id] || at > tombAt[t.id]) tombAt[t.id] = at;
     }
   });
-  const tombstones = Object.keys(tombAt).map(id => ({ id, at: tombAt[id] }));
+  const tombstones = [];
   const tombSet = {};
-  tombstones.forEach(t => { tombSet[t.id] = true; });
+  Object.keys(tombAt).forEach(id => {
+    const isWeekTomb = id.indexOf("wk_") === 0;
+    if (isWeekTomb || (now - tombAt[id] < TOMB_TTL)) {
+      tombstones.push({ id, at: tombAt[id] });
+      tombSet[id] = true;
+    }
+  });
 
   // Config — take whichever side was updated more recently
   const serverNewer = (server.updatedAt || 0) >= (local.updatedAt || 0);
@@ -2051,7 +2061,7 @@ function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, al
 // COMPONENTS — HEADER
 // ============================================================
 
-function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onImportFromFreight, onSwitchWeek, onNewWeek, onArchiveWeek, onDeleteWeek, storageSize, online }) {
+function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onImportFromFreight, onSwitchWeek, onNewWeek, onEditWeek, onArchiveWeek, onDeleteWeek, storageSize, online }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const saveLbl =
     saveStatus === "saving" ? "Saving…" :
@@ -2141,6 +2151,10 @@ function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddL
             <button onClick={() => { setMenuOpen(false); onNewWeek(); }}
                     style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13, fontWeight:600 }}>
               + Start new week
+            </button>
+            <button onClick={() => { setMenuOpen(false); onEditWeek(); }}
+                    style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13 }}>
+              ✏️ Edit current week…
             </button>
             <button onClick={() => { setMenuOpen(false); onArchiveWeek(); }}
                     style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13 }}>
@@ -2425,6 +2439,27 @@ function App() {
     setExpandedIds(new Set());
   }, [mutate]);
 
+  const editCurrentWeek = useCallback(() => {
+    const cur = dataRef.current;
+    const curWeek = getCurrentWeek(cur);
+    if (!curWeek) return;
+    const next = window.prompt(
+      "Rename / re-date this week.\n\nThis is what appears in the week dropdown — change the date or anything else you like.",
+      curWeek.label || ""
+    );
+    if (next === null) return;                   // cancelled
+    const trimmed = String(next).trim();
+    if (!trimmed) {
+      window.alert("The week needs a label. Nothing changed.");
+      return;
+    }
+    if (trimmed === curWeek.label) return;       // no-op
+    const updatedWeeks = cur.weeks.map(w =>
+      w.id !== curWeek.id ? w : { ...w, label: trimmed }
+    );
+    mutate({ ...cur, weeks: updatedWeeks });
+  }, [mutate]);
+
   const archiveCurrentWeek = useCallback(() => {
     const cur = dataRef.current;
     const curWeek = getCurrentWeek(cur);
@@ -2618,6 +2653,7 @@ function App() {
         onImportFromFreight={importFromFreight}
         onSwitchWeek={switchWeek}
         onNewWeek={createNewWeek}
+        onEditWeek={editCurrentWeek}
         onArchiveWeek={archiveCurrentWeek}
         onDeleteWeek={deleteCurrentWeek}
         storageSize={storageSize}
