@@ -1226,6 +1226,16 @@ function App(){
   const[customTrucks,setCustomTrucks]=useState([]);
   const[customTrailers,setCustomTrailers]=useState([]);
   const[truckAssignments,setTruckAssignments]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_truckassign")||"{}");}catch{return{};}});
+
+  // ── SAMSARA LIVE TRACKING ──────────────────────────────────────────────
+  // Pulled from Apps Script every 60s. Keyed by bare number (e.g. "455", "5362")
+  // because Samsara names like "020 - FOR SALE" get split — we use the leading
+  // number to match the board's truck/trailer numbers.
+  const[liveTrucks,setLiveTrucks]=useState({});      // { "455": {address, asOf, lat, lng} }
+  const[liveTrailers,setLiveTrailers]=useState({});  // { "5362": {address, asOf, lat, lng} }
+  const[liveStatus,setLiveStatus]=useState("idle");  // "idle" | "loading" | "ok" | "err"
+  const[liveError,setLiveError]=useState("");
+  const[liveFetchedAt,setLiveFetchedAt]=useState(null);
   const allDrivers=useMemo(()=>[...DRIVERS,...customDrivers].sort(),[customDrivers]);
   const allTrucks=useMemo(()=>[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[customTrucks]);
   const allTrailers=useMemo(()=>[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[customTrailers]);
@@ -1717,6 +1727,58 @@ function App(){
   const latestState=useRef({});
   const weeksSnapshot=useRef([]); // tracks weeks for undo capture
   useEffect(()=>{latestState.current={weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks};weeksSnapshot.current=weeks;},[weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks]);
+
+  // ── Live tracking — fetch from Apps Script every 60 seconds ──────────────
+  useEffect(()=>{
+    let cancelled=false;
+    const fetchLive=async()=>{
+      const url=(localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL)+"?action=samsaraLocations";
+      setLiveStatus("loading");
+      try{
+        const r=await fetch(url,{redirect:"follow"});
+        if(!r.ok)throw new Error("HTTP "+r.status);
+        const data=await r.json();
+        if(cancelled)return;
+        if(!data.ok){
+          setLiveStatus("err");
+          setLiveError(data.message||data.error||"Unknown error");
+          return;
+        }
+        // Index by bare number — that's how the board references trucks/trailers.
+        const tMap={},trMap={};
+        (data.trucks||[]).forEach(t=>{if(t.number)tMap[t.number]={address:t.address,asOf:t.asOf,lat:t.lat,lng:t.lng,name:t.name};});
+        (data.trailers||[]).forEach(t=>{if(t.number)trMap[t.number]={address:t.address,asOf:t.asOf,lat:t.lat,lng:t.lng,name:t.name};});
+        setLiveTrucks(tMap);
+        setLiveTrailers(trMap);
+        setLiveStatus("ok");
+        setLiveError("");
+        setLiveFetchedAt(data.fetchedAt||new Date().toISOString());
+      }catch(e){
+        if(cancelled)return;
+        setLiveStatus("err");
+        setLiveError(e.message||String(e));
+      }
+    };
+    fetchLive();
+    const id=setInterval(fetchLive,60000);
+    return()=>{cancelled=true;clearInterval(id);};
+  },[]);
+
+  // Helper: format "as of" → "2m ago" / "1h ago" / "5/22 10:06"
+  const liveAgo=(iso)=>{
+    if(!iso)return"";
+    const t=new Date(iso).getTime();
+    if(isNaN(t))return"";
+    const diff=Date.now()-t;
+    if(diff<0)return"just now";
+    const m=Math.floor(diff/60000);
+    if(m<1)return"just now";
+    if(m<60)return m+"m ago";
+    const h=Math.floor(m/60);
+    if(h<24)return h+"h ago";
+    const d=new Date(iso);
+    return(d.getMonth()+1)+"/"+d.getDate();
+  };
 
   const saveToSheets=useCallback((data)=>{
     const isArr=Array.isArray(data);
@@ -3278,7 +3340,30 @@ ${accRows.length>0?`
                         <div style={{display:"flex",alignItems:"center",gap:"7px",flexWrap:"nowrap"}}>
                           <span style={{fontSize:"9px",color:"rgba(255,255,255,.3)",flexShrink:0}}>{collapsedOtrIds[group.id]?"▶":"▼"}</span>
                           {group.groupTruck&&<span style={{fontSize:"12px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>#{group.groupTruck}</span>}
-                          {group.groupTrailer&&<span style={{fontSize:"12px",fontWeight:"800",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>T{group.groupTrailer}</span>}
+                          {group.groupTrailer&&<span style={{fontSize:"12px",fontWeight:"800",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>{group.groupTrailer}</span>}
+                          {/* Live location pill — pulled from Samsara, refreshes every 60s. */}
+                          {(()=>{
+                            const tr=group.groupTrailer&&liveTrailers[group.groupTrailer];
+                            const tk=group.groupTruck&&liveTrucks[group.groupTruck];
+                            const loc=tr&&tr.address?tr:(tk&&tk.address?tk:null);
+                            const src=tr&&tr.address?"trailer":(tk&&tk.address?"truck":"");
+                            if(!loc)return null;
+                            let short=loc.address;
+                            const parts=loc.address.split(",").map(s=>s.trim()).filter(Boolean);
+                            if(parts.length>=2){
+                              const state=parts[parts.length-1].length<=2?parts[parts.length-1]:(parts[parts.length-2]||"");
+                              const city=parts[parts.length-1].length<=2?parts[parts.length-2]:parts[parts.length-3];
+                              if(city&&state)short=city+", "+state;
+                              else short=parts.slice(-2).join(", ");
+                            }
+                            if(short.length>32)short=short.slice(0,30)+"…";
+                            const tip=loc.address+" — "+liveAgo(loc.asOf)+" (via "+src+")";
+                            return(
+                              <span title={tip} style={{fontSize:"10px",fontWeight:"700",color:"#fde047",background:"rgba(234,179,8,.12)",border:"1px solid rgba(234,179,8,.3)",padding:"2px 7px",borderRadius:"4px",flexShrink:0,whiteSpace:"nowrap",cursor:"help",maxWidth:"220px",overflow:"hidden",textOverflow:"ellipsis"}}>
+                                📍 {short}
+                              </span>
+                            );
+                          })()}
                           <span style={{fontSize:"13px",fontWeight:"700",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{group.groupDriver||<span style={{color:"rgba(255,255,255,.35)",fontStyle:"italic",fontWeight:"400"}}>No driver</span>}</span>
                           <span style={{fontSize:"14px",fontWeight:"900",color:"#86efac",whiteSpace:"nowrap",flexShrink:0}}>${otrNet.toLocaleString()}</span>
                         </div>
@@ -3327,7 +3412,7 @@ ${accRows.length>0?`
                                   <span style={{fontSize:"10px",color:"rgba(255,255,255,.5)"}}>Driver</span>
                                   <span style={{fontSize:"12px",fontWeight:"700",color:"#86efac",flex:1}}>{group.groupDriver||"—"}</span>
                                   {group.groupTruck&&<span style={{fontSize:"10px",color:"#fff",background:"rgba(255,255,255,.12)",padding:"1px 7px",borderRadius:"4px"}}>#{group.groupTruck}</span>}
-                                  {group.groupTrailer&&<span style={{fontSize:"10px",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"1px 7px",borderRadius:"4px"}}>T{group.groupTrailer}</span>}
+                                  {group.groupTrailer&&<span style={{fontSize:"10px",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"1px 7px",borderRadius:"4px"}}>{group.groupTrailer}</span>}
                                 </div>
                                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 12px",fontSize:"11px"}}>
                                   {load.loadNum&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div><div style={{fontWeight:"600",color:"#7c3aed"}}>#{load.loadNum}</div></div>}
@@ -3375,7 +3460,7 @@ ${accRows.length>0?`
           return(
             <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${sp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDone?.65:1}}>
               <div style={{background:"#065f46",padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
-                {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>T{row.trailer}</span>}
+                {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>{row.trailer}</span>}
                 {row.truck&&<span style={{fontSize:"10px",fontWeight:"700",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"2px 7px",borderRadius:"4px"}}>#{row.truck}{row.driver?` · ${row.driver.split(" ")[0]}`:""}</span>}
                 <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
                 {row.carriedFrom&&<span style={{fontSize:"8px",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>&#8617; carried</span>}
@@ -3644,7 +3729,7 @@ ${accRows.length>0?`
                       {hasDriver?(
                         <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
                           <span style={{fontSize:"9px",color:"#86efac",fontWeight:"700",background:"rgba(134,239,172,.1)",border:"1px solid #86efac",padding:"1px 6px",borderRadius:"4px",whiteSpace:"nowrap"}}>
-                            🚛 {group.groupDriver}{group.groupTruck&&<span style={{marginLeft:"3px",opacity:.7}}>·#{group.groupTruck}</span>}{group.groupTrailer&&<span style={{marginLeft:"3px",opacity:.6}}>/ T{group.groupTrailer}</span>}
+                            🚛 {group.groupDriver}{group.groupTruck&&<span style={{marginLeft:"3px",opacity:.7}}>·#{group.groupTruck}</span>}{group.groupTrailer&&<span style={{marginLeft:"3px",opacity:.6}}>/ {group.groupTrailer}</span>}
                           </span>
                           <button
                             title="Change or remove OTR driver"
@@ -3822,7 +3907,7 @@ ${accRows.length>0?`
                                 {[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}/>))}
                               </datalist>
                             </>
-                          ):<span style={{fontSize:"11px",color:load.localTrailer?"#7c3aed":"#94a3b8"}}>{load.localTrailer?"T"+load.localTrailer:"—"}</span>}
+                          ):<span style={{fontSize:"11px",color:load.localTrailer?"#7c3aed":"#94a3b8"}}>{load.localTrailer?load.localTrailer:"—"}</span>}
                         </div>
 
                         
@@ -4043,7 +4128,7 @@ ${accRows.length>0?`
                         <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"5px",flexWrap:"wrap"}}>
                           <span style={{fontSize:"10px",fontWeight:"600",color:group.groupDriver?"#0369a1":"#ef4444",fontStyle:"italic"}}>{group.groupDriver||"No OTR driver"}</span>
                           {group.groupTruck&&<span style={{fontSize:"10px",color:"#475569",background:"#f1f5f9",padding:"1px 5px",borderRadius:"4px",fontWeight:"600"}}>🚚#{group.groupTruck}</span>}
-                          {group.groupTrailer&&<span style={{fontSize:"10px",color:"#7c3aed",background:"#faf5ff",padding:"1px 5px",borderRadius:"4px",fontWeight:"600"}}>T{group.groupTrailer}</span>}
+                          {group.groupTrailer&&<span style={{fontSize:"10px",color:"#7c3aed",background:"#faf5ff",padding:"1px 5px",borderRadius:"4px",fontWeight:"600"}}>{group.groupTrailer}</span>}
                         </div>
                       )}
                       {/* Status selector: Preplanned / Dispatched / Loaded */}
@@ -4364,13 +4449,37 @@ ${accRows.length>0?`
                         {/* Row 1: Truck, Trailer, Driver, Net */}
                         <div style={{display:"flex",alignItems:"center",gap:"7px",flexWrap:"nowrap"}}>
                           {group.groupTruck&&<span style={{fontSize:"12px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>#{group.groupTruck}</span>}
-                          {group.groupTrailer&&<span style={{fontSize:"12px",fontWeight:"800",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>T{group.groupTrailer}</span>}
+                          {group.groupTrailer&&<span style={{fontSize:"12px",fontWeight:"800",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>{group.groupTrailer}</span>}
                           <span style={{fontSize:"13px",fontWeight:"700",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{group.groupDriver||<span style={{color:"rgba(255,255,255,.35)",fontStyle:"italic",fontWeight:"400"}}>No driver assigned</span>}</span>
                           <span style={{fontSize:"14px",fontWeight:"900",color:"#86efac",whiteSpace:"nowrap",flexShrink:0}}>${otrNet.toLocaleString()}</span>
                         </div>
                         {/* Row 2: Miles + Status dropdown */}
                         <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
                           {mi&&<span style={{fontSize:"10px",color:"rgba(255,255,255,.5)",background:"rgba(255,255,255,.07)",padding:"2px 8px",borderRadius:"4px",whiteSpace:"nowrap"}}>{Math.round(mi).toLocaleString()} mi</span>}
+                          {/* Samsara live location pill — refreshes every 60s */}
+                          {(()=>{
+                            const tr=group.groupTrailer&&liveTrailers[group.groupTrailer];
+                            const tk=group.groupTruck&&liveTrucks[group.groupTruck];
+                            const loc=tr&&tr.address?tr:(tk&&tk.address?tk:null);
+                            const src=tr&&tr.address?"trailer "+group.groupTrailer:(tk&&tk.address?"truck #"+group.groupTruck:"");
+                            if(!loc)return null;
+                            let short=loc.address;
+                            const parts=loc.address.split(",").map(s=>s.trim()).filter(Boolean);
+                            if(parts.length>=2){
+                              const lastPart=parts[parts.length-1];
+                              const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                              const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                              if(city&&state)short=city+", "+state;
+                              else short=parts.slice(-2).join(", ");
+                            }
+                            if(short.length>32)short=short.slice(0,30)+"…";
+                            const tip=loc.address+" — "+liveAgo(loc.asOf)+" (via "+src+")";
+                            return(
+                              <span title={tip} style={{fontSize:"10px",fontWeight:"700",color:"#fde047",background:"rgba(234,179,8,.12)",border:"1px solid rgba(234,179,8,.35)",padding:"2px 8px",borderRadius:"4px",whiteSpace:"nowrap",cursor:"help",maxWidth:"240px",overflow:"hidden",textOverflow:"ellipsis"}}>
+                                📍 {short}
+                              </span>
+                            );
+                          })()}
                           <span style={{flex:1}}/>
                           {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
                             <select value={group.groupStatus||"Pending"} onChange={e=>setGroup(group.id,"groupStatus",e.target.value)} style={{fontSize:"10px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",border:`1px solid ${ss.bd}`,background:ss.bg,color:ss.c,cursor:"pointer",outline:"none",minWidth:"100px"}} disabled={!isAdmin}>
@@ -4430,7 +4539,7 @@ ${accRows.length>0?`
           return(
             <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${sp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDone?.65:1}}>
               <div style={{background:"#065f46",padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
-                {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>T{row.trailer}</span>}
+                {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>{row.trailer}</span>}
                 {row.truck&&<span style={{fontSize:"11px",fontWeight:"700",color:"#6ee7b7",background:"rgba(110,231,183,.1)",padding:"2px 7px",borderRadius:"4px"}}>#{row.truck}</span>}
                 <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
                 {row.carriedFrom&&<span style={{fontSize:"8px",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>&#8617; carried</span>}
@@ -5342,7 +5451,7 @@ ${accRows.length>0?`
                                     {hasDriver?(
                                       <>
                                         {group.groupTruck&&<span style={{fontSize:"11px",fontWeight:"700",color:"#fff",background:"rgba(255,255,255,.15)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>#{group.groupTruck}</span>}
-                                        {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"700",color:"#c4b5fd",background:"rgba(167,139,250,.2)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>T{group.groupTrailer}</span>}
+                                        {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"700",color:"#c4b5fd",background:"rgba(167,139,250,.2)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>{group.groupTrailer}</span>}
                                         <span style={{fontSize:"12px",fontWeight:"600",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{group.groupDriver}</span>
                                         {(()=>{const mi=group.tripMiles!==""&&group.tripMiles!=null?parseFloat(group.tripMiles):group.calcTripMi?parseFloat(group.calcTripMi):group.autoTripMi?parseFloat(group.autoTripMi):null;return mi?<span style={{fontSize:"10px",color:"rgba(255,255,255,.45)",background:"rgba(255,255,255,.08)",padding:"2px 6px",borderRadius:"4px",flexShrink:0}}>{Math.round(mi).toLocaleString()} mi</span>:null;})()}
                                       </>
@@ -5361,7 +5470,7 @@ ${accRows.length>0?`
                                     {!hasDriver&&(group.groupTruck||group.groupTrailer)&&(
                                       <div style={{display:"flex",gap:"6px",marginBottom:"10px",alignItems:"center"}}>
                                         {group.groupTruck&&<span style={{fontSize:"11px",fontWeight:"700",color:"#0f1f3d",background:"#f1f5f9",border:"1px solid #e2e8f0",padding:"2px 8px",borderRadius:"4px"}}>#{group.groupTruck}</span>}
-                                        {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"700",color:"#5b21b6",background:"#ede9fe",border:"1px solid #ddd6fe",padding:"2px 8px",borderRadius:"4px"}}>T{group.groupTrailer}</span>}
+                                        {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"700",color:"#5b21b6",background:"#ede9fe",border:"1px solid #ddd6fe",padding:"2px 8px",borderRadius:"4px"}}>{group.groupTrailer}</span>}
                                         <span style={{fontSize:"11px",color:"#94a3b8"}}>{loads.length}-Stop Load</span>
                                       </div>
                                     )}
