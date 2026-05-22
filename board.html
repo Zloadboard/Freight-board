@@ -1780,6 +1780,17 @@ function App(){
     return(d.getMonth()+1)+"/"+d.getDate();
   };
 
+  // Helper: pick just the first name. "John Smith" → "John"; "Mary-Anne O'Brien" → "Mary-Anne"
+  const firstName=(full)=>{
+    const s=String(full||"").trim();
+    if(!s)return"";
+    return s.split(/\s+/)[0];
+  };
+
+  // Statuses where we hide the live location pill — load is already at the
+  // yard/dock/being-handled-internally, the local driver is no longer relevant.
+  const STATUS_HIDE_PILL={"Yard":1,"Dock":1,"Loaded":1,"Delivered":1};
+
   const saveToSheets=useCallback((data)=>{
     const isArr=Array.isArray(data);
     const ls=latestState.current;
@@ -3763,15 +3774,14 @@ ${accRows.length>0?`
                 </div>
 
                 {/* ── COLUMN HEADERS ── */}
-                <div style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 55px 75px 55px 65px 78px 22px",gap:"10px",padding:"5px 12px",background:"#f1f5f9",borderBottom:"1px solid #e2e8f0",fontSize:"10px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",alignItems:"center"}}>
+                <div style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 130px 55px 65px 78px 22px",gap:"10px",padding:"5px 12px",background:"#f1f5f9",borderBottom:"1px solid #e2e8f0",fontSize:"10px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",alignItems:"center"}}>
                   <span/>
                   <span onClick={()=>setPlanSort(p=>p==="pickup"?"default":"pickup")} style={{cursor:"pointer",color:planSort==="pickup"?"#2563eb":"#64748b"}}>Route{planSort==="pickup"?" ▲":""}</span>
                   <span onClick={()=>setPlanSort(p=>p==="pickup"?"default":"pickup")} style={{cursor:"pointer",color:planSort==="pickup"?"#2563eb":"#64748b"}}>Pickup</span>
                   <span onClick={()=>setPlanSort(p=>p==="delivery"?"default":"delivery")} style={{cursor:"pointer",color:planSort==="delivery"?"#2563eb":"#64748b"}}>Delivery{planSort==="delivery"?" ▲":""}</span>
                   <span>Weight</span>
                   <span>Plt</span>
-                  <span style={{fontStyle:"italic",color:"#374151"}}>Local Truck</span>
-                  <span style={{fontStyle:"italic",color:"#374151"}}>Local Driver</span>
+                  <span style={{fontStyle:"italic",color:"#374151"}}>Local Truck · Driver</span>
                   <span style={{fontStyle:"italic",color:"#374151"}}>Local Trailer</span>
                   <span style={{color:"#059669"}}>Rate $</span>
                   <span>Status</span>
@@ -3806,7 +3816,7 @@ ${accRows.length>0?`
                         onDragOver={e=>{if(!dragLoad.current)return;e.preventDefault();e.currentTarget.style.boxShadow="inset 0 -3px 0 #3b82f6";}}
                         onDragLeave={e=>{e.currentTarget.style.boxShadow="";}}
                         onDrop={e=>{e.preventDefault();e.currentTarget.style.boxShadow="";if(!dragLoad.current||!isAdmin)return;const dl=dragLoad.current;dragLoad.current=null;moveLoad(dl.fromGroupId,group.id,dl.loadId,li);}}
-                        style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 55px 75px 55px 65px 78px 22px",gap:"10px",padding:"7px 12px",alignItems:"center",fontSize:"12px",background:isExp?"#eff6ff":li%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #e5edf5",cursor:"pointer",transition:"background .1s",borderLeft:isExp?"3px solid #3b82f6":"3px solid transparent"}}
+                        style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 130px 55px 65px 78px 22px",gap:"10px",padding:"7px 12px",alignItems:"center",fontSize:"12px",background:isExp?"#eff6ff":li%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #e5edf5",cursor:"pointer",transition:"background .1s",borderLeft:isExp?"3px solid #3b82f6":"3px solid transparent"}}
                       >
                         {/* Stop dot */}
                         <div style={{width:"18px",height:"18px",borderRadius:"50%",background:dupLoadIds.has(load.id)?"#fbcfe8":isExp?"#bfdbfe":isAdmin?"#c7d2fe":"#e2e8f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"10px",fontWeight:"700",color:dupLoadIds.has(load.id)?"#9d174d":isExp?"#1e40af":isAdmin?"#4338ca":"#64748b",flexShrink:0,cursor:isAdmin?"grab":"default",userSelect:"none"}} draggable={isAdmin} onDragStart={e=>{if(!isAdmin)return;e.stopPropagation();dragLoad.current={loadId:load.id,fromGroupId:group.id};dragGroupIdx.current=null;e.dataTransfer.effectAllowed="move";const row=e.currentTarget.closest("[id='load-"+load.id+"']");if(row){row.style.opacity="0.5";row.style.outline="2px solid #3b82f6";}}} onDragEnd={e=>{e.stopPropagation();const row=document.getElementById("load-"+load.id);if(row){row.style.opacity="1";row.style.outline="";}dragLoad.current=null;dragGroupIdx.current=null;}} title={dupLoadIds.has(load.id)?"⚠ Possible duplicate — matches another load this week":"Drag to combine with another trailer"}>{load.stop||li+1}</div>
@@ -3842,48 +3852,73 @@ ${accRows.length>0?`
                           {isAdmin?<input key={load.id+"pal"} defaultValue={load.pallets} onBlur={e=>{if(e.target.value!==load.pallets)setLoad(group.id,load.id,"pallets",e.target.value);}} onClick={e=>e.stopPropagation()} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"4px",background:"#f8fafc",fontSize:"12px",color:"#374151",padding:"2px 4px",outline:"none",fontFamily:"inherit",textAlign:"center"}} placeholder="—"/>:load.pallets||"—"}
                         </span>
 
-                        {/* Local Truck — controlled select, auto-fills driver */}
-                        <div style={{minWidth:0,overflow:"hidden"}} onClick={e=>e.stopPropagation()}>
-                          {isAdmin?(
-                            <select
-                              value={load.localTruck||""}
-                              onChange={e=>{
-                                const tk=e.target.value;
-                                const drv=tk?truckAssignments[tk]||"":"";
-                                const curSt=load.status||"";
-                                const furtherSt=["Dispatched","Dock","Yard","Picked Up","In Transit","Loaded","Delivered"];
-                                const updates={localTruck:tk,driver:drv};
-                                if(drv&&!furtherSt.includes(curSt))updates.status="Dispatched";
-                                setLoadFields(group.id,load.id,updates);
-                                trackField("localTruck");
-                              }}
-                              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"4px",background:"#f8fafc",fontSize:"11px",color:load.localTruck?"#374151":"#94a3b8",padding:"2px 2px",outline:"none",fontFamily:"inherit",cursor:"pointer"}}
-                            >
-                              <option value="">—</option>
-                              {allTrucks.map(t=>(<option key={t} value={t}>#{t}</option>))}
-                            </select>
-                          ):<span style={{fontSize:"11px",color:load.localTruck?"#374151":"#94a3b8"}}>{load.localTruck?"#"+load.localTruck:"—"}</span>}
-                        </div>
-                        {/* Local Driver — shows auto-filled name, editable override */}
-                        <div style={{minWidth:0,overflow:"hidden"}} onClick={e=>e.stopPropagation()}>
-                          {isAdmin?(
-                            <select
-                              value={load.driver||""}
-                              onChange={e=>{
-                                const newDriver=e.target.value;
-                                const curSt=load.status||"";
-                                const furtherSt=["Dispatched","Dock","Yard","Picked Up","In Transit","Loaded","Delivered"];
-                                const updates={driver:newDriver};
-                                if(newDriver&&!furtherSt.includes(curSt))updates.status="Dispatched";
-                                setLoadFields(group.id,load.id,updates);
-                                trackField("driver");
-                              }}
-                              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"4px",background:"#f8fafc",fontSize:"11px",fontStyle:"italic",color:load.driver?"#374151":"#94a3b8",padding:"2px 2px",outline:"none",fontFamily:"inherit",cursor:"pointer",overflow:"hidden",textOverflow:"ellipsis"}}
-                            >
-                              <option value="">—</option>
-                              {[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}>{d}</option>))}
-                            </select>
-                          ):<div style={{fontSize:"11px",fontStyle:"italic",color:load.driver?"#374151":"#94a3b8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{load.driver||"—"}</div>}
+                        {/* Local Truck + Driver + Location — merged into one column */}
+                        <div style={{minWidth:0,overflow:"hidden",display:"flex",flexDirection:"column",gap:"2px"}} onClick={e=>e.stopPropagation()}>
+                          {/* Row 1: Truck dropdown + Driver dropdown side by side */}
+                          <div style={{display:"flex",gap:"3px",alignItems:"center"}}>
+                            {isAdmin?(
+                              <select
+                                value={load.localTruck||""}
+                                onChange={e=>{
+                                  const tk=e.target.value;
+                                  const drv=tk?truckAssignments[tk]||"":"";
+                                  const curSt=load.status||"";
+                                  const furtherSt=["Dispatched","Dock","Yard","Picked Up","In Transit","Loaded","Delivered"];
+                                  const updates={localTruck:tk,driver:drv};
+                                  if(drv&&!furtherSt.includes(curSt))updates.status="Dispatched";
+                                  setLoadFields(group.id,load.id,updates);
+                                  trackField("localTruck");
+                                }}
+                                title={load.localTruck?"Truck #"+load.localTruck:"Pick a truck"}
+                                style={{width:"58px",flexShrink:0,border:"1px solid #e2e8f0",borderRadius:"4px",background:"#f8fafc",fontSize:"11px",color:load.localTruck?"#374151":"#94a3b8",padding:"2px 2px",outline:"none",fontFamily:"inherit",cursor:"pointer"}}
+                              >
+                                <option value="">—</option>
+                                {allTrucks.map(t=>(<option key={t} value={t}>#{t}</option>))}
+                              </select>
+                            ):<span style={{fontSize:"11px",color:load.localTruck?"#374151":"#94a3b8",flexShrink:0,width:"40px"}}>{load.localTruck?"#"+load.localTruck:"—"}</span>}
+                            {isAdmin?(
+                              <select
+                                value={load.driver||""}
+                                onChange={e=>{
+                                  const newDriver=e.target.value;
+                                  const curSt=load.status||"";
+                                  const furtherSt=["Dispatched","Dock","Yard","Picked Up","In Transit","Loaded","Delivered"];
+                                  const updates={driver:newDriver};
+                                  if(newDriver&&!furtherSt.includes(curSt))updates.status="Dispatched";
+                                  setLoadFields(group.id,load.id,updates);
+                                  trackField("driver");
+                                }}
+                                title={load.driver||"Pick a driver"}
+                                style={{flex:1,minWidth:0,border:"1px solid #e2e8f0",borderRadius:"4px",background:"#f8fafc",fontSize:"11px",fontStyle:"italic",color:load.driver?"#374151":"#94a3b8",padding:"2px 2px",outline:"none",fontFamily:"inherit",cursor:"pointer",overflow:"hidden",textOverflow:"ellipsis"}}
+                              >
+                                <option value="">—</option>
+                                {[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}>{firstName(d)}</option>))}
+                              </select>
+                            ):<div title={load.driver||""} style={{fontSize:"11px",fontStyle:"italic",color:load.driver?"#374151":"#94a3b8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,minWidth:0}}>{firstName(load.driver)||"—"}</div>}
+                          </div>
+                          {/* Row 2: Live location pill — only when GPS available AND status isn't a "hide" status */}
+                          {(()=>{
+                            if(STATUS_HIDE_PILL[load.status||""])return null;
+                            const tk=load.localTruck&&liveTrucks[load.localTruck];
+                            if(!tk||!tk.address)return null;
+                            // Compact "City, ST"
+                            const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                            let short=tk.address;
+                            if(parts.length>=2){
+                              const lastPart=parts[parts.length-1];
+                              const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                              const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                              if(city&&state)short=city+", "+state;
+                              else short=parts.slice(-2).join(", ");
+                            }
+                            if(short.length>22)short=short.slice(0,20)+"…";
+                            const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+load.localTruck+")";
+                            return(
+                              <span title={tip} style={{fontSize:"9px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help",lineHeight:1.3}}>
+                                📍 {short}
+                              </span>
+                            );
+                          })()}
                         </div>
                         {/* Local Trailer — own column, searchable via datalist */}
                         <div style={{minWidth:0}} onClick={e=>e.stopPropagation()}>
@@ -4129,6 +4164,29 @@ ${accRows.length>0?`
                           <span style={{fontSize:"10px",fontWeight:"600",color:group.groupDriver?"#0369a1":"#ef4444",fontStyle:"italic"}}>{group.groupDriver||"No OTR driver"}</span>
                           {group.groupTruck&&<span style={{fontSize:"10px",color:"#475569",background:"#f1f5f9",padding:"1px 5px",borderRadius:"4px",fontWeight:"600"}}>🚚#{group.groupTruck}</span>}
                           {group.groupTrailer&&<span style={{fontSize:"10px",color:"#7c3aed",background:"#faf5ff",padding:"1px 5px",borderRadius:"4px",fontWeight:"600"}}>{group.groupTrailer}</span>}
+                          {/* OTR truck location — refreshed every 60s. Note: in Combined we always
+                              show the pill regardless of load status, because the OTR truck is in
+                              transit TO this trailer; that's exactly what you want to know. */}
+                          {(()=>{
+                            const tk=group.groupTruck&&liveTrucks[group.groupTruck];
+                            if(!tk||!tk.address)return null;
+                            const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                            let short=tk.address;
+                            if(parts.length>=2){
+                              const lastPart=parts[parts.length-1];
+                              const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                              const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                              if(city&&state)short=city+", "+state;
+                              else short=parts.slice(-2).join(", ");
+                            }
+                            if(short.length>26)short=short.slice(0,24)+"…";
+                            const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+group.groupTruck+")";
+                            return(
+                              <span title={tip} style={{fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 6px",borderRadius:"4px",whiteSpace:"nowrap",cursor:"help"}}>
+                                📍 {short}
+                              </span>
+                            );
+                          })()}
                         </div>
                       )}
                       {/* Status selector: Preplanned / Dispatched / Loaded */}
@@ -4289,6 +4347,27 @@ ${accRows.length>0?`
                                       {[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}>{d}</option>))}
                                     </select>:<div style={{fontSize:"11px",fontStyle:"italic",color:l.driver?"#374151":"#94a3b8"}}>{l.driver||"—"}</div>}
                                   </div>
+                                  {/* Live location pill — spans both columns of the truck/driver grid */}
+                                  {(()=>{
+                                    if(STATUS_HIDE_PILL[l.status||""])return null;
+                                    const tk=l.localTruck&&liveTrucks[l.localTruck];
+                                    if(!tk||!tk.address)return null;
+                                    const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                                    let short=tk.address;
+                                    if(parts.length>=2){
+                                      const lastPart=parts[parts.length-1];
+                                      const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                                      const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                                      if(city&&state)short=city+", "+state;
+                                      else short=parts.slice(-2).join(", ");
+                                    }
+                                    const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+l.localTruck+")";
+                                    return(
+                                      <div title={tip} style={{gridColumn:"1/-1",fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"3px 8px",borderRadius:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help"}}>
+                                        📍 {short}
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                                 {/* Quick status buttons */}
                                 <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
