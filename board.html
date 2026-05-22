@@ -4158,6 +4158,27 @@ ${accRows.length>0?`
                               </select>
                             </div>
                           </div>
+                          {/* Live OTR truck location pill — admin view. Always shown when GPS available. */}
+                          {(()=>{
+                            const tk=group.groupTruck&&liveTrucks[group.groupTruck];
+                            if(!tk||!tk.address)return null;
+                            const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                            let short=tk.address;
+                            if(parts.length>=2){
+                              const lastPart=parts[parts.length-1];
+                              const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                              const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                              if(city&&state)short=city+", "+state;
+                              else short=parts.slice(-2).join(", ");
+                            }
+                            if(short.length>32)short=short.slice(0,30)+"…";
+                            const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+group.groupTruck+")";
+                            return(
+                              <div title={tip} style={{fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"3px 8px",borderRadius:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help",marginTop:"2px"}}>
+                                📍 {short}
+                              </div>
+                            );
+                          })()}
                         </div>
                       ):(
                         <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"5px",flexWrap:"wrap"}}>
@@ -4560,6 +4581,13 @@ ${accRows.length>0?`
                             );
                           })()}
                           <span style={{flex:1}}/>
+                          {/* Show-on-Dashboard toggle — admin only. Off by default; admin
+                              clicks to surface this trailer on the Dashboard tab for everyone. */}
+                          {isAdmin&&<button onClick={e=>{e.stopPropagation();setGroup(group.id,"showOnDashboard",!group.showOnDashboard);}}
+                            title={group.showOnDashboard?"On the Dashboard — click to hide":"Not on the Dashboard — click to show"}
+                            style={{fontSize:"10px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",border:`1px solid ${group.showOnDashboard?"#22c55e":"rgba(255,255,255,.2)"}`,background:group.showOnDashboard?"rgba(34,197,94,.2)":"rgba(255,255,255,.05)",color:group.showOnDashboard?"#86efac":"rgba(255,255,255,.5)",cursor:"pointer",outline:"none",whiteSpace:"nowrap"}}>
+                            📊 Dashboard{group.showOnDashboard?" ✓":""}
+                          </button>}
                           {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
                             <select value={group.groupStatus||"Pending"} onChange={e=>setGroup(group.id,"groupStatus",e.target.value)} style={{fontSize:"10px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",border:`1px solid ${ss.bd}`,background:ss.bg,color:ss.c,cursor:"pointer",outline:"none",minWidth:"100px"}} disabled={!isAdmin}>
                               {Object.keys(GSS).map(s=>(<option key={s}>{s}</option>))}
@@ -5474,8 +5502,9 @@ ${accRows.length>0?`
             <div style={{maxWidth:"1400px",margin:"0 auto",padding:"16px"}}>
               {/* COMBINED LOADS SECTION — replaces Today/Tomorrow pickups */}
               {(()=>{
-                // Gather all combined groups from ALL weeks
-                const allCombined=weeks.flatMap(w=>(w.groups||[]).filter(g=>g.isCombined).map(g=>({...g,weekLabel:w.label,weekId:w.id,weekGroups:w.groups})));
+                // Gather combined groups from the CURRENT WEEK ONLY (the week selected in the Dashboard picker).
+                // Combined Loads are always shown — no toggle required.
+                const allCombined=((curWk.groups||[]).filter(g=>g.isCombined).map(g=>({...g,weekLabel:curWk.label||"",weekId:curWk.id,weekGroups:curWk.groups})));
                 if(allCombined.length===0)return null;
 
                 // Status style map
@@ -5532,6 +5561,27 @@ ${accRows.length>0?`
                                         {group.groupTruck&&<span style={{fontSize:"11px",fontWeight:"700",color:"#fff",background:"rgba(255,255,255,.15)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>#{group.groupTruck}</span>}
                                         {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"700",color:"#c4b5fd",background:"rgba(167,139,250,.2)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>{group.groupTrailer}</span>}
                                         <span style={{fontSize:"12px",fontWeight:"600",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{group.groupDriver}</span>
+                                        {/* Live OTR truck location pill */}
+                                        {(()=>{
+                                          const tk=group.groupTruck&&liveTrucks[group.groupTruck];
+                                          if(!tk||!tk.address)return null;
+                                          const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                                          let short=tk.address;
+                                          if(parts.length>=2){
+                                            const lastPart=parts[parts.length-1];
+                                            const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                                            const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                                            if(city&&state)short=city+", "+state;
+                                            else short=parts.slice(-2).join(", ");
+                                          }
+                                          if(short.length>22)short=short.slice(0,20)+"…";
+                                          const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+group.groupTruck+")";
+                                          return(
+                                            <span title={tip} style={{fontSize:"9px",fontWeight:"700",color:"#fde047",background:"rgba(234,179,8,.18)",border:"1px solid rgba(234,179,8,.4)",padding:"2px 6px",borderRadius:"4px",whiteSpace:"nowrap",flexShrink:0,cursor:"help"}}>
+                                              📍 {short}
+                                            </span>
+                                          );
+                                        })()}
                                         {(()=>{const mi=group.tripMiles!==""&&group.tripMiles!=null?parseFloat(group.tripMiles):group.calcTripMi?parseFloat(group.calcTripMi):group.autoTripMi?parseFloat(group.autoTripMi):null;return mi?<span style={{fontSize:"10px",color:"rgba(255,255,255,.45)",background:"rgba(255,255,255,.08)",padding:"2px 6px",borderRadius:"4px",flexShrink:0}}>{Math.round(mi).toLocaleString()} mi</span>:null;})()}
                                       </>
                                     ):(
@@ -5682,6 +5732,198 @@ ${accRows.length>0?`
                         </div>
                       );
                     })}
+                  </div>
+                );
+              })()}
+
+              {/* IN TRANSIT SECTION — OTR trailers currently rolling */}
+              {(()=>{
+                // In Transit: current week + admin pressed 📊 Dashboard on the OTR card.
+                const allInTransit=((curWk.groups||[]).filter(g=>g.groupStatus==="In Transit"&&g.showOnDashboard).map(g=>({...g,weekLabel:curWk.label||"",weekId:curWk.id})));
+                if(allInTransit.length===0)return null;
+                return(
+                  <div style={{marginBottom:"24px"}}>
+                    <div style={{fontSize:"16px",fontWeight:"800",color:"#0f1f3d",marginBottom:"14px",display:"flex",alignItems:"center",gap:"8px"}}>
+                      🚛 In Transit
+                      <span style={{fontSize:"12px",fontWeight:"600",color:"#64748b",background:"#fed7aa",padding:"2px 8px",borderRadius:"10px"}}>{allInTransit.length} trailer{allInTransit.length!==1?"s":""}</span>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:"10px"}}>
+                      {allInTransit.map(group=>{
+                        const loads=group.loads||[];
+                        const grossRate=loads.reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
+                        const locCost=loads.reduce((s,l)=>{
+                          if(l.manualLocalCharge!==""&&l.manualLocalCharge!=null)return s+(parseFloat(l.manualLocalCharge)||0);
+                          const{s:shipper}=parseSR(l.sr||"");
+                          const am=cityMiles(shipper);
+                          const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
+                          return s+(um!=null?localCharge(um):0);
+                        },0);
+                        const netRate=grossRate-locCost;
+                        return(
+                          <div key={group.id} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"10px",overflow:"hidden",borderLeft:"4px solid #fb923c",boxShadow:"0 1px 4px rgba(0,0,0,.05)"}}>
+                            <div style={{background:"#0f1f3d",padding:"9px 14px",display:"flex",alignItems:"center",gap:"7px",flexWrap:"wrap"}}>
+                              {group.groupTruck&&<span style={{fontSize:"11px",fontWeight:"700",color:"#fff",background:"rgba(255,255,255,.15)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>#{group.groupTruck}</span>}
+                              {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"700",color:"#c4b5fd",background:"rgba(167,139,250,.2)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>{group.groupTrailer}</span>}
+                              <span style={{fontSize:"12px",fontWeight:"600",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{group.groupDriver||"—"}</span>
+                              {(()=>{
+                                const tk=group.groupTruck&&liveTrucks[group.groupTruck];
+                                if(!tk||!tk.address)return null;
+                                const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                                let short=tk.address;
+                                if(parts.length>=2){
+                                  const lastPart=parts[parts.length-1];
+                                  const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                                  const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                                  if(city&&state)short=city+", "+state;
+                                  else short=parts.slice(-2).join(", ");
+                                }
+                                if(short.length>22)short=short.slice(0,20)+"…";
+                                const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+group.groupTruck+")";
+                                return(
+                                  <span title={tip} style={{fontSize:"9px",fontWeight:"700",color:"#fde047",background:"rgba(234,179,8,.18)",border:"1px solid rgba(234,179,8,.4)",padding:"2px 6px",borderRadius:"4px",whiteSpace:"nowrap",flexShrink:0,cursor:"help"}}>📍 {short}</span>
+                                );
+                              })()}
+                              {(()=>{const mi=group.tripMiles!==""&&group.tripMiles!=null?parseFloat(group.tripMiles):group.calcTripMi?parseFloat(group.calcTripMi):group.autoTripMi?parseFloat(group.autoTripMi):null;return mi?<span style={{fontSize:"10px",color:"rgba(255,255,255,.45)",background:"rgba(255,255,255,.08)",padding:"2px 6px",borderRadius:"4px",flexShrink:0}}>{Math.round(mi).toLocaleString()} mi</span>:null;})()}
+                            </div>
+                            <div style={{padding:"12px 14px 10px"}}>
+                              {(()=>{
+                                const sortedLoads=[...loads].sort((a,b)=>{
+                                  const pa=parseTS(a.delivery)||parseTS(a.pickup)||Infinity;
+                                  const pb=parseTS(b.delivery)||parseTS(b.pickup)||Infinity;
+                                  if(pa!==pb)return pa-pb;
+                                  return loads.indexOf(a)-loads.indexOf(b);
+                                });
+                                const origin=sortedLoads.length>0?parseSR(sortedLoads[0].sr||"").s:"";
+                                const cellSt={background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"8px",padding:"8px 6px",textAlign:"center",flex:"1 1 0",minWidth:0};
+                                return(
+                                  <div style={{display:"flex",alignItems:"flex-start",gap:"4px",marginBottom:"10px"}}>
+                                    <div style={cellSt}>
+                                      <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".05em",marginBottom:"3px"}}>Origin</div>
+                                      <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{origin||"—"}</div>
+                                    </div>
+                                    {sortedLoads.map((l,li)=>{
+                                      const sr=parseSR(l.sr||"");
+                                      return(
+                                        <React.Fragment key={l.id}>
+                                          <div style={{display:"flex",alignItems:"center",paddingTop:"14px",flexShrink:0}}>
+                                            <span style={{fontSize:"14px",color:"#cbd5e1",lineHeight:1}}>›</span>
+                                          </div>
+                                          <div style={cellSt}>
+                                            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".05em",marginBottom:"3px"}}>Stop {li+1}</div>
+                                            <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:"4px"}}>{sr.r||sr.s||"—"}</div>
+                                            {l.delivery&&<span style={{display:"inline-block",fontSize:"10px",color:"#475569",background:"#e2e8f0",borderRadius:"3px",padding:"1px 5px"}}>{l.delivery}</span>}
+                                          </div>
+                                        </React.Fragment>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
+                              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",borderTop:"1px solid #e2e8f0",paddingTop:"9px"}}>
+                                <span style={{fontSize:"11px",color:"#94a3b8"}}>Net after local expenses</span>
+                                <span style={{fontSize:"14px",fontWeight:"700",color:"#15803d"}}>${Math.round(netRate).toLocaleString()}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* COMPLETED SECTION — OTR trailers already delivered (read-only) */}
+              {(()=>{
+                // Delivered: current week + admin pressed 📊 Dashboard on the OTR card.
+                const allDelivered=((curWk.groups||[]).filter(g=>g.groupStatus==="Delivered"&&g.showOnDashboard).map(g=>({...g,weekLabel:curWk.label||"",weekId:curWk.id})));
+                if(allDelivered.length===0)return null;
+                return(
+                  <div style={{marginBottom:"24px"}}>
+                    <div style={{fontSize:"16px",fontWeight:"800",color:"#0f1f3d",marginBottom:"14px",display:"flex",alignItems:"center",gap:"8px"}}>
+                      ✅ Completed
+                      <span style={{fontSize:"12px",fontWeight:"600",color:"#15803d",background:"#dcfce7",padding:"2px 8px",borderRadius:"10px"}}>{allDelivered.length} trailer{allDelivered.length!==1?"s":""}</span>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:"10px"}}>
+                      {allDelivered.map(group=>{
+                        const loads=group.loads||[];
+                        const grossRate=loads.reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
+                        const locCost=loads.reduce((s,l)=>{
+                          if(l.manualLocalCharge!==""&&l.manualLocalCharge!=null)return s+(parseFloat(l.manualLocalCharge)||0);
+                          const{s:shipper}=parseSR(l.sr||"");
+                          const am=cityMiles(shipper);
+                          const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
+                          return s+(um!=null?localCharge(um):0);
+                        },0);
+                        const netRate=grossRate-locCost;
+                        return(
+                          <div key={group.id} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"10px",overflow:"hidden",borderLeft:"4px solid #16a34a",boxShadow:"0 1px 4px rgba(0,0,0,.05)"}}>
+                            <div style={{background:"#0f1f3d",padding:"9px 14px",display:"flex",alignItems:"center",gap:"7px",flexWrap:"wrap"}}>
+                              {group.groupTruck&&<span style={{fontSize:"11px",fontWeight:"700",color:"#fff",background:"rgba(255,255,255,.15)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>#{group.groupTruck}</span>}
+                              {group.groupTrailer&&<span style={{fontSize:"11px",fontWeight:"700",color:"#c4b5fd",background:"rgba(167,139,250,.2)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>{group.groupTrailer}</span>}
+                              <span style={{fontSize:"12px",fontWeight:"600",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{group.groupDriver||"—"}</span>
+                              {(()=>{
+                                const tk=group.groupTruck&&liveTrucks[group.groupTruck];
+                                if(!tk||!tk.address)return null;
+                                const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                                let short=tk.address;
+                                if(parts.length>=2){
+                                  const lastPart=parts[parts.length-1];
+                                  const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                                  const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                                  if(city&&state)short=city+", "+state;
+                                  else short=parts.slice(-2).join(", ");
+                                }
+                                if(short.length>22)short=short.slice(0,20)+"…";
+                                const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+group.groupTruck+")";
+                                return(
+                                  <span title={tip} style={{fontSize:"9px",fontWeight:"700",color:"#fde047",background:"rgba(234,179,8,.18)",border:"1px solid rgba(234,179,8,.4)",padding:"2px 6px",borderRadius:"4px",whiteSpace:"nowrap",flexShrink:0,cursor:"help"}}>📍 {short}</span>
+                                );
+                              })()}
+                              {(()=>{const mi=group.tripMiles!==""&&group.tripMiles!=null?parseFloat(group.tripMiles):group.calcTripMi?parseFloat(group.calcTripMi):group.autoTripMi?parseFloat(group.autoTripMi):null;return mi?<span style={{fontSize:"10px",color:"rgba(255,255,255,.45)",background:"rgba(255,255,255,.08)",padding:"2px 6px",borderRadius:"4px",flexShrink:0}}>{Math.round(mi).toLocaleString()} mi</span>:null;})()}
+                            </div>
+                            <div style={{padding:"12px 14px 10px"}}>
+                              {(()=>{
+                                const sortedLoads=[...loads].sort((a,b)=>{
+                                  const pa=parseTS(a.delivery)||parseTS(a.pickup)||Infinity;
+                                  const pb=parseTS(b.delivery)||parseTS(b.pickup)||Infinity;
+                                  if(pa!==pb)return pa-pb;
+                                  return loads.indexOf(a)-loads.indexOf(b);
+                                });
+                                const origin=sortedLoads.length>0?parseSR(sortedLoads[0].sr||"").s:"";
+                                const cellSt={background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"8px",padding:"8px 6px",textAlign:"center",flex:"1 1 0",minWidth:0};
+                                return(
+                                  <div style={{display:"flex",alignItems:"flex-start",gap:"4px",marginBottom:"10px"}}>
+                                    <div style={cellSt}>
+                                      <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".05em",marginBottom:"3px"}}>Origin</div>
+                                      <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{origin||"—"}</div>
+                                    </div>
+                                    {sortedLoads.map((l,li)=>{
+                                      const sr=parseSR(l.sr||"");
+                                      return(
+                                        <React.Fragment key={l.id}>
+                                          <div style={{display:"flex",alignItems:"center",paddingTop:"14px",flexShrink:0}}>
+                                            <span style={{fontSize:"14px",color:"#cbd5e1",lineHeight:1}}>›</span>
+                                          </div>
+                                          <div style={cellSt}>
+                                            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".05em",marginBottom:"3px"}}>Stop {li+1}</div>
+                                            <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:"4px"}}>{sr.r||sr.s||"—"}</div>
+                                            {l.delivery&&<span style={{display:"inline-block",fontSize:"10px",color:"#475569",background:"#e2e8f0",borderRadius:"3px",padding:"1px 5px"}}>{l.delivery}</span>}
+                                          </div>
+                                        </React.Fragment>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
+                              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",borderTop:"1px solid #e2e8f0",paddingTop:"9px"}}>
+                                <span style={{fontSize:"11px",color:"#94a3b8"}}>Net after local expenses</span>
+                                <span style={{fontSize:"14px",fontWeight:"700",color:"#15803d"}}>${Math.round(netRate).toLocaleString()}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 );
               })()}
