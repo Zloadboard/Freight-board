@@ -142,6 +142,28 @@
   .clb-card--unclaimed .clb-card__head {
     background: #fee2e2;
   }
+  /* Per-dispatcher claim colors — applied to the name badge only, not the
+     whole card. The rest of the row stays uncolored so the bucket / status
+     / waiting signals stay readable. */
+  .clb-card--claim-laura  .clb-card__claim--taken { background: #f3e8ff; color: #6b21a8; border-color: #c084fc; }
+  .clb-card--claim-laura  .clb-card__claim-x      { background: rgba(107,33,168,.15); color: #6b21a8; }
+  .clb-card--claim-laura  .clb-card__claim-x:hover{ background: rgba(107,33,168,.32); }
+  .clb-card--claim-justas .clb-card__claim--taken { background: #f3e3cf; color: #6b4423; border-color: #b08560; }
+  .clb-card--claim-justas .clb-card__claim-x      { background: rgba(107,68,35,.15); color: #6b4423; }
+  .clb-card--claim-justas .clb-card__claim-x:hover{ background: rgba(107,68,35,.32); }
+  .clb-card--claim-louis  .clb-card__claim--taken { background: #dbeafe; color: #1e40af; border-color: #60a5fa; }
+  .clb-card--claim-louis  .clb-card__claim-x      { background: rgba(30,64,175,.15); color: #1e40af; }
+  .clb-card--claim-louis  .clb-card__claim-x:hover{ background: rgba(30,64,175,.32); }
+  .clb-card--claim-ez     .clb-card__claim--taken { background: #fef9c3; color: #854d0e; border-color: #facc15; }
+  .clb-card--claim-ez     .clb-card__claim-x      { background: rgba(133,77,14,.15); color: #854d0e; }
+  .clb-card--claim-ez     .clb-card__claim-x:hover{ background: rgba(133,77,14,.32); }
+  .clb-card--claim-marty  .clb-card__claim--taken { background: #dcfce7; color: #166534; border-color: #86efac; }
+  .clb-card--claim-maz    .clb-card__claim--taken { background: #f1f5f9; color: #334155; border-color: #94a3b8; }
+  .clb-card--claim-maz    .clb-card__claim-x      { background: rgba(51,65,85,.15); color: #334155; }
+  .clb-card--claim-maz    .clb-card__claim-x:hover{ background: rgba(51,65,85,.32); }
+  .clb-card--claim-eli    .clb-card__claim--taken { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+  .clb-card--claim-eli    .clb-card__claim-x      { background: rgba(153,27,27,.15); color: #991b1b; }
+  .clb-card--claim-eli    .clb-card__claim-x:hover{ background: rgba(153,27,27,.32); }
   .clb-card--waiting {
     background: #fffbeb;
     box-shadow: inset 4px 0 0 #f59e0b;
@@ -237,7 +259,6 @@
     font-family: inherit;
   }
   .clb-card__claim-x:hover { background: rgba(22,101,52,.32); }
-  .clb-card--claimed { border-left: 3px solid #22c55e; }
   .clb-card__rate {
     font-family: "Manrope", sans-serif;
     font-size: 14px; font-weight: 800; color: #059669;
@@ -610,6 +631,19 @@ const STATUS_STYLES = {
   "Yard":                { bg:"#ffedd5", color:"#9a3412", border:"#fb923c" },
   "Enroute to Delivery": { bg:"#ccfbf1", color:"#115e59", border:"#14b8a6" },
   "Delivered":           { bg:"#dcfce7", color:"#14532d", border:"#16a34a" }
+};
+
+// Per-dispatcher claim colors. Case-insensitive name → CSS modifier class
+// (".clb-card--claim-<key>"). A claimer not in this list falls back to the
+// generic green-stripe claimed style. Easy to add/remove dispatchers here.
+const CLAIMER_COLORS = {
+  "laura":  "laura",   // light purple
+  "justas": "justas",  // light brown
+  "louis":  "louis",   // light blue
+  "ez":     "ez",      // light yellow
+  "marty":  "marty",   // light green
+  "maz":    "maz",     // light gray
+  "eli":    "eli"      // light red
 };
 
 // Buckets are now built dynamically from today's date — see buildBuckets() below.
@@ -1850,13 +1884,19 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
     </span>
   ) : null;
 
+  // Pick a claim style based on who claimed the load. Known dispatchers get
+  // their own color; anyone else falls back to the generic green stripe.
+  // Matching is case- and whitespace-insensitive.
+  const claimerKey  = (load.claimedBy || "").trim().toLowerCase();
+  const claimVariant = load.claimedBy
+    ? (CLAIMER_COLORS[claimerKey] ? " clb-card--claim-" + CLAIMER_COLORS[claimerKey] : " clb-card--claimed")
+    : (load.status !== "Delivered" ? " clb-card--unclaimed" : "");
+
   return (
     <div className={"clb-card" +
                     (load.status === "Delivered" ? " clb-card--delivered" : "") +
                     (load.waitingUpdate ? " clb-card--waiting" : "") +
-                    (load.claimedBy
-                      ? " clb-card--claimed"
-                      : (load.status !== "Delivered" ? " clb-card--unclaimed" : ""))}
+                    claimVariant}
          style={{ "--bucket-color": bucketColor }}>
       <div className="clb-card__head" onClick={onToggle}>
         <span className="clb-card__caret">{expanded ? "▼" : "▶"}</span>
