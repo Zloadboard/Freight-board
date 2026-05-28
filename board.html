@@ -583,6 +583,49 @@ function _parseArrive(text){
   return r;
 }
 
+// RJW LOGISTICS — clean structured format. The "LOAD SUMMARY" section has all
+// the info we need on two lines:
+//   Pickup City:   JOLIET    IL    Scheduled Pickup:   05/30/2026 1200
+//   Delivery City: VIDALIA   GA    Scheduled Delivery: 06/01/2026 0700
+// Times are 4-digit military (1200 → 12:00). Weight, miles, and total pay are
+// labeled fields on subsequent lines.
+function _parseRJW(text){
+  const r={broker:"RJW Logistics"};
+  // Load # appears in 3 places; "RJW Load Number: M403019" is the most reliable.
+  const ld=text.match(/RJW\s+Load\s+Number:\s*([A-Z0-9]{4,15})/i)
+       ||text.match(/Load\s*#\s*([A-Z0-9]{4,15})/i);
+  if(ld)r.loadNum=ld[1];
+  // Helper: parse one "Pickup City: CITY  ST  Scheduled (Pickup|Delivery): MM/DD/YYYY HHMM"
+  const stopRe=(kind)=>new RegExp(kind+"\\s+City:\\s*([A-Z][A-Za-z .'\\-]+?)\\s{2,}([A-Z]{2})\\s+Scheduled\\s+"+kind+":\\s*(\\d{1,2}\\/\\d{1,2}\\/\\d{2,4})\\s+(\\d{3,4})","i");
+  const pum=text.match(stopRe("Pickup"));
+  if(pum){
+    r.pickup={
+      location:_rcTitle(pum[1])+", "+pum[2],
+      datetime:_rcFmtDT(pum[3],pum[4])
+    };
+  }
+  const dm=text.match(stopRe("Delivery"));
+  if(dm){
+    r.delivery={
+      location:_rcTitle(dm[1])+", "+dm[2],
+      datetime:_rcFmtDT(dm[3],dm[4])
+    };
+  }
+  // Rate — "Total Carrier Pay: $1,900.00"
+  const rt=text.match(/Total\s+Carrier\s+Pay:\s*\$?([\d,]+(?:\.\d+)?)/i);
+  if(rt)r.rate=rt[1].replace(/,/g,"").replace(/\.00$/,"");
+  // Weight — "Weight (lbs): 11711.7"
+  const wt=text.match(/Weight\s*\(lbs\)?:\s*([\d,]+(?:\.\d+)?)/i);
+  if(wt){
+    const n=Math.round(parseFloat(wt[1].replace(/,/g,"")));
+    if(!r.pickup)r.pickup={};
+    r.pickup.weight=String(n);
+  }
+  // Pallets — "Pieces \ Spots: 2178 \ 0"  (we don't track pieces, so leave blank)
+  return r;
+}
+
+
 function parseRateCon(rawText){
   if(!rawText)return {};
   const flat=rawText.replace(/\s+/g," ");
@@ -591,6 +634,7 @@ function parseRateCon(rawText){
   if(/\bRXO\b|\@rxo\.com|RXO\s*Capacity/i.test(flat))  return _parseRXO(rawText);
   if(/Molo\s*Solutions|@shipmolo\.com|MoLo\b/i.test(flat)) return _parseMolo(rawText);
   if(/Arrive\s*Logistics|@arrivelogistics\.com|ARRIVEnow/i.test(flat)) return _parseArrive(rawText);
+  if(/RJW\s+LOGISTICS|@rjwgroup\.com|rjwgroup\.com/i.test(flat)) return _parseRJW(rawText);
   // ---- Generic fallback for unknown brokers ----
   return _parseGeneric(rawText);
 }
