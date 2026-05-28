@@ -262,8 +262,17 @@ function _rcTitle(s){
 function _rcFmtDT(dStr, tStr){
   let out="";
   if(dStr){
-    const m=String(dStr).match(/(\d{1,2})[\/\-](\d{1,2})/);
-    if(m)out=parseInt(m[1],10)+"/"+parseInt(m[2],10);
+    // Keep the YEAR so the resulting date matches the M/D/YYYY format the board's
+    // sort (parsePickupDate / parseTS) requires. Without it, rate-con loads can't sort.
+    const m=String(dStr).match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
+    if(m){
+      out=parseInt(m[1],10)+"/"+parseInt(m[2],10);
+      if(m[3]){
+        let yr=m[3];
+        if(yr.length===2)yr="20"+yr;            // "26" → "2026"
+        out+="/"+yr;
+      }
+    }
   }
   if(tStr){
     // already-formatted (with colon or AM/PM) — pass through; military 4-digit → "HH:MM"
@@ -479,7 +488,7 @@ function _parseArrive(text){
           const t=lines[k].match(/\b(\d{1,2}:\d{2})\b/);
           if(t){time=t[1];break;}
         }
-        return[mo+"/"+parseInt(dm[2],10),time||"",j];
+        return[mo+"/"+parseInt(dm[2],10)+"/"+dm[3],time||"",j];
       }
     }
     return null;
