@@ -374,31 +374,60 @@ function _parseRXO(text){
         ||text.match(/Load\s+Confirmation\s+(\d{6,12})/i);
   if(ld)r.loadNum=ld[1];
 
-  // RXO stop table layout:
-  //   "PU  Arrival  N/A     Chicago, IL 60628  Other  31532 ..."
-  //   "       05/27/26   (Street Address will be..."
-  //   "       13:00"
-  // Find each PU/SO line, grab the City,ST on it, then scan next ~6 lines for date and time.
+  // RXO stop table layout. Two real layouts observed:
+  //   OLDER (zip on same line):
+  //     PU  Arrival  N/A   Chicago, IL 60628   Other  31532 ...
+  //         05/27/26
+  //         13:00
+  //   NEWER (long city wraps; zip on next line; time window also wraps):
+  //     PU  Arrival  N/A   Elk Grove Village, IL  PACKAGING  ...
+  //         05/29/26                  60007 (Street Address ...
+  //         13:00 -                    will be shared upon ...
+  //         15:00                      tracking acceptance.)
+  // Strategy: find PU/SO at start of a line; capture city,state on that line
+  // (zip optional, since it may have wrapped); then scan the next ~10 lines for
+  // a date and one or two times (start time, optional end time for a window).
   const lines=text.split(/\r?\n/);
+  // City regex: "Word [Word ...], ST" with state followed by space-then-zip OR
+  // space-then-some-other-content. Use a negative lookahead to avoid matching
+  // "N/A" or random caps in the "Street Address" filler text.
+  const cityRe=/([A-Z][A-Za-z'\-]+(?:[ ][A-Z][A-Za-z'\-]+){0,3}),\s+([A-Z]{2})(?=\s+\d{5}|\s+[A-Z][A-Za-z]|\s*$)/;
   const findStop=(kind)=>{
     for(let i=0;i<lines.length;i++){
-      // Match a line that STARTS with PU or SO (with optional spaces)
       if(!new RegExp("^\\s*"+kind+"\\b").test(lines[i]))continue;
-      let location=null,dateStr=null,timeStr=null;
-      // City, ST is on the same row — but RXO's table has wide column gaps, so the city
-      // name must be a CONTIGUOUS word group (no 2+ consecutive spaces inside it).
-      const cm=lines[i].match(/([A-Z][A-Za-z'\-]+(?:[ ][A-Z][A-Za-z'\-]+){0,3}),\s*([A-Z]{2})\s+\d{5}/);
+      let location=null,dateStr=null,startTime=null,endTime=null;
+      const cm=lines[i].match(cityRe);
       if(cm)location=cm[1].trim()+", "+cm[2];
-      // Date and time on the next ~6 lines (date and time are on separate lines in RXO)
-      for(let j=i+1;j<Math.min(i+8,lines.length);j++){
-        if(!dateStr){const dm=lines[j].match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/);if(dm)dateStr=dm[1];}
-        if(!timeStr){const tm=lines[j].match(/\b(\d{1,2}:\d{2})\b/);if(tm)timeStr=tm[1];}
-        if(dateStr&&timeStr)break;
+      // Scan the next ~10 lines for a date and the time(s).
+      // RXO can render a time window as two lines: "13:00 -" then "15:00".
+      for(let j=i+1;j<Math.min(i+10,lines.length);j++){
+        const ln=lines[j];
+        // Stop scanning if we hit another PU/SO row (next stop block)
+        if(j>i&&/^\s*(PU|SO|DO)\b/.test(ln))break;
+        if(!dateStr){const dm=ln.match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/);if(dm)dateStr=dm[1];}
+        // Time on same line: "13:00" or "13:00 - 15:00"
+        const winM=ln.match(/\b(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\b/);
+        if(winM){if(!startTime){startTime=winM[1];endTime=winM[2];}continue;}
+        // Time then dash at end of line (window wraps)
+        const startDashM=ln.match(/\b(\d{1,2}:\d{2})\s*-\s*$/);
+        if(startDashM){if(!startTime)startTime=startDashM[1];continue;}
+        const justTimeM=ln.match(/\b(\d{1,2}:\d{2})\b/);
+        if(justTimeM){
+          if(!startTime)startTime=justTimeM[1];
+          else if(!endTime&&justTimeM[1]!==startTime)endTime=justTimeM[1];
+        }
       }
-      if(location||dateStr||timeStr){
+      if(location||dateStr||startTime){
         const stop={};
         if(location)stop.location=location;
-        if(dateStr||timeStr)stop.datetime=_rcFmtDT(dateStr,timeStr);
+        if(dateStr||startTime){
+          if(endTime&&endTime!==startTime){
+            // window — format like the Echo/Arrive windows: "M/D/YYYY HH:MM-HH:MM"
+            stop.datetime=_rcFmtWindow(dateStr,startTime,dateStr,endTime);
+          } else {
+            stop.datetime=_rcFmtDT(dateStr,startTime);
+          }
+        }
         return stop;
       }
     }
@@ -442,13 +471,13 @@ function _parseMolo(text){
     if(/^\s*Origin\b/.test(lines[i])){
       for(let j=i+1;j<Math.min(i+4,lines.length);j++){
         const cm=lines[j].match(cityRe);
-        if(cm){r.pickup={location:cm[1].trim()+", "+cm[2]};break;}
+        if(cm){r.pickup={location:_rcTitle(cm[1])+", "+cm[2]};break;}
       }
     }
     if(/^\s*Destination\b/.test(lines[i])){
       for(let j=i+1;j<Math.min(i+4,lines.length);j++){
         const cm=lines[j].match(cityRe);
-        if(cm){r.delivery={location:cm[1].trim()+", "+cm[2]};break;}
+        if(cm){r.delivery={location:_rcTitle(cm[1])+", "+cm[2]};break;}
       }
     }
   }
@@ -3532,6 +3561,28 @@ ${accRows.length>0?`
                   </select>
                   {row.truck&&row.driver&&<div style={{fontSize:"10px",color:"#059669",marginTop:"3px",fontWeight:"600"}}>✓ Truck #{row.truck} · {row.driver}</div>}
                   {row.truck&&!row.driver&&<div style={{fontSize:"10px",color:"#f59e0b",marginTop:"3px"}}>No driver selected</div>}
+                  {/* Samsara live location pill — where is this truck right now? */}
+                  {(()=>{
+                    if(!row.truck)return null;
+                    const tk=liveTrucks[row.truck];
+                    if(!tk||!tk.address)return null;
+                    const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                    let short=tk.address;
+                    if(parts.length>=2){
+                      const lastPart=parts[parts.length-1];
+                      const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                      const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                      if(city&&state)short=city+", "+state;
+                      else short=parts.slice(-2).join(", ");
+                    }
+                    if(short.length>32)short=short.slice(0,30)+"…";
+                    const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+row.truck+")";
+                    return(
+                      <div title={tip} style={{marginTop:"4px",fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"3px 7px",borderRadius:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help"}}>
+                        📍 {short}
+                      </div>
+                    );
+                  })()}
                 </div>
                 {row.amount?<div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
                 <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
@@ -3575,19 +3626,72 @@ ${accRows.length>0?`
                 <input value={row.loadNum||""} onChange={e=>updSub("crossdockDrops",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
                 <input value={row.datetime||""} onChange={e=>updSub("crossdockDrops",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Driver</div>
+                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Drop Location</div>
                 <input
                   type="text"
                   list={`xdrop-locs-${week.id}`}
                   placeholder="Location (e.g. Chicago Yard, Romeoville Drop)..."
                   value={row.location||""}
                   onChange={e=>updSub("crossdockDrops",row.id,"location",e.target.value)}
-                  style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 8px",fontSize:"11px",fontFamily:"inherit",outline:"none",marginBottom:"4px"}}
+                  style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 8px",fontSize:"11px",fontFamily:"inherit",outline:"none"}}
                 />
                 <datalist id={`xdrop-locs-${week.id}`}>
                   {crossdockLocations.map((loc,li)=><option key={li} value={loc}/>)}
                 </datalist>
-                <input value={row.driver||""} onChange={e=>updSub("crossdockDrops",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/></div>
+                <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",margin:"6px 0 2px"}}>Truck</div>
+                <select
+                  value={row.truck||""}
+                  onChange={e=>{
+                    const tk=e.target.value;
+                    updSub("crossdockDrops",row.id,"truck",tk);
+                    if(tk&&truckAssignments[tk]&&!row.driver){updSub("crossdockDrops",row.id,"driver",truckAssignments[tk]);}
+                  }}
+                  style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 6px",fontSize:"11px",background:"#f8fafc",outline:"none",fontFamily:"inherit"}}
+                  disabled={isViewer}
+                >
+                  <option value="">— select truck —</option>
+                  {allTrucks.map(t=>(
+                    <option key={t} value={t}>
+                      {truckAssignments[t]?`Truck #${t} — ${truckAssignments[t]}`:`Truck #${t} (no driver assigned)`}
+                    </option>
+                  ))}
+                </select>
+                <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",margin:"6px 0 2px"}}>Driver</div>
+                <select
+                  value={row.driver||""}
+                  onChange={e=>updSub("crossdockDrops",row.id,"driver",e.target.value)}
+                  style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 6px",fontSize:"11px",background:"#f8fafc",outline:"none",fontFamily:"inherit"}}
+                  disabled={isViewer}
+                >
+                  <option value="">— select driver —</option>
+                  {allDrivers.map(d=>(<option key={d} value={d}>{d}</option>))}
+                  {row.driver&&allDrivers.indexOf(row.driver)<0&&<option value={row.driver}>{row.driver}</option>}
+                </select>
+                {row.truck&&row.driver&&<div style={{fontSize:"10px",color:"#059669",marginTop:"3px",fontWeight:"600"}}>✓ Truck #{row.truck} · {row.driver}</div>}
+                {row.truck&&!row.driver&&<div style={{fontSize:"10px",color:"#f59e0b",marginTop:"3px"}}>No driver selected</div>}
+                {/* Samsara live location pill — shows where the assigned truck is */}
+                {(()=>{
+                  if(!row.truck)return null;
+                  const tk=liveTrucks[row.truck];
+                  if(!tk||!tk.address)return null;
+                  const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                  let short=tk.address;
+                  if(parts.length>=2){
+                    const lastPart=parts[parts.length-1];
+                    const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                    const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                    if(city&&state)short=city+", "+state;
+                    else short=parts.slice(-2).join(", ");
+                  }
+                  if(short.length>32)short=short.slice(0,30)+"…";
+                  const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+row.truck+")";
+                  return(
+                    <div title={tip} style={{marginTop:"4px",fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"3px 7px",borderRadius:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help"}}>
+                      📍 {short}
+                    </div>
+                  );
+                })()}
+                </div>
                 <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
                 <input value={row.notes||""} onChange={e=>updSub("crossdockDrops",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
               </div>
@@ -3597,7 +3701,7 @@ ${accRows.length>0?`
         })}
         </div>
         <div style={{display:"flex",gap:"6px",flexWrap:"wrap",alignItems:"center"}}>
-        {isAdmin&&<button onClick={()=>setW("crossdockDrops",[...(week.crossdockDrops||[]),{id:uid(),location:"",trailer:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""}])} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button>}
+        {isAdmin&&<button onClick={()=>setW("crossdockDrops",[...(week.crossdockDrops||[]),{id:uid(),location:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""}])} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button>}
         {isAdmin&&<button onClick={()=>setShowXdropLocModal(true)} style={{background:"#fff",color:"#7c3aed",border:"1px solid #7c3aed",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>📍 Partner Locations</button>}
       </div>
       </div>
@@ -4676,7 +4780,30 @@ ${accRows.length>0?`
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
                 <input value={row.datetime||""} onChange={e=>updSub("localDeliveries",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Driver</div>
-                <input value={row.driver||""} onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/></div>
+                <input value={row.driver||""} onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/>
+                {/* Samsara live location pill */}
+                {(()=>{
+                  if(!row.truck)return null;
+                  const tk=liveTrucks[row.truck];
+                  if(!tk||!tk.address)return null;
+                  const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                  let short=tk.address;
+                  if(parts.length>=2){
+                    const lastPart=parts[parts.length-1];
+                    const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                    const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                    if(city&&state)short=city+", "+state;
+                    else short=parts.slice(-2).join(", ");
+                  }
+                  if(short.length>26)short=short.slice(0,24)+"…";
+                  const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+row.truck+")";
+                  return(
+                    <div title={tip} style={{marginTop:"4px",fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"2px 6px",borderRadius:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help",display:"inline-block"}}>
+                      📍 {short}
+                    </div>
+                  );
+                })()}
+                </div>
                 {row.amount?<div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
                 <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
                 <input value={row.notes||""} onChange={e=>updSub("localDeliveries",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
@@ -4720,8 +4847,45 @@ ${accRows.length>0?`
                 <input value={row.loadNum||""} onChange={e=>updSub("crossdockDrops",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
                 <input value={row.datetime||""} onChange={e=>updSub("crossdockDrops",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
+                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Truck</div>
+                <select
+                  value={row.truck||""}
+                  onChange={e=>{
+                    const tk=e.target.value;
+                    updSub("crossdockDrops",row.id,"truck",tk);
+                    if(tk&&truckAssignments[tk]&&!row.driver){updSub("crossdockDrops",row.id,"driver",truckAssignments[tk]);}
+                  }}
+                  style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none",fontFamily:"inherit"}}
+                  disabled={isViewer}
+                >
+                  <option value="">— select truck —</option>
+                  {allTrucks.map(tk=>(<option key={tk} value={tk}>{truckAssignments[tk]?`#${tk} — ${truckAssignments[tk]}`:`#${tk}`}</option>))}
+                </select></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Driver</div>
-                <input value={row.driver||""} onChange={e=>updSub("crossdockDrops",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/></div>
+                <input value={row.driver||""} onChange={e=>updSub("crossdockDrops",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/>
+                {/* Samsara live location pill */}
+                {(()=>{
+                  if(!row.truck)return null;
+                  const tk=liveTrucks[row.truck];
+                  if(!tk||!tk.address)return null;
+                  const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                  let short=tk.address;
+                  if(parts.length>=2){
+                    const lastPart=parts[parts.length-1];
+                    const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                    const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                    if(city&&state)short=city+", "+state;
+                    else short=parts.slice(-2).join(", ");
+                  }
+                  if(short.length>26)short=short.slice(0,24)+"…";
+                  const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+row.truck+")";
+                  return(
+                    <div title={tip} style={{marginTop:"4px",fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"2px 6px",borderRadius:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help",display:"inline-block"}}>
+                      📍 {short}
+                    </div>
+                  );
+                })()}
+                </div>
                 <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
                 <input value={row.notes||""} onChange={e=>updSub("crossdockDrops",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
               </div>
@@ -4731,7 +4895,7 @@ ${accRows.length>0?`
         })}
         </div>
         <div style={{display:"flex",gap:"6px",flexWrap:"wrap",alignItems:"center"}}>
-        {isAdmin&&<button onClick={()=>setW("crossdockDrops",[...(week.crossdockDrops||[]),{id:uid(),location:"",trailer:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""}])} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button>}
+        {isAdmin&&<button onClick={()=>setW("crossdockDrops",[...(week.crossdockDrops||[]),{id:uid(),location:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""}])} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button>}
         {isAdmin&&<button onClick={()=>setShowXdropLocModal(true)} style={{background:"#fff",color:"#7c3aed",border:"1px solid #7c3aed",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>📍 Partner Locations</button>}
       </div>
       </div>)}
