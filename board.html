@@ -4765,13 +4765,21 @@ ${accRows.length>0?`
                           <div key={load.id} style={{display:"flex",alignItems:"center",gap:"6px",padding:"6px 12px",borderTop:"1px solid #f1f5f9",flexWrap:"nowrap"}}>
                             <span style={{width:"15px",height:"15px",borderRadius:"50%",background:lrc.barBg,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"8px",fontWeight:"800",color:lrc.tc,flexShrink:0}}>{li+1}</span>
                             <div style={{flex:1,minWidth:0}}>
-                              <div style={{display:"flex",alignItems:"center",gap:"4px",marginBottom:"1px"}}>
-                                <div style={{fontSize:"10px",color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{sr.s||""}</div>
-                                {load.loadNum&&<span style={{fontSize:"8px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 5px",borderRadius:"3px",flexShrink:0,whiteSpace:"nowrap"}}>#{load.loadNum}</span>}
-                              </div>
+                              <div style={{fontSize:"10px",color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:"1px"}}>{sr.s||""}</div>
                               <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>→ {sr.r||sr.s||"—"}</div>
                             </div>
                             {load.delivery&&<span style={{fontSize:"9px",color:"#64748b",whiteSpace:"nowrap",flexShrink:0}}>📦 {load.delivery}</span>}
+                            {(()=>{
+                              // Show load number from dedicated field, OR fall back to extracting
+                              // the second part of the broker string (parser stores it as "RXO & 23150364").
+                              let ln=load.loadNum;
+                              if(!ln&&load.broker&&load.broker.indexOf("&")>=0){
+                                const after=load.broker.split("&")[1].trim();
+                                if(after)ln=after;
+                              }
+                              if(!ln)return null;
+                              return(<span title={"Load #"+ln} style={{fontSize:"10px",fontWeight:"700",color:"#5b21b6",background:"#ede9fe",border:"1px solid #c4b5fd",padding:"1px 6px",borderRadius:"4px",flexShrink:0,whiteSpace:"nowrap",fontFamily:"monospace"}}>#{ln}</span>);
+                            })()}
                             {showBroker&&brokerName&&<span style={{fontSize:"9px",color:"#94a3b8",whiteSpace:"nowrap",flexShrink:0}}>{brokerName}</span>}
                             {(parseFloat(load.rate)||0)>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#059669",whiteSpace:"nowrap",flexShrink:0}}>${(parseFloat(load.rate)||0).toLocaleString()}</span>}
                             {isAdmin&&<select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"600",color:lrc.tc,background:lrc.barBg,border:`1px solid ${lrc.bar}`,borderRadius:"4px",padding:"1px 3px",cursor:"pointer",outline:"none",flexShrink:0}} disabled={!isAdmin}>
