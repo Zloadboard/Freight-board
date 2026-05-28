@@ -3490,6 +3490,8 @@ ${accRows.length>0?`
                 </select>
               </div>
               <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
+                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Delivery Location</div>
+                <input value={row.destination||""} onChange={e=>updSub("localDeliveries",row.id,"destination",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="e.g. Romeoville, IL" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div>
                 <input value={row.broker||""} onChange={e=>updSub("localDeliveries",row.id,"broker",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Broker" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div>
@@ -4665,6 +4667,8 @@ ${accRows.length>0?`
                 </select>
               </div>
               <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
+                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Delivery Location</div>
+                <input value={row.destination||""} onChange={e=>updSub("localDeliveries",row.id,"destination",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="e.g. Romeoville, IL" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div>
                 <input value={row.broker||""} onChange={e=>updSub("localDeliveries",row.id,"broker",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Broker" disabled={isViewer}/></div>
                 <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div>
