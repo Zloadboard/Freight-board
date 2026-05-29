@@ -1864,10 +1864,6 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
 
   const updateOtrDriver = (otrDriver) => {
     const next = { ...load, otrDriver };
-    // Auto-promote Need to Drop → OTR Pickup once an OTR driver is assigned.
-    if (otrDriver && (load.status || "Need to Drop") === "Need to Drop") {
-      next.status = "OTR Pickup";
-    }
     // Auto-fill OTR truck from truckAssignments — only if truck is currently empty
     // (so we never clobber a manually-entered truck #).
     const mt = findTruckForDriver(truckAssignments, otrDriver);
