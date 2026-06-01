@@ -4291,7 +4291,19 @@ ${accRows.length>0?`
                                   const all=[...DRIVERS,...customDrivers];
                                   const matched=all.find(d=>d.toLowerCase()===val.toLowerCase());
                                   const final=matched||val;
-                                  if(final!==group.groupDriver)setGroup(group.id,"groupDriver",final||"");
+                                  if(final===group.groupDriver)return;
+                                  // Reverse auto-fill: if this driver has a truck assignment in the
+                                  // equipment list, set the OTR group truck to match — UNLESS the
+                                  // group already has a truck that's also assigned to this driver
+                                  // (no need to clobber a correct value).
+                                  const updFields={groupDriver:final||""};
+                                  if(final){
+                                    const truckForDriver=Object.keys(truckAssignments).find(tk=>(truckAssignments[tk]||"").toLowerCase()===final.toLowerCase());
+                                    if(truckForDriver&&group.groupTruck!==truckForDriver){
+                                      updFields.groupTruck=truckForDriver;
+                                    }
+                                  }
+                                  setW("groups",week.groups.map(g=>g.id!==group.id?g:{...g,...updFields}));
                                 }}
                                 style={{flex:1,border:"1px solid #bfdbfe",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",fontWeight:"600",color:group.groupDriver?"#0369a1":"#374151",background:"#fff",outline:"none",fontStyle:"italic"}}
                               />
@@ -4307,6 +4319,18 @@ ${accRows.length>0?`
                                 <option value="">— Truck —</option>
                                 {[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}
                               </select>
+                              {/* Mismatch warning: if both driver and truck are set and the equipment
+                                  list assigns this truck to a DIFFERENT driver, flag it visibly. */}
+                              {(()=>{
+                                if(!group.groupTruck||!group.groupDriver)return null;
+                                const expected=truckAssignments[group.groupTruck];
+                                if(!expected)return null; // no equipment assignment to compare against
+                                if(expected.toLowerCase()===group.groupDriver.toLowerCase())return null;
+                                return(
+                                  <span title={`Equipment list says truck #${group.groupTruck} is assigned to ${expected}, not ${group.groupDriver}. Click the driver field to auto-fix.`}
+                                    style={{fontSize:"12px",color:"#f59e0b",cursor:"help",flexShrink:0}}>⚠️</span>
+                                );
+                              })()}
                             </div>
                             <div style={{display:"flex",alignItems:"center",gap:"4px",flex:1}}>
                               <span style={{fontSize:"9px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",width:"44px",flexShrink:0}}>Trailer</span>
