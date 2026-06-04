@@ -3863,6 +3863,15 @@ ${accRows.length>0?`
             const gsSt=GSS[group.groupStatus]||GSS["Pending"];
             const isClaimed=!!(group.securedAt&&group.groupDriver);
             const canEdit=isAdmin||!isClaimed;
+            // Smart urgency tag: only consider loads NOT yet in progress (still need pickup).
+            // Loads already Dispatched, Dock, Yard, Picked Up, Loaded, In Transit, Delivered
+            // shouldn't drive the urgency — they're past the pickup phase.
+            const inProgressStatuses=["Dispatched","Dock","Yard","Picked Up","Loaded","In Transit","Delivered"];
+            const pendingLoads=(group.loads||[]).filter(l=>!inProgressStatuses.includes(l.status||""));
+            const earliestPendingPU=pendingLoads.length?Math.min(...pendingLoads.map(l=>parseTS(l.pickup))):Infinity;
+            const pendPuDate=isFinite(earliestPendingPU)?new Date(earliestPendingPU):null;
+            const pendPuDay=pendPuDate?new Date(pendPuDate.getFullYear(),pendPuDate.getMonth(),pendPuDate.getDate()):null;
+            // Keep the original earliest-of-all for misc downstream uses (delivery, etc.)
             const earliestPU=Math.min(...group.loads.map(l=>parseTS(l.pickup)));
             const puDate=isFinite(earliestPU)?new Date(earliestPU):null;
             const puDay=puDate?new Date(puDate.getFullYear(),puDate.getMonth(),puDate.getDate()):null;
@@ -3871,8 +3880,11 @@ ${accRows.length>0?`
             const delDay=delDate?new Date(delDate.getFullYear(),delDate.getMonth(),delDate.getDate()):null;
             const isDelivered=group.groupStatus==="Delivered";
             const statusDone=["Dispatched","Loaded","In Transit","Delivered","Driver assigned"].includes(group.groupStatus);
-            const urgTag=isDelivered||statusDone?"":puDay&&puDay.getTime()<today.getTime()?"OVERDUE":puDay&&puDay.getTime()===today.getTime()?"PU TODAY":delDay&&delDay.getTime()===today.getTime()?"DEL TODAY":puDay&&puDay.getTime()===tomorrowDay.getTime()?"TOMORROW":"";
-            const urgColor=puDay&&puDay.getTime()<today.getTime()?"#dc2626":puDay&&puDay.getTime()===today.getTime()?"#ef4444":"#eab308";
+            // Tag: PU TODAY / TOMORROW only. OVERDUE removed per user preference.
+            // Use pendPuDay (earliest pending load's pickup) so once today's load is in progress,
+            // the tag advances to reflect the next pending load.
+            const urgTag=isDelivered||statusDone?"":pendPuDay&&pendPuDay.getTime()===today.getTime()?"PU TODAY":pendPuDay&&pendPuDay.getTime()===tomorrowDay.getTime()?"TOMORROW":"";
+            const urgColor=urgTag==="PU TODAY"?"#ef4444":"#eab308";
             const hasDriver=!!(group.groupDriver&&group.groupDriver.trim());
             const route=(group.loads||[]).map(l=>parseSR(l.sr||"").r).filter(Boolean).join(" → ");
             const isMultiStop=(group.loads||[]).length>1;
@@ -3896,6 +3908,14 @@ ${accRows.length>0?`
                       const totalGross=(group.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
                       return totalGross>0?<span style={{fontSize:"11px",color:"#059669",fontWeight:"700"}}>${totalGross.toLocaleString()}</span>:null;
                     })()}
+                    {/* Miles + RPM — same values shown when the card is expanded.
+                        Miles use manual override > calculated > auto fallback (matches expanded card). */}
+                    {(()=>{
+                      const miles=group.tripMiles!==""&&group.tripMiles!=null?Math.round(parseFloat(group.tripMiles)):group.calcTripMi?Math.round(group.calcTripMi):group.autoTripMi?Math.round(group.autoTripMi):null;
+                      if(!miles)return null;
+                      return <span style={{fontSize:"10px",color:"#475569",fontWeight:"600",background:"#f1f5f9",padding:"1px 6px",borderRadius:"3px",flexShrink:0}}>{miles.toLocaleString()} mi</span>;
+                    })()}
+                    {group.rpm!=null&&<span style={{fontSize:"10px",fontWeight:"800",background:rpmBg(group.rpm),color:rpmFg(group.rpm),padding:"1px 6px",borderRadius:"3px",flexShrink:0}}>${group.rpm}/mi</span>}
                     <span style={{fontSize:"10px",color:"#64748b",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                       {group.groupDriver?<><span style={{color:"#0369a1",fontWeight:"600"}}>{group.groupDriver}</span>{group.groupTruck&&<span> ·#{group.groupTruck}</span>}{group.groupTrailer&&<span> / {group.groupTrailer}</span>}</>:<span style={{color:"#ef4444",fontStyle:"italic"}}>No OTR driver</span>}
                     </span>
@@ -3925,10 +3945,9 @@ ${accRows.length>0?`
                   {/* LOAD ROWS */}
                   {(group.loads||[]).map((load,li)=>{
                     const sr=parseSR(load.sr||"");
-                    // Status: prefer per-load status, fall back to group status. The status pill
-                    // uses whichever is set so trailers with only a group status still show color.
-                    const effectiveStatus=load.status||group.groupStatus||"";
-                    const rc=rowColor({...load,status:effectiveStatus},today,tomorrowDay);
+                    // Show only the per-load status (no group fallback) so loads without their own
+                    // status don't visually inherit a misleading "Pending" from the trailer.
+                    const rc=rowColor(load,today,tomorrowDay);
                     const liveTk=load.localTruck&&liveTrucks[load.localTruck];
                     const hidePill=STATUS_HIDE_PILL[load.status||""];
                     let liveShort=null;
@@ -3948,7 +3967,7 @@ ${accRows.length>0?`
                     // has been made on this load yet. Any active status (Dispatched, Dock, Yard, Picked Up,
                     // Loaded, In Transit, Delivered) means the load isn't waiting on pickup — don't flag red.
                     const pd=parsePickupDate(load.pickup);
-                    const inProgress=["Dispatched","Dock","Yard","Picked Up","Loaded","In Transit","Delivered"].includes(effectiveStatus);
+                    const inProgress=["Dispatched","Dock","Yard","Picked Up","Loaded","In Transit","Delivered"].includes(load.status||"");
                     const isOverduePU=pd&&pd.getTime()<today.getTime()&&!inProgress;
                     const pickupColor=isOverduePU?"#dc2626":"#1f2937";
                     // Broker+load# pill: prefer load.loadNum, fall back to broker "&" segment
@@ -3985,7 +4004,7 @@ ${accRows.length>0?`
                         <span style={cellLeft}>
                           {liveShort?<span title={liveTk.address+" — "+liveAgo(liveTk.asOf)} style={{fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 5px",borderRadius:"3px",cursor:"help",whiteSpace:"nowrap"}}>📍 {liveShort}</span>:<span>—</span>}
                         </span>
-                        <span style={{...cellBase,fontSize:"10px",fontWeight:"700",color:rc.tc||"#1f2937",background:rc.barBg||"transparent",padding:"1px 5px",borderRadius:"3px",justifySelf:"start",border:rc.barBg?"none":"1px solid #e2e8f0",borderRight:rc.barBg?"none":"1px solid #cbd5e1"}}>{effectiveStatus||"—"}</span>
+                        <span style={{...cellBase,fontSize:"10px",fontWeight:"700",color:rc.tc||"#1f2937",background:rc.barBg||"transparent",padding:"1px 5px",borderRadius:"3px",justifySelf:"start",border:rc.barBg?"none":"1px solid #e2e8f0",borderRight:rc.barBg?"none":"1px solid #cbd5e1"}}>{load.status||"—"}</span>
                         <span style={{borderRight:"none"}}/>
                       </div>
                     );
