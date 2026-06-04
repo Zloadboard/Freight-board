@@ -396,14 +396,24 @@ function _parseRXO(text){
     for(let i=0;i<lines.length;i++){
       if(!new RegExp("^\\s*"+kind+"\\b").test(lines[i]))continue;
       let location=null,dateStr=null,startTime=null,endTime=null;
+      // City may be on the PU/SO line itself (older RXO layout) OR on a subsequent line
+      // (newer RXO layout where the facility name comes first, then street, then city).
       const cm=lines[i].match(cityRe);
       if(cm)location=cm[1].trim()+", "+cm[2];
-      // Scan the next ~10 lines for a date and the time(s).
+      // Scan the next ~10 lines for: city (if not yet found), date, and time(s).
       // RXO can render a time window as two lines: "13:00 -" then "15:00".
       for(let j=i+1;j<Math.min(i+10,lines.length);j++){
         const ln=lines[j];
         // Stop scanning if we hit another PU/SO row (next stop block)
         if(j>i&&/^\s*(PU|SO|DO)\b/.test(ln))break;
+        if(!location){
+          // Skip lines that look like a 5-digit zip continuation or pure facility name junk
+          const cm2=ln.match(cityRe);
+          // Sanity check: city line shouldn't contain "Arrival", "N/A", or look like a date
+          if(cm2&&!/\b(Arrival|N\/A|Departure)\b/i.test(ln)&&!/^\s*\d{1,2}\/\d{1,2}\/\d{2,4}\b/.test(ln)){
+            location=cm2[1].trim()+", "+cm2[2];
+          }
+        }
         if(!dateStr){const dm=ln.match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/);if(dm)dateStr=dm[1];}
         // Time on same line: "13:00" or "13:00 - 15:00"
         const winM=ln.match(/\b(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\b/);
@@ -1161,6 +1171,11 @@ function App(){
   const activeTab=appMode==="viewer"?"dashboard":_activeTab;
   const setActiveTab=(tab)=>{if(appMode==="viewer"&&tab!=="dashboard")return;_setActiveTab(tab);};
   const[boardFilter,setBoardFilter]=useState("all");
+  // Compact/cards view toggle for Planned Shipments — persisted across sessions
+  const[plannedView,setPlannedView]=useState(()=>localStorage.getItem("fcbv2_plannedView")||"cards");
+  useEffect(()=>{localStorage.setItem("fcbv2_plannedView",plannedView);},[plannedView]);
+  // Track which single group is expanded for editing when in compact view
+  const[expandedCompactGroup,setExpandedCompactGroup]=useState(null);
   useEffect(()=>{if(activeTab&&appMode)localStorage.setItem("fcbv2_lastTab",activeTab);},[activeTab,appMode]); // all | today | tomorrow | active | pending | done
   const[dashCurIdx,setDashCurIdx]=useState(0);
   const[dashPrevIdx,setDashPrevIdx]=useState(1);
@@ -1867,6 +1882,21 @@ function App(){
     const s=String(full||"").trim();
     if(!s)return"";
     return s.split(/\s+/)[0];
+  };
+
+  // Strip generic broker suffixes (Logistics, Solutions, Inc, LLC, Corp, Group)
+  // so display is compact. "Arrive Logistics" → "Arrive", "Echo Global" → "Echo",
+  // "RXO Capacity Solutions" → "RXO".
+  const brokerShort=(b)=>{
+    let s=String(b||"").trim();
+    if(!s)return"";
+    // If broker is "Name & LoadNum", drop the suffix at this stage
+    if(s.indexOf("&")>=0)s=s.split("&")[0].trim();
+    // Drop generic words that don't help identify the broker
+    s=s.replace(/\b(Logistics?|Solutions?|Group|Inc\.?|LLC|Corp\.?|Corporation|Global|Capacity|Services?)\b/gi,"").trim();
+    // Clean up double spaces / trailing punctuation
+    s=s.replace(/\s+/g," ").replace(/[,\.\-\s]+$/,"").trim();
+    return s;
   };
 
   // Statuses where we hide the live location pill — load is already at the
@@ -3806,10 +3836,22 @@ ${accRows.length>0?`
         </>);
       })()}
 {/* PLANNED SHIPMENTS */}
-      <div id="section-main" className="section-header" style={{background:"#1a2e50",marginTop:0,borderRadius:0,display:activeSection==="all"||activeSection==="main"?"block":"none"}} onClick={()=>toggleSection("main")}>
-        <span>{week.openSections?.main?"▼":"▶"}</span>
-        <span style={{fontWeight:"700",fontSize:"13px"}}>Planned Shipments — {pendingGroups.length} trailers</span>
-        
+      <div id="section-main" className="section-header" style={{background:"#1a2e50",marginTop:0,borderRadius:0,display:activeSection==="all"||activeSection==="main"?"flex":"none",alignItems:"center",gap:"8px"}}>
+        <span onClick={()=>toggleSection("main")} style={{cursor:"pointer"}}>{week.openSections?.main?"▼":"▶"}</span>
+        <span onClick={()=>toggleSection("main")} style={{fontWeight:"700",fontSize:"13px",cursor:"pointer",flex:1}}>Planned Shipments — {pendingGroups.length} trailers</span>
+        {/* Compact/Cards view toggle — admin & dispatcher can both use this since it's view-only */}
+        {week.openSections?.main&&(
+          <div onClick={e=>e.stopPropagation()} style={{display:"flex",gap:"0",background:"rgba(255,255,255,.08)",borderRadius:"6px",padding:"2px"}}>
+            <button onClick={()=>setPlannedView("cards")}
+              style={{padding:"3px 9px",borderRadius:"4px",border:"none",fontSize:"11px",fontWeight:"600",cursor:"pointer",background:plannedView==="cards"?"#fff":"transparent",color:plannedView==="cards"?"#1a2e50":"rgba(255,255,255,.7)",transition:"all .15s"}}
+              title="Full card view — best for editing"
+            >🃏 Cards</button>
+            <button onClick={()=>setPlannedView("compact")}
+              style={{padding:"3px 9px",borderRadius:"4px",border:"none",fontSize:"11px",fontWeight:"600",cursor:"pointer",background:plannedView==="compact"?"#fff":"transparent",color:plannedView==="compact"?"#1a2e50":"rgba(255,255,255,.7)",transition:"all .15s"}}
+              title="Dense row view — best for scanning many trailers"
+            >🗂 Compact</button>
+          </div>
+        )}
       </div>
       {(activeSection==="all"||activeSection==="main")&&week.openSections?.main&&(
       <div style={{display:"flex",gap:"10px",alignItems:"flex-start",padding:"10px",background:"#f0f4f8",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",maxWidth:"100%",boxSizing:"border-box"}}>
@@ -3834,6 +3876,123 @@ ${accRows.length>0?`
             const hasDriver=!!(group.groupDriver&&group.groupDriver.trim());
             const route=(group.loads||[]).map(l=>parseSR(l.sr||"").r).filter(Boolean).join(" → ");
             const isMultiStop=(group.loads||[]).length>1;
+
+            // ═══ COMPACT VIEW: dense one-row-per-load layout. ═══
+            // The user chose Cards or Compact in the header toggle. In Compact mode, each load
+            // renders as a tight horizontal row. Click ✏️ to expand THIS group back to the full
+            // card (only one group expanded at a time — tracked by expandedCompactGroup state).
+            const isExpandedInCompact=expandedCompactGroup===group.id;
+            if(plannedView==="compact"&&!isExpandedInCompact){
+              // Grid columns (tight): T# | Route | PU | DEL | Wt | Plt | L Truck | L Driver | Trailer | Rate | Broker+# | 📍 | Status | ✏️ ×
+              // Hide trailer-level T# header for non-multi-stop, since the row itself = the load.
+              const gColTpl="30px minmax(170px,2fr) 100px 100px 50px 30px 50px 65px 55px 65px minmax(100px,1fr) 120px 80px 24px";
+              return(
+                <div key={group.id} style={{background:"#ffffff",border:"1px solid #64748b",borderRadius:"6px",overflow:"hidden",borderLeft:`4px solid ${gsSt.tc||"#64748b"}`,marginBottom:"6px",boxShadow:"0 1px 2px rgba(15,31,61,.1)"}}>
+                  {/* TRAILER HEADER STRIP — keeps OTR Drv/Truck/Trailer/status/dollar visible */}
+                  <div style={{display:"flex",alignItems:"center",gap:"8px",padding:"4px 9px",background:"rgba(30,58,138,.06)",borderBottom:"1px solid #e5edf5",fontSize:"11px",flexWrap:"wrap"}}>
+                    <span style={{fontWeight:"700",color:"#1e3a8a",background:"#dbeafe",padding:"2px 7px",borderRadius:"4px",fontSize:"10px",flexShrink:0}}>T{gi+1}</span>
+                    {isMultiStop&&<span style={{fontSize:"9px",color:"#64748b",fontWeight:"600"}}>{(group.loads||[]).length} stops</span>}
+                    {(()=>{
+                      const totalGross=(group.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
+                      return totalGross>0?<span style={{fontSize:"11px",color:"#059669",fontWeight:"700"}}>${totalGross.toLocaleString()}</span>:null;
+                    })()}
+                    <span style={{fontSize:"10px",color:"#64748b",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                      {group.groupDriver?<><span style={{color:"#0369a1",fontWeight:"600"}}>{group.groupDriver}</span>{group.groupTruck&&<span> ·#{group.groupTruck}</span>}{group.groupTrailer&&<span> / {group.groupTrailer}</span>}</>:<span style={{color:"#ef4444",fontStyle:"italic"}}>No OTR driver</span>}
+                    </span>
+                    {urgTag&&!isDelivered&&<span style={{fontSize:"9px",fontWeight:"700",color:"#fff",background:urgColor,padding:"1px 6px",borderRadius:"3px",flexShrink:0}}>{urgTag}</span>}
+                    <span style={{fontSize:"10px",fontWeight:"600",color:gsSt.tc,background:gsSt.barBg,padding:"1px 7px",borderRadius:"3px",flexShrink:0}}>{group.groupStatus||"Pending"}</span>
+                    {isAdmin&&!group.isCombined&&isMultiStop&&<button onClick={e=>{e.stopPropagation();setGroup(group.id,"isCombined",true);}} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"4px",padding:"1px 8px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>→ Combined</button>}
+                    <button onClick={e=>{e.stopPropagation();setExpandedCompactGroup(group.id);}} title="Expand for editing" style={{background:"#e0e7ff",color:"#3730a3",border:"1px solid #c7d2fe",borderRadius:"4px",padding:"1px 7px",fontSize:"11px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>✏️</button>
+                    {isAdmin&&<button onClick={e=>{e.stopPropagation();if(confirm("Delete this trailer and all its loads?"))delGroup(group.id);}} title="Delete trailer" style={{background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>×</button>}
+                  </div>
+                  {/* COLUMN HEADER — same border pattern + alignment as the data rows below */}
+                  <div style={{display:"grid",gridTemplateColumns:gColTpl,gap:"0",padding:"4px 9px",background:"#e2e8f0",borderBottom:"1px solid #94a3b8",fontSize:"10px",fontWeight:"700",color:"#475569",textTransform:"uppercase",letterSpacing:".04em"}}>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"center"}}>#</span>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"left"}}>Route</span>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"center"}}>PU</span>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"center"}}>DEL</span>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"center"}}>Wt</span>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"center"}}>Plt</span>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"center"}}>Truck</span>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"center"}}>Driver</span>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"center"}}>Trailer</span>
+                    <span style={{color:"#059669",padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"center"}}>Rate</span>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"left"}}>Broker · Load#</span>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"left"}}>📍 Live</span>
+                    <span style={{padding:"0 4px",borderRight:"1px solid #cbd5e1",textAlign:"center"}}>Status</span>
+                    <span/>
+                  </div>
+                  {/* LOAD ROWS */}
+                  {(group.loads||[]).map((load,li)=>{
+                    const sr=parseSR(load.sr||"");
+                    // Status: prefer per-load status, fall back to group status. The status pill
+                    // uses whichever is set so trailers with only a group status still show color.
+                    const effectiveStatus=load.status||group.groupStatus||"";
+                    const rc=rowColor({...load,status:effectiveStatus},today,tomorrowDay);
+                    const liveTk=load.localTruck&&liveTrucks[load.localTruck];
+                    const hidePill=STATUS_HIDE_PILL[load.status||""];
+                    let liveShort=null;
+                    if(liveTk&&liveTk.address&&!hidePill){
+                      const parts=liveTk.address.split(",").map(s=>s.trim()).filter(Boolean);
+                      liveShort=liveTk.address;
+                      if(parts.length>=2){
+                        const lastPart=parts[parts.length-1];
+                        const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
+                        const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
+                        if(city&&state)liveShort=city+", "+state;
+                        else liveShort=parts.slice(-2).join(", ");
+                      }
+                      if(liveShort.length>22)liveShort=liveShort.slice(0,20)+"…";
+                    }
+                    // Pickup date highlighting: red ONLY if pickup is strictly before today AND no progress
+                    // has been made on this load yet. Any active status (Dispatched, Dock, Yard, Picked Up,
+                    // Loaded, In Transit, Delivered) means the load isn't waiting on pickup — don't flag red.
+                    const pd=parsePickupDate(load.pickup);
+                    const inProgress=["Dispatched","Dock","Yard","Picked Up","Loaded","In Transit","Delivered"].includes(effectiveStatus);
+                    const isOverduePU=pd&&pd.getTime()<today.getTime()&&!inProgress;
+                    const pickupColor=isOverduePU?"#dc2626":"#1f2937";
+                    // Broker+load# pill: prefer load.loadNum, fall back to broker "&" segment
+                    let lnDisplay=load.loadNum;
+                    if(!lnDisplay&&load.broker&&load.broker.indexOf("&")>=0){
+                      const after=load.broker.split("&")[1].trim();
+                      if(after)lnDisplay=after;
+                    }
+                    const brokerName=brokerShort(load.broker);
+                    // Shared cell styles. cellBase = centered (numbers, short fields). cellLeft = left-aligned (Route, Broker which have variable-length text).
+                    const cellBase={color:"#1f2937",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",fontSize:"12px",padding:"0 4px",borderRight:"1px solid #cbd5e1",minWidth:0,textAlign:"center"};
+                    const cellLeft={...cellBase,textAlign:"left"};
+                    return(
+                      <div key={load.id} style={{display:"grid",gridTemplateColumns:gColTpl,gap:"0",padding:"5px 9px",alignItems:"center",fontSize:"12px",borderBottom:li<(group.loads.length-1)?"1px solid #cbd5e1":"none"}}>
+                        <span style={{...cellBase,fontSize:"10px",fontWeight:"700",color:"#64748b",background:"#fff",border:"1px solid #e2e8f0",borderRadius:"3px",padding:"0 4px",justifySelf:"start",borderRight:"1px solid #e2e8f0"}}>{li+1}</span>
+                        <span style={cellLeft} title={(sr.s||"")+" → "+(sr.r||"")}>
+                          {sr.s&&<span>{sr.s}</span>}
+                          {sr.s&&sr.r&&<span style={{margin:"0 3px"}}>→</span>}
+                          <span>{sr.r||(sr.s?"":"—")}</span>
+                        </span>
+                        <span style={{...cellBase,color:pickupColor,fontWeight:isOverduePU?"700":"normal"}} title={load.pickup||""}>{load.pickup||"—"}</span>
+                        <span style={cellBase} title={load.delivery||"no appt"}>{load.delivery||"no appt"}</span>
+                        <span style={cellBase}>{load.weight||"—"}</span>
+                        <span style={cellBase}>{load.pallets||"—"}</span>
+                        <span style={cellBase}>{load.localTruck?"#"+load.localTruck:"—"}</span>
+                        <span style={cellBase} title={load.driver||""}>{firstName(load.driver)||"—"}</span>
+                        <span style={cellBase}>{load.localTrailer||"—"}</span>
+                        <span style={{...cellBase,color:"#059669",fontWeight:"700"}}>{load.rate?"$"+Number(load.rate).toLocaleString():"—"}</span>
+                        <span style={cellLeft} title={load.broker||""}>
+                          {brokerName&&<span>{brokerName}</span>}
+                          {lnDisplay&&<span style={{marginLeft:"4px"}}>#{lnDisplay}</span>}
+                          {!brokerName&&!lnDisplay&&<span>—</span>}
+                        </span>
+                        <span style={cellLeft}>
+                          {liveShort?<span title={liveTk.address+" — "+liveAgo(liveTk.asOf)} style={{fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 5px",borderRadius:"3px",cursor:"help",whiteSpace:"nowrap"}}>📍 {liveShort}</span>:<span>—</span>}
+                        </span>
+                        <span style={{...cellBase,fontSize:"10px",fontWeight:"700",color:rc.tc||"#1f2937",background:rc.barBg||"transparent",padding:"1px 5px",borderRadius:"3px",justifySelf:"start",border:rc.barBg?"none":"1px solid #e2e8f0",borderRight:rc.barBg?"none":"1px solid #cbd5e1"}}>{effectiveStatus||"—"}</span>
+                        <span style={{borderRight:"none"}}/>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            }
 
             return(
               <div key={group.id}
@@ -3862,6 +4021,8 @@ ${accRows.length>0?`
                 {/* ── BANNER (no group-status dropdown — individual load status shown in rows) ── */}
                 <div style={{background:"linear-gradient(90deg,#0f1f3d,#1e3a5f)",padding:"5px 10px",display:"flex",alignItems:"center",gap:"7px",fontSize:"11px",color:"#fff",flexWrap:"wrap"}}>
                   <span style={{background:"#2563eb",padding:"1px 8px",borderRadius:"4px",fontWeight:"700",flexShrink:0}}>T{gi+1}</span>
+                  {/* In compact mode, this group is temporarily expanded — show a collapse button */}
+                  {plannedView==="compact"&&isExpandedInCompact&&<button onClick={()=>setExpandedCompactGroup(null)} title="Collapse back to compact row" style={{background:"rgba(148,163,184,.25)",color:"#cbd5e1",border:"1px solid rgba(148,163,184,.4)",borderRadius:"4px",padding:"1px 8px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>← Collapse</button>}
                   
                   {isAdmin&&<button onClick={()=>addLoad(group.id)} style={{background:"rgba(59,130,246,.25)",color:"#93c5fd",border:"1px solid rgba(59,130,246,.4)",borderRadius:"4px",padding:"1px 5px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>+Load</button>}
                   {isAdmin&&<div
@@ -4258,7 +4419,7 @@ ${accRows.length>0?`
           const hasMulti=(pendingGroups||[]).some(g=>!g.isCombined&&(g.loads||[]).length>1);
           if(!combined.length&&!hasMulti)return null;
           return(
-            <div style={{flex:"2 1 0",minWidth:"300px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:"8px",overflow:"hidden",alignSelf:"flex-start"}}>
+            <div style={{flex:"1 1 0",minWidth:"260px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:"8px",overflow:"hidden",alignSelf:"flex-start"}}>
               <div style={{background:"#1a2e50",padding:"7px 12px",display:"flex",alignItems:"center",gap:"8px"}}>
                 <span style={{color:"#fff",fontWeight:"700",fontSize:"12px"}}>🔄 Combined</span>
                 <span style={{background:"rgba(255,255,255,.15)",color:"#fff",fontSize:"10px",padding:"1px 6px",borderRadius:"10px"}}>{combined.length}</span>
@@ -4300,15 +4461,14 @@ ${accRows.length>0?`
                           <span style={{fontSize:"11px",fontWeight:"700",color:"#b91c1c",letterSpacing:".01em"}}>NO DRIVER ASSIGNED</span>
                         </div>
                       )}
-                      {/* OTR Driver + Truck + Trailer — editable inline */}
+                      {/* OTR Driver + Truck + Trailer — editable inline, COMPACT one-row layout */}
                       {isAdmin?(
-                        <div style={{display:"flex",flexDirection:"column",gap:"5px",marginBottom:"7px",padding:"7px 8px",background:"rgba(255,255,255,.7)",border:"1px solid #e2e8f0",borderRadius:"6px"}}>
-                          <div style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                            <span style={{fontSize:"9px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",width:"44px",flexShrink:0}}>OTR Drv</span>
+                        <div style={{display:"flex",flexDirection:"column",gap:"4px",marginBottom:"5px",padding:"5px 6px",background:"rgba(255,255,255,.7)",border:"1px solid #e2e8f0",borderRadius:"6px"}}>
+                          <div style={{display:"flex",gap:"5px",alignItems:"center"}}>
                             <input
                                 list={`otr-drv-${group.id}`}
                                 defaultValue={group.groupDriver||""}
-                                placeholder="Search driver..."
+                                placeholder="OTR driver..."
                                 onBlur={e=>{
                                   const val=e.target.value.trim();
                                   const all=[...DRIVERS,...customDrivers];
@@ -4317,8 +4477,7 @@ ${accRows.length>0?`
                                   if(final===group.groupDriver)return;
                                   // Reverse auto-fill: if this driver has a truck assignment in the
                                   // equipment list, set the OTR group truck to match — UNLESS the
-                                  // group already has a truck that's also assigned to this driver
-                                  // (no need to clobber a correct value).
+                                  // group already has a truck that's also assigned to this driver.
                                   const updFields={groupDriver:final||""};
                                   if(final){
                                     const truckForDriver=Object.keys(truckAssignments).find(tk=>(truckAssignments[tk]||"").toLowerCase()===final.toLowerCase());
@@ -4328,43 +4487,31 @@ ${accRows.length>0?`
                                   }
                                   setW("groups",week.groups.map(g=>g.id!==group.id?g:{...g,...updFields}));
                                 }}
-                                style={{flex:1,border:"1px solid #bfdbfe",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",fontWeight:"600",color:group.groupDriver?"#0369a1":"#374151",background:"#fff",outline:"none",fontStyle:"italic"}}
+                                style={{flex:"2 1 0",minWidth:"90px",border:"1px solid #bfdbfe",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",fontWeight:"600",color:group.groupDriver?"#0369a1":"#374151",background:"#fff",outline:"none",fontStyle:"italic"}}
                               />
                               <datalist id={`otr-drv-${group.id}`}>
                                 {[...DRIVERS,...customDrivers].sort().map(d=>(<option key={d} value={d}/>))}
                               </datalist>
+                            <select value={group.groupTruck||""} onChange={e=>{if(!canEdit)return;const tk=e.target.value;const updFields={groupTruck:tk};if(tk&&truckAssignments[tk])updFields.groupDriver=truckAssignments[tk];setW("groups",week.groups.map(g=>g.id!==group.id?g:{...g,...updFields}));}}
+                              style={{flex:"1 1 0",minWidth:"68px",border:"1px solid #e0f2fe",borderRadius:"5px",padding:"3px 4px",fontSize:"11px",fontWeight:"600",color:group.groupTruck?"#0369a1":"#94a3b8",background:"#fff",cursor:"pointer",outline:"none"}}>
+                              <option value="">🚚 Truck</option>
+                              {[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}
+                            </select>
+                            {/* Mismatch warning: if both driver and truck are set and equipment list disagrees */}
+                            {(()=>{
+                              if(!group.groupTruck||!group.groupDriver)return null;
+                              const expected=truckAssignments[group.groupTruck];
+                              if(!expected)return null;
+                              if(expected.toLowerCase()===group.groupDriver.toLowerCase())return null;
+                              return(<span title={`Equipment list says truck #${group.groupTruck} is assigned to ${expected}, not ${group.groupDriver}. Click the driver field to auto-fix.`} style={{fontSize:"12px",color:"#f59e0b",cursor:"help",flexShrink:0}}>⚠️</span>);
+                            })()}
+                            <select value={group.groupTrailer||""} onChange={e=>{if(canEdit)setGroup(group.id,"groupTrailer",e.target.value);}} disabled={!canEdit}
+                              style={{flex:"1 1 0",minWidth:"68px",border:"1px solid #ede9fe",borderRadius:"5px",padding:"3px 4px",fontSize:"11px",fontWeight:"600",color:group.groupTrailer?"#7c3aed":"#94a3b8",background:"#fff",cursor:"pointer",outline:"none"}}>
+                              <option value="">Trailer</option>
+                              {[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}
+                            </select>
                           </div>
-                          <div style={{display:"flex",gap:"5px"}}>
-                            <div style={{display:"flex",alignItems:"center",gap:"4px",flex:1}}>
-                              <span style={{fontSize:"9px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",width:"44px",flexShrink:0}}>Truck</span>
-                              <select value={group.groupTruck||""} onChange={e=>{if(!canEdit)return;const tk=e.target.value;const updFields={groupTruck:tk};if(tk&&truckAssignments[tk])updFields.groupDriver=truckAssignments[tk];setW("groups",week.groups.map(g=>g.id!==group.id?g:{...g,...updFields}));}}
-                                style={{flex:1,border:"1px solid #e0f2fe",borderRadius:"5px",padding:"3px 5px",fontSize:"11px",fontWeight:"600",color:group.groupTruck?"#0369a1":"#94a3b8",background:"#fff",cursor:"pointer",outline:"none"}}>
-                                <option value="">— Truck —</option>
-                                {[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}
-                              </select>
-                              {/* Mismatch warning: if both driver and truck are set and the equipment
-                                  list assigns this truck to a DIFFERENT driver, flag it visibly. */}
-                              {(()=>{
-                                if(!group.groupTruck||!group.groupDriver)return null;
-                                const expected=truckAssignments[group.groupTruck];
-                                if(!expected)return null; // no equipment assignment to compare against
-                                if(expected.toLowerCase()===group.groupDriver.toLowerCase())return null;
-                                return(
-                                  <span title={`Equipment list says truck #${group.groupTruck} is assigned to ${expected}, not ${group.groupDriver}. Click the driver field to auto-fix.`}
-                                    style={{fontSize:"12px",color:"#f59e0b",cursor:"help",flexShrink:0}}>⚠️</span>
-                                );
-                              })()}
-                            </div>
-                            <div style={{display:"flex",alignItems:"center",gap:"4px",flex:1}}>
-                              <span style={{fontSize:"9px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",width:"44px",flexShrink:0}}>Trailer</span>
-                              <select value={group.groupTrailer||""} onChange={e=>{if(canEdit)setGroup(group.id,"groupTrailer",e.target.value);}} disabled={!canEdit}
-                                style={{flex:1,border:"1px solid #ede9fe",borderRadius:"5px",padding:"3px 5px",fontSize:"11px",fontWeight:"600",color:group.groupTrailer?"#7c3aed":"#94a3b8",background:"#fff",cursor:"pointer",outline:"none"}}>
-                                <option value="">— Trailer —</option>
-                                {[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map(t=>(<option key={t} value={t}>#{t}</option>))}
-                              </select>
-                            </div>
-                          </div>
-                          {/* Live OTR truck location pill — admin view. Always shown when GPS available. */}
+                          {/* Live OTR truck location pill — only renders when GPS available. */}
                           {(()=>{
                             const tk=group.groupTruck&&liveTrucks[group.groupTruck];
                             if(!tk||!tk.address)return null;
@@ -4380,7 +4527,7 @@ ${accRows.length>0?`
                             if(short.length>32)short=short.slice(0,30)+"…";
                             const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+group.groupTruck+")";
                             return(
-                              <div title={tip} style={{fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"3px 8px",borderRadius:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help",marginTop:"2px"}}>
+                              <div title={tip} style={{fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"2px 7px",borderRadius:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help",alignSelf:"flex-start"}}>
                                 📍 {short}
                               </div>
                             );
@@ -4608,45 +4755,45 @@ ${accRows.length>0?`
                           </div>
                         );
                       })}
-                      {/* Ready Time field */}
-                      <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"5px",padding:"5px 7px",background:"rgba(34,197,94,.06)",border:"1px solid #bbf7d0",borderRadius:"5px"}}>
-                        <span style={{fontSize:"9px",fontWeight:"700",color:"#15803d",textTransform:"uppercase",letterSpacing:".04em",flexShrink:0}}>🕐 Ready</span>
-                        {isAdmin?(
-                          <input
-                            type="text"
-                            defaultValue={group.readyTime||""}
-                            placeholder="e.g. 4/28 8AM"
-                            onBlur={e=>{if(canEdit)setGroup(group.id,"readyTime",e.target.value.trim());}} disabled={!canEdit}
-                            onKeyDown={e=>{if(e.key==="Enter"){setGroup(group.id,"readyTime",e.target.value.trim());e.target.blur();}}}
-                            onClick={e=>e.stopPropagation()}
-                            style={{flex:1,border:"none",background:"transparent",fontSize:"11px",fontWeight:"600",color:"#15803d",outline:"none",fontFamily:"inherit"}}
-                          />
-                        ):(
-                          <span style={{fontSize:"11px",fontWeight:"600",color:"#15803d"}}>{group.readyTime||<span style={{color:"#94a3b8",fontWeight:"400",fontStyle:"italic"}}>Not set</span>}</span>
-                        )}
-                      </div>
-
-                      {/* Mileage row */}
-                      <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"5px",padding:"5px 7px",background:"rgba(255,255,255,.6)",border:"1px solid #e2e8f0",borderRadius:"5px"}}>
-                        <span style={{fontSize:"9px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em"}}>Miles</span>
-                        {isAdmin?(
-                          <div style={{display:"flex",alignItems:"center",gap:"4px",flex:1}}>
+                      {/* Ready Time + Miles — combined onto a single row to save space */}
+                      <div style={{display:"flex",gap:"5px",marginBottom:"5px"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:"6px",padding:"3px 7px",background:"rgba(34,197,94,.06)",border:"1px solid #bbf7d0",borderRadius:"5px",flex:"2 1 0",minWidth:0}}>
+                          <span style={{fontSize:"9px",fontWeight:"700",color:"#15803d",textTransform:"uppercase",letterSpacing:".04em",flexShrink:0}}>🕐 Ready</span>
+                          {isAdmin?(
                             <input
-                              type="number"
-                              value={group.tripMiles!==""&&group.tripMiles!=null?group.tripMiles:""}
-                              placeholder={group.calcTripMi?"~"+Math.round(group.calcTripMi):group.autoTripMi?"~"+Math.round(group.autoTripMi):"—"}
-                              onChange={e=>setGroup(group.id,"tripMiles",e.target.value===""?"":e.target.value)}
-                              style={{flex:1,border:"none",borderBottom:"1px solid #bfdbfe",background:"transparent",fontSize:"12px",fontWeight:"700",color:"#0369a1",outline:"none",fontFamily:"inherit"}}
+                              type="text"
+                              defaultValue={group.readyTime||""}
+                              placeholder="e.g. 4/28 8AM"
+                              onBlur={e=>{if(canEdit)setGroup(group.id,"readyTime",e.target.value.trim());}} disabled={!canEdit}
+                              onKeyDown={e=>{if(e.key==="Enter"){setGroup(group.id,"readyTime",e.target.value.trim());e.target.blur();}}}
+                              onClick={e=>e.stopPropagation()}
+                              style={{flex:1,minWidth:0,border:"none",background:"transparent",fontSize:"11px",fontWeight:"600",color:"#15803d",outline:"none",fontFamily:"inherit"}}
                             />
-                            {group.tripMiles!==""&&group.tripMiles!=null&&
-                              <button onClick={()=>setGroup(group.id,"tripMiles","")} style={{background:"none",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:"10px",padding:"0"}}>↺</button>
-                            }
-                          </div>
-                        ):(
-                          <span style={{fontSize:"12px",fontWeight:"700",color:"#0369a1"}}>
-                            {group.tripMiles!==""&&group.tripMiles!=null?Math.round(parseFloat(group.tripMiles)).toLocaleString()+" mi":group.calcTripMi?Math.round(group.calcTripMi).toLocaleString()+" mi":group.autoTripMi?Math.round(group.autoTripMi).toLocaleString()+" mi":"—"}
-                          </span>
-                        )}
+                          ):(
+                            <span style={{fontSize:"11px",fontWeight:"600",color:"#15803d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{group.readyTime||<span style={{color:"#94a3b8",fontWeight:"400",fontStyle:"italic"}}>Not set</span>}</span>
+                          )}
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:"6px",padding:"3px 7px",background:"rgba(255,255,255,.6)",border:"1px solid #e2e8f0",borderRadius:"5px",flex:"1 1 0",minWidth:0}}>
+                          <span style={{fontSize:"9px",fontWeight:"600",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",flexShrink:0}}>Mi</span>
+                          {isAdmin?(
+                            <div style={{display:"flex",alignItems:"center",gap:"4px",flex:1,minWidth:0}}>
+                              <input
+                                type="number"
+                                value={group.tripMiles!==""&&group.tripMiles!=null?group.tripMiles:""}
+                                placeholder={group.calcTripMi?"~"+Math.round(group.calcTripMi):group.autoTripMi?"~"+Math.round(group.autoTripMi):"—"}
+                                onChange={e=>setGroup(group.id,"tripMiles",e.target.value===""?"":e.target.value)}
+                                style={{flex:1,minWidth:0,border:"none",borderBottom:"1px solid #bfdbfe",background:"transparent",fontSize:"12px",fontWeight:"700",color:"#0369a1",outline:"none",fontFamily:"inherit"}}
+                              />
+                              {group.tripMiles!==""&&group.tripMiles!=null&&
+                                <button onClick={()=>setGroup(group.id,"tripMiles","")} style={{background:"none",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:"10px",padding:"0"}}>↺</button>
+                              }
+                            </div>
+                          ):(
+                            <span style={{fontSize:"12px",fontWeight:"700",color:"#0369a1",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                              {group.tripMiles!==""&&group.tripMiles!=null?Math.round(parseFloat(group.tripMiles)).toLocaleString():group.calcTripMi?Math.round(group.calcTripMi).toLocaleString():group.autoTripMi?Math.round(group.autoTripMi).toLocaleString():"—"}
+                            </span>
+                          )}
+                        </div>
                       </div>
                       {isAdmin&&(
                         <div style={{display:"flex",gap:"6px",marginTop:"7px"}}>
