@@ -119,6 +119,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .otr-stop-city{font-size:12px;font-weight:600;color:#e2e8f0;flex:1;}
 .otr-stop-del{font-size:10px;color:rgba(255,255,255,.4);}
 
+/* SAMSARA LIVE LOCATION PILL — yellow pill, used on OTR cards (dark bg), Combined cards (white bg), Planned rows (white bg) */
+.live-pill{font-size:10px;font-weight:700;color:#a16207;background:#fef3c7;border:1px solid #fcd34d;padding:2px 7px;border-radius:4px;white-space:nowrap;display:inline-flex;align-items:center;gap:3px;}
+.live-pill.dark{color:#fcd34d;background:rgba(252,211,77,.12);border-color:rgba(252,211,77,.35);}
+
 /* LOGIN OVERLAY */
 .login-overlay{position:fixed;inset:0;background:#0f1f3d;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:999;padding:24px;}
 .login-logo{font-size:52px;margin-bottom:12px;}
@@ -295,6 +299,55 @@ const XDOCK_ADDRESSES=[{city:"Jacksonville, FL",addr:"680 Edgewood Ave N Suite B
 // Override via localStorage "fcbv2_sheetsUrl" if you use a different deployment.
 var SHEETS_URL=localStorage.getItem("fcbv2_sheetsUrl")||"https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec";
 var SHEETS_TOKEN=localStorage.getItem("fcbv2_sheetsToken")||"";
+
+// SAMSARA LIVE TRUCK LOCATIONS — fetched in parallel with the sheet data, refreshed every 60s.
+// Shape: { "459": {address, lat, lng, asOf}, "462": {...}, ... }
+var liveTrucks = {};
+// Statuses where we hide the live pill — load is already at yard/dock/loaded/delivered.
+var STATUS_HIDE_PILL = {"Yard":1,"Dock":1,"Loaded":1,"Delivered":1};
+
+// "5 min ago" formatter for the hover tooltip
+function liveAgo(ts) {
+  if (!ts) return "";
+  var sec = Math.floor((Date.now() - ts) / 1000);
+  if (sec < 60) return sec + "s ago";
+  if (sec < 3600) return Math.floor(sec/60) + "m ago";
+  if (sec < 86400) return Math.floor(sec/3600) + "h ago";
+  return Math.floor(sec/86400) + "d ago";
+}
+
+// Build a live-location pill HTML string for a given truck#.
+// Returns empty string when no live data OR status indicates load is done.
+// darkBg=true uses lighter colors suitable for the dark OTR cards.
+function livePillFor(truckNum, status, darkBg) {
+  if (!truckNum) return "";
+  if (status && STATUS_HIDE_PILL[status]) return "";
+  var tk = liveTrucks[truckNum];
+  if (!tk || !tk.address) return "";
+  // Shorten Samsara's full address ("123 Main St, Bensenville, IL 60106, USA")
+  // down to "Bensenville, IL". Strategy: split by comma, strip USA/Canada suffix,
+  // strip zip numbers, then find the (City, ST) pair.
+  var parts = tk.address.split(",").map(function(s){return s.trim();}).filter(Boolean);
+  // Remove trailing country
+  if (parts.length && /^(USA|United States|Canada|US|CA)$/i.test(parts[parts.length-1])) parts.pop();
+  // From the LAST part, separate state and zip ("IL 60106" → state=IL)
+  var short = tk.address;
+  if (parts.length >= 2) {
+    var lastPart = parts[parts.length-1];
+    // Strip trailing zip from the state segment
+    var stateMatch = lastPart.match(/^([A-Z]{2})\b/);
+    var state = stateMatch ? stateMatch[1] : lastPart;
+    var city = parts[parts.length-2];
+    if (city && state && state.length <= 3) short = city + ", " + state;
+    else short = parts.slice(-2).join(", ");
+  }
+  if (short.length > 24) short = short.slice(0, 22) + "\u2026";
+  var tip = (tk.address || "") + " \u2014 " + liveAgo(tk.asOf) + " (truck #" + truckNum + ")";
+  var cls = darkBg ? "live-pill dark" : "live-pill";
+  return '<span class="' + cls + '" title="' + tip.replace(/"/g,'&quot;') + '">\uD83D\uDCCD ' + short + '</span>';
+}
+
+
 const ADMIN_PIN_KEY="fcbv2_adminPin";
 const VIEWER_PIN_KEY="fcbv2_viewerPin";
 const DISPATCHERS_KEY="fcbv2_dispatchers";
@@ -723,6 +776,8 @@ function renderCombinedCard(g) {
     h += '<span style="font-size:14px">  </span><span class="ccard-nodrv">NO DRIVER ASSIGNED</span>';
   }
   if (mi) h += '<span class="ccard-miles">' + mi.toLocaleString() + ' mi</span>';
+  // Live location pill for the Combined card's OTR truck
+  if (g.groupTruck) h += livePillFor(g.groupTruck, '', false);
   h += '</div>';
 
   // Financial bar
@@ -757,6 +812,8 @@ function renderCombinedCard(g) {
     if (l.pickup) h += '<span class="stop-date">  ' + l.pickup + '</span>';
     if (l.delivery) h += '<span class="stop-date">  ' + l.delivery + '</span>';
     h += '</div></div>';
+    // Per-load local truck pill (e.g. local driver for the pickup leg)
+    if (l.localTruck) h += livePillFor(l.localTruck, l.status||'', false);
     if (l.status) h += '<span class="stop-status ' + stCls + '">' + l.status + '</span>';
     h += '</div>';
   });
@@ -884,6 +941,8 @@ function renderPlanned() {
         var lc = l.manualLocalCharge!=null&&l.manualLocalCharge!=='' ? parseFloat(l.manualLocalCharge) : (localCharge(um)||0);
         h += '<div class="prow">';
         h += '<div class="prow-banner"><span class="prow-banner-route">'+(sr.s||'')+(sr.r?'   '+sr.r:'')+'</span>';
+        // Live location pill (between route and status badge)
+        if (l.localTruck) h += livePillFor(l.localTruck, l.status||'', false);
         if (l.status) h += '<span class="prow-banner-status '+stCls+'">'+l.status+'</span>';
         h += '</div><div class="prow-details">';
         if (l.pickup) h += fld('  Pickup',l.pickup);
@@ -938,6 +997,8 @@ function renderOTR() {
       h += '<div class="otr-card-hdr">';
       if (g.groupTruck) h += '<span class="otr-truck">#'+g.groupTruck+'</span>';
       h += '<span class="otr-driver">'+(g.groupDriver||'No driver')+'</span>';
+      // Live location pill for the OTR truck — always show when GPS data exists.
+      if (g.groupTruck) h += livePillFor(g.groupTruck, '', true);
       if (mi) h += '<span style="font-size:10px;color:rgba(255,255,255,.4);margin-right:4px">'+mi.toLocaleString()+' mi</span>';
       h += '<span class="otr-status-badge" style="background:'+sc.bg+';color:'+sc.c+';border:1px solid '+sc.bd+'">'+g.groupStatus+'</span>';
       h += '</div>';
@@ -949,6 +1010,8 @@ function renderOTR() {
         h += '<div style="flex:1;min-width:0"><div class="otr-stop-city">'+(sr.r||sr.s||' ')+'</div>';
         if (l.delivery) h += '<div class="otr-stop-del">  '+l.delivery+'</div>';
         h += '</div>';
+        // Per-load local truck pill (e.g. local driver assigned for the pickup leg)
+        if (l.localTruck) h += livePillFor(l.localTruck, l.status||'', true);
         if (l.status) h += '<span class="stop-status '+stCls+'">'+l.status+'</span>';
         h += '</div>';
       });
@@ -967,6 +1030,29 @@ function setSync(state) {
 function refreshData() {
   setSync('loading');
   document.getElementById('hdr-sub').textContent = 'Syncing...';
+  // Kick off Samsara fetch in parallel — non-blocking, refreshes liveTrucks then re-renders.
+  // Failures are silent (pills just won't show) and don't affect the main sheet load.
+  fetch(SHEETS_URL + '?action=samsaraLocations', {redirect:'follow'})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (j && j.ok && Array.isArray(j.trucks)) {
+        var map = {};
+        // Index by bare truck number (not full name like "020 - FOR SALE") to match
+        // how the board references trucks. Mirrors desktop board.html behavior.
+        j.trucks.forEach(function(t){
+          if (t.number) map[t.number] = {
+            address: t.address || '',
+            lat: t.lat, lng: t.lng,
+            asOf: t.asOf || Date.now(),
+            name: t.name
+          };
+        });
+        liveTrucks = map;
+        // Re-render so pills appear without waiting for the next 60s cycle
+        renderAll();
+      }
+    })
+    .catch(function(){ /* silent — pills just won't show this cycle */ });
   sheetsLoad('viewer','').then(function(data){
     var raw = Array.isArray(data) ? data : (data.weeks||[]);
     weeks = raw.map(function(w){
