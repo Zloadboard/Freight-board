@@ -324,22 +324,35 @@ function livePillFor(truckNum, status, darkBg) {
   if (status && STATUS_HIDE_PILL[status]) return "";
   var tk = liveTrucks[truckNum];
   if (!tk || !tk.address) return "";
-  // Shorten Samsara's full address ("123 Main St, Bensenville, IL 60106, USA")
-  // down to "Bensenville, IL". Strategy: split by comma, strip USA/Canada suffix,
-  // strip zip numbers, then find the (City, ST) pair.
+  // Shorten Samsara's full address down to "City, ST". Samsara sends various formats:
+  //   "1234 Main St, Bensenville, IL 60106, USA"     <- typical
+  //   "Bensenville, IL 60106"                         <- short
+  //   "I-55 N, IL 60418, USA"                         <- highway, no city
+  //   "IL, 60418"                                     <- state + zip only
+  // Strategy: scan from the RIGHT for a 2-letter state code, then use the segment
+  // immediately before it as the city (unless that segment looks like a street).
   var parts = tk.address.split(",").map(function(s){return s.trim();}).filter(Boolean);
-  // Remove trailing country
   if (parts.length && /^(USA|United States|Canada|US|CA)$/i.test(parts[parts.length-1])) parts.pop();
-  // From the LAST part, separate state and zip ("IL 60106" → state=IL)
-  var short = tk.address;
-  if (parts.length >= 2) {
-    var lastPart = parts[parts.length-1];
-    // Strip trailing zip from the state segment
-    var stateMatch = lastPart.match(/^([A-Z]{2})\b/);
-    var state = stateMatch ? stateMatch[1] : lastPart;
-    var city = parts[parts.length-2];
-    if (city && state && state.length <= 3) short = city + ", " + state;
-    else short = parts.slice(-2).join(", ");
+  var stateIdx = -1, state = "";
+  for (var i = parts.length - 1; i >= 0; i--) {
+    var sm = parts[i].match(/\b([A-Z]{2})\b/);
+    if (sm) { state = sm[1]; stateIdx = i; break; }
+  }
+  var short = "";
+  if (state && stateIdx >= 1) {
+    // City should be the segment right before the state. Reject if it looks like a
+    // street (starts with digit, or contains St/Rd/Ave/Blvd/Hwy/I-/US- etc.)
+    var candidate = parts[stateIdx - 1];
+    var looksLikeStreet = /^\d|\b(St|Rd|Ave|Blvd|Hwy|Pkwy|Dr|Ln|Way)\b|^(I|US|SR|Route)[-\s]\d/i.test(candidate);
+    if (!looksLikeStreet) short = candidate + ", " + state;
+    else short = state;  // No good city found — show state only
+  } else if (state) {
+    // State found but no city segment before it ("IL, 60418" type) — just show state
+    short = state;
+  } else if (parts.length) {
+    short = parts[parts.length - 1];
+  } else {
+    short = tk.address;
   }
   if (short.length > 24) short = short.slice(0, 22) + "\u2026";
   var tip = (tk.address || "") + " \u2014 " + liveAgo(tk.asOf) + " (truck #" + truckNum + ")";
