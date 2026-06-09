@@ -747,8 +747,8 @@ const uid=()=>++_uid;
 const mkLoad=(o={})=>({id:uid(),sr:"",broker:"",pickup:"",delivery:"",product:"",pallets:"",weight:"",rate:"",driver:"",truck:"",trailer:"",status:"",notes:"",manualPickupMi:"",manualLocalCharge:"",stopMiles:"",photos:[],...o});
 const mkGroup=()=>({id:uid(),tripMiles:"",groupDriver:"",groupTruck:"",groupTrailer:"",groupStatus:"Pending",groupNotes:"",loads:[mkLoad()]});
 const mkWeek=(label)=>({id:uid(),label:label||"New Week",groups:[mkGroup()],localDeliveries:[],crossdockDrops:[],accessorials:[],openSections:{main:true,local:false,xdrop:false,acc:false,otr:true}});
-const mkLocal=()=>({id:uid(),destination:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""});
-const mkXDrop=()=>({id:uid(),location:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""});
+const mkLocal=()=>({id:uid(),destination:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",otrBroughtBy:"",notes:"",status:""});
+const mkXDrop=()=>({id:uid(),location:"",deliveryLocation:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",broughtByOtr:"",deliveringOtr:"",notes:"",status:""});
 const mkAcc=()=>({id:uid(),broker:"",loadNum:"",amount:"",type:"Detention",notes:"",status:""});
 
 function calcGroup(g){
@@ -1176,6 +1176,13 @@ function App(){
   useEffect(()=>{localStorage.setItem("fcbv2_plannedView",plannedView);},[plannedView]);
   // Track which single group is expanded for editing when in compact view
   const[expandedCompactGroup,setExpandedCompactGroup]=useState(null);
+  // Manual-order mode for Planned section: once the user clicks any reorder arrow,
+  // the entire list flips to "manual" and stays that way until they click "Reset to
+  // auto-sort". manualPlannedOrder is a per-week map: { weekId: [groupId1, groupId2, ...] }
+  const[manualOrderActive,setManualOrderActive]=useState(()=>localStorage.getItem("fcbv2_plannedManualMode")==="1");
+  const[manualPlannedOrder,setManualPlannedOrder]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_plannedManualOrder")||"{}");}catch{return{};}});
+  useEffect(()=>{localStorage.setItem("fcbv2_plannedManualMode",manualOrderActive?"1":"0");},[manualOrderActive]);
+  useEffect(()=>{localStorage.setItem("fcbv2_plannedManualOrder",JSON.stringify(manualPlannedOrder));},[manualPlannedOrder]);
   useEffect(()=>{if(activeTab&&appMode)localStorage.setItem("fcbv2_lastTab",activeTab);},[activeTab,appMode]); // all | today | tomorrow | active | pending | done
   const[dashCurIdx,setDashCurIdx]=useState(0);
   const[dashPrevIdx,setDashPrevIdx]=useState(1);
@@ -2461,6 +2468,35 @@ ${accRows.length>0?`
     setTimeout(()=>win.print(),800);
   };
   const setGroup=(gid,f,v)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,[f]:v}));
+
+  // Toggle the ⏳ "needs reschedule" flag on a trailer. Flagged trailers get yellow
+  // highlight + sort to the very top of the auto-sort list. Toggling is purely manual.
+  const toggleReschedule=gid=>{
+    setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,needsReschedule:!g.needsReschedule}));
+  };
+
+  // Move a trailer up or down in the Planned list. The first arrow click flips the
+  // section to manual-order mode, freezing the current visible order, then nudges
+  // the target trailer by one position. Subsequent clicks just nudge within that
+  // saved order.
+  const movePlannedTrailer=(currentVisibleOrder, gid, direction)=>{
+    // Build the manual-order array. If we're not yet in manual mode, seed it from
+    // the current visible (sorted) order so the trailer's position stays put before
+    // we move it.
+    const seedOrder=(manualPlannedOrder[week.id]&&manualPlannedOrder[week.id].length)
+      ? manualPlannedOrder[week.id].slice()
+      : currentVisibleOrder.map(g=>g.id);
+    const idx=seedOrder.indexOf(gid);
+    if(idx<0)return; // shouldn't happen
+    const newIdx=direction==="up"?Math.max(0,idx-1):Math.min(seedOrder.length-1,idx+1);
+    if(newIdx===idx)return; // already at edge
+    const next=seedOrder.slice();
+    next.splice(idx,1);
+    next.splice(newIdx,0,gid);
+    setManualPlannedOrder({...manualPlannedOrder,[week.id]:next});
+    if(!manualOrderActive)setManualOrderActive(true);
+  };
+
   const addLoad=gid=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:[...g.loads,mkLoad()]}));
   const removeLoad=(gid,lid)=>setW("groups",week.groups.map(g=>{if(g.id!==gid)return g;const ls=g.loads.filter(l=>l.id!==lid);return{...g,loads:ls.length?ls:[mkLoad()]};}));
   const moveLoad=(fromGid,toGid,lid,toPosition)=>{
@@ -3406,435 +3442,294 @@ ${accRows.length>0?`
         ))}
       </div>
 
-      {/* SIDEBAR FLOAT TABS */}
+{/* ════ SIDE PANEL — quick-glance for Local / Crossdock / Extras while staying in Planned ════ */}
       {(()=>{
+        // Per-row "needs attention" detection per spec
+        const localNeedsAttention=r=>{
+          const st=(r.status||"").toLowerCase();
+          if(st==="delivered")return false;
+          if(!r.status||st==="need to deliver"){
+            const pd=parsePickupDate(r.datetime);
+            if(pd&&pd.getTime()<=today.getTime())return true;
+          }
+          return false;
+        };
+        const xdropNeedsAttention=r=>{
+          const st=(r.status||"").toLowerCase();
+          if(st==="delivered")return false;
+          // missing any required field
+          if(!r.location||!r.deliveryLocation||!r.broughtByOtr||!r.deliveringOtr)return true;
+          return false;
+        };
+        const accNeedsAttention=r=>{
+          const st=(r.status||"").toLowerCase();
+          if(st==="paid"||st==="approved")return false;
+          if(!st||st==="requested")return true;
+          if(!r.amount||parseFloat(r.amount)===0)return true;
+          return false;
+        };
         const _lc=(week.localDeliveries||[]).filter(r=>r.status!=="Delivered").length;
         const _cc=(week.crossdockDrops||[]).filter(r=>r.status!=="Delivered").length;
-        const _oc=otrGroups.filter(g=>g.groupStatus!=="Delivered").length;
         const _ac=(week.accessorials||[]).filter(r=>r.status!=="Paid").length;
-        const _tabs=[{id:"otr",label:"OTR",color:"#2563eb",icon:"🚛",count:_oc},{id:"local",label:"Local",color:"#059669",icon:"📍",count:_lc},{id:"xdrop",label:"Xdock",color:"#7c3aed",icon:"📦",count:_cc},{id:"acc",label:"Extras",color:"#b45309",icon:"💰",count:_ac}];
-        const _pc={otr:"#2563eb",local:"#059669",xdrop:"#7c3aed",acc:"#b45309"}[activeSideTab];
+        const _la=(week.localDeliveries||[]).filter(localNeedsAttention).length;
+        const _xa=(week.crossdockDrops||[]).filter(xdropNeedsAttention).length;
+        const _aa=(week.accessorials||[]).filter(accNeedsAttention).length;
+        const _tabs=[
+          {id:"local",label:"Local",color:"#059669",bg:"#ecfdf5",icon:"📍",count:_lc,alerts:_la},
+          {id:"xdrop",label:"Xdock",color:"#7c3aed",bg:"#f5f3ff",icon:"📦",count:_cc,alerts:_xa},
+          {id:"acc",  label:"Extras",color:"#b45309",bg:"#fffbeb",icon:"💰",count:_ac,alerts:_aa}
+        ];
+        const _pc={local:"#059669",xdrop:"#7c3aed",acc:"#b45309"}[activeSideTab];
+        const _ptitle={local:"📍 Local Deliveries",xdrop:"📦 Crossdock",acc:"💰 Extras / Accessorials"}[activeSideTab];
+        // shared input style
+        const inpStyle={width:"100%",border:"1px solid #cbd5e1",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",color:"#1f2937",outline:"none",fontFamily:"inherit",background:"#fff",boxSizing:"border-box"};
+        const lblStyle={display:"block",fontSize:"9px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"};
+        const reqLblStyle={...lblStyle,color:"#b45309"};
+        // 2-column field grid
+        const gridStyle={display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginBottom:"8px"};
+        const allTrucksLocal=[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+        const allTrailersLocal=[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+        const allDriversLocal=[...DRIVERS,...customDrivers].filter((v,i,a)=>a.indexOf(v)===i).sort();
+        // helper to update a row in localDeliveries / crossdockDrops / accessorials
+        const updRow=(key,id,field,val)=>setW(key,(week[key]||[]).map(r=>r.id===id?{...r,[field]:val}:r));
+        const delRow=(key,id)=>setW(key,(week[key]||[]).filter(r=>r.id!==id));
+        // truck → driver auto-fill from equipment list
+        const onPickTruck=(key,id,tk)=>{
+          const fields={truck:tk};
+          if(tk&&truckAssignments[tk])fields.driver=truckAssignments[tk];
+          setW(key,(week[key]||[]).map(r=>r.id===id?{...r,...fields}:r));
+        };
         return(<>
-          {activeSideTab&&(
-            <div style={{float:"right",width:"360px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:"8px 0 0 8px",marginBottom:"8px",overflow:"hidden"}}>
-              <div style={{background:_pc,padding:"8px 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff"}}>{({otr:"🚛 OTR Trailers",local:"📍 Local Deliveries",xdrop:"📦 Crossdock",acc:"💰 Accessorials"})[activeSideTab]}</span>
-                <button onClick={()=>setActiveSideTab(null)} style={{background:"rgba(255,255,255,.2)",border:"none",color:"#fff",borderRadius:"4px",padding:"2px 7px",fontSize:"12px",cursor:"pointer"}}>✕</button>
-              </div>
-              <div style={{padding:"10px",maxHeight:"80vh",overflowY:"auto"}}>
-                {activeSideTab==="otr"&&(
-<div style={{border:"1px solid #7c3aed",borderTop:"none",borderRadius:"0 0 8px 8px",background:"#0f0a1e"}}>{(()=>{
-            const STATUS_ORDER=["In Transit","Driver assigned","Loaded","Pending","Delivered","Issue"];
-            const SSTYLE={
-              "In Transit":{bg:"#f5f3ff",c:"#5b21b6",bd:"#7c3aed",lbdr:"#7c3aed"},
-              "Driver assigned":{bg:"#fff7ed",c:"#c2410c",bd:"#fb923c",lbdr:"#fb923c"},
-              "Loaded":{bg:"#fffbeb",c:"#92400e",bd:"#fcd34d",lbdr:"#d97706"},
-              "Pending":{bg:"#f9fafb",c:"#6b7280",bd:"#d1d5db",lbdr:"#9ca3af"},
-              "Delivered":{bg:"#f0fdf4",c:"#166534",bd:"#86efac",lbdr:"#22c55e"},
-              "Issue":{bg:"#fff1f2",c:"#be123c",bd:"#fca5a5",lbdr:"#ef4444"}
-            };
-            const byStatus={};
-            STATUS_ORDER.forEach(s=>{byStatus[s]=[];});
-            otrGroups.forEach(g=>{const st=g.groupStatus||"Pending";if(!byStatus[st])byStatus[st]=[];byStatus[st].push(g);});
-
-            return STATUS_ORDER.filter(st=>byStatus[st]&&byStatus[st].length>0).map(st=>{
-              const ss=SSTYLE[st]||SSTYLE["Pending"];
-              const groups=byStatus[st];
-              return(<div key={st} style={{marginBottom:"10px"}}>
-                {/* Status group tab */}
-                <div style={{display:"flex",alignItems:"center",gap:"6px",padding:"4px 8px 4px 0",marginBottom:"5px"}}>
-                  <span style={{display:"inline-flex",alignItems:"center",gap:"5px",fontSize:"11px",fontWeight:"700",padding:"3px 12px",borderRadius:"12px",background:ss.bg,color:ss.c,border:`1.5px solid ${ss.bd}`}}>
-                    <span style={{width:"6px",height:"6px",borderRadius:"50%",background:ss.bd,flexShrink:0}}/>
-                    {st}
-                  </span>
-                  <span style={{fontSize:"10px",color:"#94a3b8"}}>{groups.length} trailer{groups.length!==1?"s":""}</span>
+          {/* FLOATING PANEL — only renders when activeSideTab is set */}
+          {activeSideTab&&isAdmin&&(
+            <div style={{float:"right",width:"480px",background:"#fff",border:"2px solid "+_pc,borderRadius:"10px 0 0 10px",marginBottom:"8px",overflow:"hidden",boxShadow:"-4px 0 12px rgba(15,31,61,.08)"}}>
+              {/* HEADER */}
+              <div style={{background:_pc,padding:"10px 14px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <span style={{fontSize:"13px",fontWeight:"700",color:"#fff"}}>{_ptitle}</span>
+                <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                  <button onClick={()=>{
+                    if(activeSideTab==="local")setW("localDeliveries",[...(week.localDeliveries||[]),mkLocal()]);
+                    else if(activeSideTab==="xdrop")setW("crossdockDrops",[...(week.crossdockDrops||[]),mkXDrop()]);
+                    else if(activeSideTab==="acc")setW("accessorials",[...(week.accessorials||[]),{id:uid(),broker:"",loadNum:"",type:"Detention",amount:"",notes:"",status:"Requested"}]);
+                  }} style={{background:"rgba(255,255,255,.95)",color:_pc,border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>+ Add</button>
+                  <button onClick={()=>setActiveSideTab(null)} style={{background:"rgba(255,255,255,.2)",border:"none",color:"#fff",borderRadius:"5px",padding:"3px 9px",fontSize:"13px",cursor:"pointer",lineHeight:1}}>✕</button>
                 </div>
-
-                {/* Trailer cards — 2-col grid like Combined */}
-                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(500px,1fr))",gap:"10px"}}>
-                {groups.map(group=>{
-                  const loads=[...group.loads].sort((a,b)=>{const pa=parseTS(a.delivery)||parseTS(a.pickup)||Infinity;const pb=parseTS(b.delivery)||parseTS(b.pickup)||Infinity;if(pa!==pb)return pa-pb;return group.loads.indexOf(a)-group.loads.indexOf(b);});
-                  const otrGross=(group.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);const otrNet=Math.round(otrGross-(group.loc||0));
-                  const mi=group.tripMiles!==""&&group.tripMiles!=null?parseFloat(group.tripMiles):group.calcTripMi?parseFloat(group.calcTripMi):group.autoTripMi?parseFloat(group.autoTripMi):null;
-                  return(
-                    <div key={group.id} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"10px",overflow:"hidden",marginBottom:"7px",borderLeft:`3px solid ${ss.lbdr}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
-                      {/* Card header */}
-                      <div onClick={e=>{if(!e.target.closest("select")){setCollapsedOtrIds(p=>({...p,[group.id]:!p[group.id]}));}}} style={{background:"#0f1f3d",padding:"9px 14px",display:"flex",flexDirection:"column",gap:"6px",cursor:"pointer"}}>
-                        <div style={{display:"flex",alignItems:"center",gap:"7px",flexWrap:"nowrap"}}>
-                          <span style={{fontSize:"9px",color:"rgba(255,255,255,.3)",flexShrink:0}}>{collapsedOtrIds[group.id]?"▶":"▼"}</span>
-                          {group.groupTruck&&<span style={{fontSize:"12px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>#{group.groupTruck}</span>}
-                          {group.groupTrailer&&<span style={{fontSize:"12px",fontWeight:"800",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"2px 8px",borderRadius:"4px",flexShrink:0}}>{group.groupTrailer}</span>}
-                          {/* Live location pill — pulled from Samsara, refreshes every 60s. */}
-                          {(()=>{
-                            const tr=group.groupTrailer&&liveTrailers[group.groupTrailer];
-                            const tk=group.groupTruck&&liveTrucks[group.groupTruck];
-                            const loc=tr&&tr.address?tr:(tk&&tk.address?tk:null);
-                            const src=tr&&tr.address?"trailer":(tk&&tk.address?"truck":"");
-                            if(!loc)return null;
-                            let short=loc.address;
-                            const parts=loc.address.split(",").map(s=>s.trim()).filter(Boolean);
-                            if(parts.length>=2){
-                              const state=parts[parts.length-1].length<=2?parts[parts.length-1]:(parts[parts.length-2]||"");
-                              const city=parts[parts.length-1].length<=2?parts[parts.length-2]:parts[parts.length-3];
-                              if(city&&state)short=city+", "+state;
-                              else short=parts.slice(-2).join(", ");
-                            }
-                            if(short.length>32)short=short.slice(0,30)+"…";
-                            const tip=loc.address+" — "+liveAgo(loc.asOf)+" (via "+src+")";
-                            return(
-                              <span title={tip} style={{fontSize:"10px",fontWeight:"700",color:"#fde047",background:"rgba(234,179,8,.12)",border:"1px solid rgba(234,179,8,.3)",padding:"2px 7px",borderRadius:"4px",flexShrink:0,whiteSpace:"nowrap",cursor:"help",maxWidth:"220px",overflow:"hidden",textOverflow:"ellipsis"}}>
-                                📍 {short}
-                              </span>
-                            );
-                          })()}
-                          <span style={{fontSize:"13px",fontWeight:"700",color:"#86efac",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{group.groupDriver||<span style={{color:"rgba(255,255,255,.35)",fontStyle:"italic",fontWeight:"400"}}>No driver</span>}</span>
-                          <span style={{fontSize:"14px",fontWeight:"900",color:"#86efac",whiteSpace:"nowrap",flexShrink:0}}>${otrNet.toLocaleString()}</span>
-                        </div>
-                        <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
-                          {mi&&<span style={{fontSize:"10px",color:"rgba(255,255,255,.5)",background:"rgba(255,255,255,.07)",padding:"2px 8px",borderRadius:"4px",whiteSpace:"nowrap"}}>{Math.round(mi).toLocaleString()} mi</span>}
-                          <span style={{flex:1}}/>
-                          {isAdmin&&<div onClick={e=>e.stopPropagation()}>
-                            <select value={group.groupStatus||"Pending"} onChange={e=>setGroup(group.id,"groupStatus",e.target.value)} style={{fontSize:"10px",fontWeight:"700",padding:"3px 8px",borderRadius:"5px",border:`1px solid ${ss.bd}`,background:ss.bg,color:ss.c,cursor:"pointer",outline:"none",minWidth:"100px"}} disabled={!isAdmin}>
-                              {Object.keys(GSS).map(s=>(<option key={s}>{s}</option>))}
-                            </select>
-                          </div>}
-                        </div>
-                      </div>
-
-                      {/* Load rows — collapsible card + expandable rows */}
-                      {!collapsedOtrIds[group.id]&&loads.map((load,li)=>{
-                        const lrc=rowColor(load,today,tomorrow);
-                        const sr=parseSR(load.sr||"");
-                        const showBroker=canSeeBroker(group,load);
-                        const brokerName=load.broker?load.broker.split("&")[0].trim():"";
-                        const isExp=!!otrExpanded[load.id];
-                        return(
-                          <div key={load.id}>
-                            {/* Summary row */}
-                            <div
-                              onClick={()=>setOtrExpanded(p=>({...p,[load.id]:!p[load.id]}))}
-                              style={{display:"flex",alignItems:"center",gap:"6px",padding:"6px 12px",borderTop:"1px solid #f1f5f9",flexWrap:"nowrap",cursor:"pointer",background:isExp?"#eff6ff":"transparent"}}
-                            >
-                              <span style={{fontSize:"8px",color:"#94a3b8",flexShrink:0,lineHeight:1,width:"8px"}}>{isExp?"▼":"▶"}</span>
-                              <span style={{width:"15px",height:"15px",borderRadius:"50%",background:lrc.barBg,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"8px",fontWeight:"800",color:lrc.tc,flexShrink:0}}>{li+1}</span>
-                              <div style={{flex:1,minWidth:0}}>
-                                <div style={{display:"flex",alignItems:"center",gap:"4px",marginBottom:"1px"}}>
-                                  <div style={{fontSize:"10px",color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{sr.s||""}</div>
-                                  {load.loadNum&&<span style={{fontSize:"8px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 5px",borderRadius:"3px",flexShrink:0}}>#{load.loadNum}</span>}
-                                </div>
-                                <div style={{fontSize:"11px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>→ {sr.r||sr.s||"—"}</div>
-                              </div>
-                              {load.delivery&&<span style={{fontSize:"9px",color:"#64748b",whiteSpace:"nowrap",flexShrink:0}}>{load.delivery}</span>}
-                              {(parseFloat(load.rate)||0)>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#059669",whiteSpace:"nowrap",flexShrink:0}}>${(parseFloat(load.rate)||0).toLocaleString()}</span>}
-                            </div>
-
-                            {/* Detail panel */}
-                            {isExp&&(
-                              <div style={{padding:"10px 14px 12px",background:"#f8fafc",borderTop:"1px solid #bfdbfe",marginBottom:"2px"}} onClick={e=>e.stopPropagation()}>
-                                <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"8px",padding:"5px 9px",background:"#0f1f3d",borderRadius:"6px"}}>
-                                  <span style={{fontSize:"10px",color:"rgba(255,255,255,.5)"}}>Driver</span>
-                                  <span style={{fontSize:"12px",fontWeight:"700",color:"#86efac",flex:1}}>{group.groupDriver||"—"}</span>
-                                  {group.groupTruck&&<span style={{fontSize:"10px",color:"#fff",background:"rgba(255,255,255,.12)",padding:"1px 7px",borderRadius:"4px"}}>#{group.groupTruck}</span>}
-                                  {group.groupTrailer&&<span style={{fontSize:"10px",color:"#c4b5fd",background:"rgba(167,139,250,.15)",padding:"1px 7px",borderRadius:"4px"}}>{group.groupTrailer}</span>}
-                                </div>
-                                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 12px",fontSize:"11px"}}>
-                                  {load.loadNum&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div><div style={{fontWeight:"600",color:"#7c3aed"}}>#{load.loadNum}</div></div>}
-                                  {load.broker&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div><div style={{color:"#374151"}}>{load.broker.split("&")[0].trim()}{load.broker.split("&")[1]&&<span style={{color:"#6366f1",marginLeft:"4px"}}>#{load.broker.split("&")[1].trim()}</span>}</div></div>}
-                                  {load.pickup&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Pickup</div><div style={{color:"#374151"}}>{load.pickup}</div></div>}
-                                  {load.delivery&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Delivery</div><div style={{color:"#374151"}}>{load.delivery}</div></div>}
-                                  {load.weight&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Weight</div><div style={{color:"#374151"}}>{load.weight} lbs</div></div>}
-                                  {load.pallets&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Pallets</div><div style={{color:"#374151"}}>{load.pallets}</div></div>}
-                                  {load.product&&<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Product</div><div style={{color:"#374151"}}>{load.product}</div></div>}
-                                  {(parseFloat(load.rate)||0)>0&&<div><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Rate</div><div style={{fontWeight:"700",color:"#059669"}}>${(parseFloat(load.rate)||0).toLocaleString()}</div></div>}
-                                  {load.notes&&<div style={{gridColumn:"1/-1"}}><div style={{fontSize:"8px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div><div style={{color:"#374151",fontStyle:"italic"}}>{load.notes}</div></div>}
-                                </div>
-                                {isAdmin&&<div style={{marginTop:"8px",display:"flex",alignItems:"center",gap:"6px"}}>
-                                  <span style={{fontSize:"9px",color:"#94a3b8",fontWeight:"600",textTransform:"uppercase",flexShrink:0}}>Status</span>
-                                  <select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{fontSize:"11px",fontWeight:"600",color:lrc.tc,background:lrc.barBg,border:`1px solid ${lrc.bar}`,borderRadius:"5px",padding:"3px 8px",cursor:"pointer",outline:"none",flex:1}} disabled={!isAdmin}>
-                                    <option value="">— status —</option>
-                                    {LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}
-                                  </select>
-                                </div>}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
-                </div>
-              </div>);
-            });
-          })()}</div>
-                )}
-                {activeSideTab==="local"&&(
-<div style={{border:"1px solid #d1fae5",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"10px",background:"#f0fdf4"}}>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:"8px",marginBottom:"8px"}}>
-        {!(week.localDeliveries||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No local deliveries</div>}
-        {(week.localDeliveries||[]).map((row,i)=>{
-          const dt=parsePickupDate(row.datetime);const dtT=dt?dt.getTime():null;const todayT=today.getTime();
-          let sp;
-          if(row.status==="Delivered"){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
-          else if(row.status==="In Transit"){sp={bg:"#ede9fe",c:"#5b21b6",bd:"#7c3aed"};}
-          else if(row.status==="Waiting Appointment"){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
-          else{sp=dtT&&dtT<=todayT?{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}:{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
-          const isDone=row.status==="Delivered";
-          return(
-            <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${sp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDone?.65:1}}>
-              <div style={{background:"#065f46",padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
-                {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>{row.trailer}</span>}
-                {row.truck&&<span style={{fontSize:"10px",fontWeight:"700",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"2px 7px",borderRadius:"4px"}}>#{row.truck}{row.driver?` · ${row.driver.split(" ")[0]}`:""}</span>}
-                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.destination||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No destination</span>}</span>
-                {row.carriedFrom&&<span style={{fontSize:"8px",color:"#6ee7b7",background:"rgba(110,231,183,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>&#8617; carried</span>}
-                <select value={row.status||""} onChange={e=>updSub("localDeliveries",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"100px"}} disabled={isViewer}>
-                  <option value="">-- status --</option>
-                  {["Need to deliver","In Transit","Waiting Appointment","Delivered"].map(s=>(<option key={s}>{s}</option>))}
-                </select>
               </div>
-              <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
-                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Delivery Location</div>
-                <input value={row.destination||""} onChange={e=>updSub("localDeliveries",row.id,"destination",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="e.g. Romeoville, IL" disabled={isViewer}/></div>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div>
-                <input value={row.broker||""} onChange={e=>updSub("localDeliveries",row.id,"broker",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Broker" disabled={isViewer}/></div>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div>
-                <input value={row.loadNum||""} onChange={e=>updSub("localDeliveries",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
-                <input value={row.datetime||""} onChange={e=>updSub("localDeliveries",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
-                <div style={{gridColumn:"1/-1"}}>
-                  <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Truck</div>
-                  <select
-                    value={row.truck||""}
-                    onChange={e=>{
-                      const tk=e.target.value;
-                      updSub("localDeliveries",row.id,"truck",tk);
-                      // Picking a truck that has an assigned driver auto-fills the driver,
-                      // but only if no driver is set yet (don't clobber a manual choice).
-                      if(tk&&truckAssignments[tk]&&!row.driver){updSub("localDeliveries",row.id,"driver",truckAssignments[tk]);}
-                    }}
-                    style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 6px",fontSize:"11px",background:"#f8fafc",outline:"none",fontFamily:"inherit"}}
-                    disabled={isViewer}
-                  >
-                    <option value="">— select truck —</option>
-                    {allTrucks.map(t=>(
-                      <option key={t} value={t}>
-                        {truckAssignments[t]?`Truck #${t} — ${truckAssignments[t]}`:`Truck #${t} (no driver assigned)`}
-                      </option>
-                    ))}
-                  </select>
-                  <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",margin:"6px 0 2px"}}>Driver</div>
-                  <select
-                    value={row.driver||""}
-                    onChange={e=>updSub("localDeliveries",row.id,"driver",e.target.value)}
-                    style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 6px",fontSize:"11px",background:"#f8fafc",outline:"none",fontFamily:"inherit"}}
-                    disabled={isViewer}
-                  >
-                    <option value="">— select driver —</option>
-                    {allDrivers.map(d=>(<option key={d} value={d}>{d}</option>))}
-                    {row.driver&&allDrivers.indexOf(row.driver)<0&&<option value={row.driver}>{row.driver}</option>}
-                  </select>
-                  {row.truck&&row.driver&&<div style={{fontSize:"10px",color:"#059669",marginTop:"3px",fontWeight:"600"}}>✓ Truck #{row.truck} · {row.driver}</div>}
-                  {row.truck&&!row.driver&&<div style={{fontSize:"10px",color:"#f59e0b",marginTop:"3px"}}>No driver selected</div>}
-                  {/* Samsara live location pill — where is this truck right now? */}
-                  {(()=>{
-                    if(!row.truck)return null;
-                    const tk=liveTrucks[row.truck];
-                    if(!tk||!tk.address)return null;
-                    const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
-                    let short=tk.address;
-                    if(parts.length>=2){
-                      const lastPart=parts[parts.length-1];
-                      const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
-                      const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
-                      if(city&&state)short=city+", "+state;
-                      else short=parts.slice(-2).join(", ");
-                    }
-                    if(short.length>32)short=short.slice(0,30)+"…";
-                    const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+row.truck+")";
+
+              {/* BODY — scrollable */}
+              <div style={{maxHeight:"75vh",overflowY:"auto",padding:"12px",background:"#f8fafc"}}>
+
+                {/* ───── LOCAL ───── */}
+                {activeSideTab==="local"&&(()=>{
+                  const rows=week.localDeliveries||[];
+                  if(!rows.length)return(<div style={{textAlign:"center",padding:"30px 10px",color:"#94a3b8",fontSize:"12px"}}>No local deliveries this week.<br/><span style={{fontSize:"10px"}}>Click + Add to create one.</span></div>);
+                  return rows.map(r=>{
+                    const flagged=localNeedsAttention(r);
                     return(
-                      <div title={tip} style={{marginTop:"4px",fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"3px 7px",borderRadius:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help"}}>
-                        📍 {short}
+                      <div key={r.id} style={{background:"#fff",border:`1px solid ${flagged?"#f59e0b":"#e2e8f0"}`,borderLeft:`4px solid ${flagged?"#f59e0b":"#10b981"}`,borderRadius:"7px",padding:"10px 12px",marginBottom:"10px",boxShadow:"0 1px 2px rgba(0,0,0,.04)"}}>
+                        {/* Row 1 — destination headline + alert + status */}
+                        <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"8px"}}>
+                          {flagged&&<span title="Needs attention — past due or status not delivered" style={{fontSize:"13px",cursor:"help"}}>⚠️</span>}
+                          <input type="text" value={r.destination||""} onChange={e=>updRow("localDeliveries",r.id,"destination",e.target.value)} placeholder="Delivery destination..." style={{...inpStyle,fontWeight:"700",fontSize:"13px",flex:1,border:"none",borderBottom:"1px solid #e2e8f0",borderRadius:"0",padding:"3px 0"}}/>
+                          <select value={r.status||""} onChange={e=>updRow("localDeliveries",r.id,"status",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:"4px",padding:"3px 6px",fontSize:"10px",fontWeight:"700",background:"#fff",cursor:"pointer",color:r.status==="Delivered"?"#15803d":r.status==="Need to deliver"?"#b45309":"#64748b"}}>
+                            <option value="">— Status —</option>
+                            <option value="Need to deliver">Need to deliver</option>
+                            <option value="Dispatched">Dispatched</option>
+                            <option value="Delivered">Delivered</option>
+                          </select>
+                        </div>
+                        {/* Row 2 — broker + load# */}
+                        <div style={gridStyle}>
+                          <div><label style={lblStyle}>Broker</label><input type="text" value={r.broker||""} onChange={e=>updRow("localDeliveries",r.id,"broker",e.target.value)} placeholder="Broker name" style={inpStyle}/></div>
+                          <div><label style={lblStyle}>Load #</label><input type="text" value={r.loadNum||""} onChange={e=>updRow("localDeliveries",r.id,"loadNum",e.target.value)} placeholder="Load #" style={inpStyle}/></div>
+                        </div>
+                        {/* Row 3 — date/time + trailer */}
+                        <div style={gridStyle}>
+                          <div><label style={lblStyle}>Date / Time</label><input type="text" value={r.datetime||""} onChange={e=>updRow("localDeliveries",r.id,"datetime",e.target.value)} placeholder="e.g. 6/8/2026 7AM-10PM" style={inpStyle}/></div>
+                          <div><label style={lblStyle}>Trailer #</label>
+                            <select value={r.trailer||""} onChange={e=>updRow("localDeliveries",r.id,"trailer",e.target.value)} style={{...inpStyle,cursor:"pointer"}}>
+                              <option value="">— Trailer —</option>
+                              {allTrailersLocal.map(t=><option key={t} value={t}>#{t}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                        {/* Row 4 — truck (auto-fills driver) + driver display */}
+                        <div style={gridStyle}>
+                          <div><label style={lblStyle}>Truck (picks driver)</label>
+                            <select value={r.truck||""} onChange={e=>onPickTruck("localDeliveries",r.id,e.target.value)} style={{...inpStyle,cursor:"pointer"}}>
+                              <option value="">— Truck —</option>
+                              {allTrucksLocal.map(t=><option key={t} value={t}>#{t}{truckAssignments[t]?" — "+truckAssignments[t]:""}</option>)}
+                            </select>
+                          </div>
+                          <div><label style={lblStyle}>Driver</label>
+                            <input list={`local-drv-${r.id}`} value={r.driver||""} onChange={e=>updRow("localDeliveries",r.id,"driver",e.target.value)} placeholder="Driver name" style={inpStyle}/>
+                            <datalist id={`local-drv-${r.id}`}>{allDriversLocal.map(d=><option key={d} value={d}/>)}</datalist>
+                          </div>
+                        </div>
+                        {/* Row 5 — OTR driver who brought it (free-text) */}
+                        <div style={{marginBottom:"8px"}}>
+                          <label style={lblStyle}>🚛 OTR Driver who brought this load</label>
+                          <input type="text" value={r.otrBroughtBy||""} onChange={e=>updRow("localDeliveries",r.id,"otrBroughtBy",e.target.value)} placeholder="OTR driver name (free text)" style={inpStyle}/>
+                        </div>
+                        {/* Row 6 — notes */}
+                        <div style={{marginBottom:"6px"}}>
+                          <label style={lblStyle}>Notes</label>
+                          <textarea value={r.notes||""} onChange={e=>updRow("localDeliveries",r.id,"notes",e.target.value)} placeholder="Notes..." rows={2} style={{...inpStyle,resize:"vertical",minHeight:"32px"}}/>
+                        </div>
+                        <div style={{display:"flex",justifyContent:"flex-end"}}>
+                          <button onClick={()=>{if(confirm("Delete this local delivery?"))delRow("localDeliveries",r.id);}} style={{background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:"4px",padding:"3px 9px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>× Remove</button>
+                        </div>
                       </div>
                     );
-                  })()}
-                </div>
-                {row.amount?<div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Amount</div><div style={{fontSize:"13px",fontWeight:"800",color:"#059669"}}>${parseFloat(row.amount||0).toLocaleString()}</div></div>:null}
-                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
-                <input value={row.notes||""} onChange={e=>updSub("localDeliveries",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
-              </div>
-              {isAdmin&&<div style={{padding:"2px 12px 8px",display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setW("localDeliveries",(week.localDeliveries||[]).filter(r=>r.id!==row.id))} style={{fontSize:"9px",color:"#ef4444",background:"none",border:"1px solid #fecaca",borderRadius:"4px",padding:"2px 8px",cursor:"pointer"}}>&#10005; Remove</button></div>}
-            </div>
-          );
-        })}
-        </div>
-        {isAdmin&&<button onClick={()=>setW("localDeliveries",[...(week.localDeliveries||[]),{id:uid(),destination:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",amount:"",status:""}])} style={{background:"#065f46",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Local Delivery</button>}
-      </div>
-                )}
-                {activeSideTab==="xdrop"&&(
-<div style={{border:"1px solid #ede9fe",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"10px",background:"#f5f3ff"}}>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:"8px",marginBottom:"8px"}}>
-        {!(week.crossdockDrops||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No crossdock drops</div>}
-        {(week.crossdockDrops||[]).map((row,i)=>{
-          const dt=parsePickupDate(row.datetime);const dtT=dt?dt.getTime():null;const todayT=today.getTime();
-          let sp;
-          if(row.status==="Delivered"){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
-          else if(row.status==="In Transit"){sp={bg:"#ede9fe",c:"#5b21b6",bd:"#7c3aed"};}
-          else if(row.status==="Waiting Appointment"){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
-          else{sp=dtT&&dtT<=todayT?{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}:{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
-          const isDone=row.status==="Delivered";
-          return(
-            <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${sp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDone?.65:1}}>
-              <div style={{background:"#7c3aed",padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
-                {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>{row.trailer}</span>}
-                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.location||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No location</span>}</span>
-                {row.carriedFrom&&<span style={{fontSize:"8px",color:"#c4b5fd",background:"rgba(196,181,253,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>&#8617; carried</span>}
-                <select value={row.status||""} onChange={e=>updSub("crossdockDrops",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"100px"}} disabled={isViewer}>
-                  <option value="">-- status --</option>
-                  {["In Transit","Waiting Appointment","Delivered"].map(s=>(<option key={s}>{s}</option>))}
-                </select>
-              </div>
-              <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div>
-                <input value={row.broker||""} onChange={e=>updSub("crossdockDrops",row.id,"broker",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Broker" disabled={isViewer}/></div>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div>
-                <input value={row.loadNum||""} onChange={e=>updSub("crossdockDrops",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
-                <input value={row.datetime||""} onChange={e=>updSub("crossdockDrops",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
-                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Drop Location</div>
-                <input
-                  type="text"
-                  list={`xdrop-locs-${week.id}`}
-                  placeholder="Location (e.g. Chicago Yard, Romeoville Drop)..."
-                  value={row.location||""}
-                  onChange={e=>updSub("crossdockDrops",row.id,"location",e.target.value)}
-                  style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 8px",fontSize:"11px",fontFamily:"inherit",outline:"none"}}
-                />
-                <datalist id={`xdrop-locs-${week.id}`}>
-                  {crossdockLocations.map((loc,li)=><option key={li} value={loc}/>)}
-                </datalist>
-                <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",margin:"6px 0 2px"}}>Truck</div>
-                <select
-                  value={row.truck||""}
-                  onChange={e=>{
-                    const tk=e.target.value;
-                    updSub("crossdockDrops",row.id,"truck",tk);
-                    if(tk&&truckAssignments[tk]&&!row.driver){updSub("crossdockDrops",row.id,"driver",truckAssignments[tk]);}
-                  }}
-                  style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 6px",fontSize:"11px",background:"#f8fafc",outline:"none",fontFamily:"inherit"}}
-                  disabled={isViewer}
-                >
-                  <option value="">— select truck —</option>
-                  {allTrucks.map(t=>(
-                    <option key={t} value={t}>
-                      {truckAssignments[t]?`Truck #${t} — ${truckAssignments[t]}`:`Truck #${t} (no driver assigned)`}
-                    </option>
-                  ))}
-                </select>
-                <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",margin:"6px 0 2px"}}>Driver</div>
-                <select
-                  value={row.driver||""}
-                  onChange={e=>updSub("crossdockDrops",row.id,"driver",e.target.value)}
-                  style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"4px 6px",fontSize:"11px",background:"#f8fafc",outline:"none",fontFamily:"inherit"}}
-                  disabled={isViewer}
-                >
-                  <option value="">— select driver —</option>
-                  {allDrivers.map(d=>(<option key={d} value={d}>{d}</option>))}
-                  {row.driver&&allDrivers.indexOf(row.driver)<0&&<option value={row.driver}>{row.driver}</option>}
-                </select>
-                {row.truck&&row.driver&&<div style={{fontSize:"10px",color:"#059669",marginTop:"3px",fontWeight:"600"}}>✓ Truck #{row.truck} · {row.driver}</div>}
-                {row.truck&&!row.driver&&<div style={{fontSize:"10px",color:"#f59e0b",marginTop:"3px"}}>No driver selected</div>}
-                {/* Samsara live location pill — shows where the assigned truck is */}
-                {(()=>{
-                  if(!row.truck)return null;
-                  const tk=liveTrucks[row.truck];
-                  if(!tk||!tk.address)return null;
-                  const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
-                  let short=tk.address;
-                  if(parts.length>=2){
-                    const lastPart=parts[parts.length-1];
-                    const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
-                    const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
-                    if(city&&state)short=city+", "+state;
-                    else short=parts.slice(-2).join(", ");
-                  }
-                  if(short.length>32)short=short.slice(0,30)+"…";
-                  const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+row.truck+")";
-                  return(
-                    <div title={tip} style={{marginTop:"4px",fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"3px 7px",borderRadius:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help"}}>
-                      📍 {short}
-                    </div>
-                  );
+                  });
                 })()}
-                </div>
-                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
-                <input value={row.notes||""} onChange={e=>updSub("crossdockDrops",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
-              </div>
-              {isAdmin&&<div style={{padding:"2px 12px 8px",display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setW("crossdockDrops",(week.crossdockDrops||[]).filter(r=>r.id!==row.id))} style={{fontSize:"9px",color:"#ef4444",background:"none",border:"1px solid #fecaca",borderRadius:"4px",padding:"2px 8px",cursor:"pointer"}}>&#10005; Remove</button></div>}
-            </div>
-          );
-        })}
-        </div>
-        <div style={{display:"flex",gap:"6px",flexWrap:"wrap",alignItems:"center"}}>
-        {isAdmin&&<button onClick={()=>setW("crossdockDrops",[...(week.crossdockDrops||[]),{id:uid(),location:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""}])} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button>}
-        {isAdmin&&<button onClick={()=>setShowXdropLocModal(true)} style={{background:"#fff",color:"#7c3aed",border:"1px solid #7c3aed",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>📍 Partner Locations</button>}
-      </div>
-      </div>
-                )}
-                {activeSideTab==="acc"&&(
-<div style={{border:"1px solid #fde68a",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"10px",background:"#fffbeb"}}>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:"8px",marginBottom:"8px"}}>
-        {!(week.accessorials||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No accessorials</div>}
-        {(week.accessorials||[]).map((row,i)=>{
-          const TP={"Detention":{bg:"#fff7ed",c:"#c2410c",bd:"#f97316",hdr:"#b45309"},"Lumper":{bg:"#eff6ff",c:"#1e40af",bd:"#3b82f6",hdr:"#1e40af"},"Layover":{bg:"#f0fdf4",c:"#166534",bd:"#16a34a",hdr:"#166534"},"TONU":{bg:"#fff1f2",c:"#be123c",bd:"#f43f5e",hdr:"#be123c"},"Other":{bg:"#f8fafc",c:"#475569",bd:"#94a3b8",hdr:"#475569"}};
-          const SP={"Paid":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"},"Requested":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}};
-          const tp=TP[row.type||"Detention"]||TP["Other"];
-          const sp=SP[row.status]||{bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};
-          const isPaid=row.status==="Paid";
-          return(
-            <div key={row.id} style={{background:"#fff",border:`1px solid ${tp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${tp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isPaid?.6:1}}>
-              <div style={{background:tp.hdr,padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
-                <select value={row.type||"Detention"} onChange={e=>updSub("accessorials",row.id,"type",e.target.value)} style={{fontSize:"10px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.15)",border:"1px solid rgba(255,255,255,.3)",borderRadius:"4px",padding:"2px 5px",cursor:isViewer?"not-allowed":"pointer",outline:"none"}} disabled={isViewer}>
-                  <option>Detention</option><option>Lumper</option><option>Layover</option><option>TONU</option><option>Other</option>
-                </select>
-                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.broker||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No broker</span>}</span>
-                {row.carriedFrom&&<span style={{fontSize:"8px",color:"rgba(255,255,255,.7)",background:"rgba(255,255,255,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>↩ carried</span>}
-                {row.amount&&<span style={{fontSize:"13px",fontWeight:"900",color:"#fff",whiteSpace:"nowrap"}}>${parseFloat(row.amount||0).toLocaleString()}</span>}
-                <select value={row.status||""} onChange={e=>updSub("accessorials",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"80px"}} disabled={isViewer}>
-                  <option value="">— status —</option>
-                  <option>Requested</option><option>Paid</option>
-                </select>
-              </div>
-              <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
-                <div><span style={{color:"#94a3b8",fontSize:"9px",display:"block",fontWeight:"600",textTransform:"uppercase"}}>Load #</span>
-                <input value={row.loadNum||""} onChange={e=>updSub("accessorials",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
-                <div><span style={{color:"#94a3b8",fontSize:"9px",display:"block",fontWeight:"600",textTransform:"uppercase"}}>Amount</span>
-                <input value={row.amount||""} onChange={e=>updSub("accessorials",row.id,"amount",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="$0" disabled={isViewer}/></div>
-                <div style={{gridColumn:"1/-1"}}><span style={{color:"#94a3b8",fontSize:"9px",display:"block",fontWeight:"600",textTransform:"uppercase"}}>Notes</span>
-                <input value={row.notes||""} onChange={e=>updSub("accessorials",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Description" disabled={isViewer}/></div>
-              </div>
-              {isAdmin&&<div style={{padding:"4px 12px 8px",display:"flex",justifyContent:"flex-end"}}><button onClick={()=>updSub("accessorials",row.id,"_del",true)||setW("accessorials",(week.accessorials||[]).filter(r=>r.id!==row.id))} style={{fontSize:"9px",color:"#ef4444",background:"none",border:"1px solid #fecaca",borderRadius:"4px",padding:"2px 8px",cursor:"pointer"}}>✕ Remove</button></div>}
-            </div>
-          );
-        })}
-        </div>
-        {isAdmin&&<button onClick={()=>setW("accessorials",[...(week.accessorials||[]),{id:uid(),broker:"",loadNum:"",type:"Detention",amount:"",notes:"",status:""}])} style={{background:"#b45309",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Accessorial</button>}
-        </div>
-                )}
+
+                {/* ───── CROSSDOCK ───── */}
+                {activeSideTab==="xdrop"&&(()=>{
+                  const rows=week.crossdockDrops||[];
+                  if(!rows.length)return(<div style={{textAlign:"center",padding:"30px 10px",color:"#94a3b8",fontSize:"12px"}}>No crossdock entries this week.<br/><span style={{fontSize:"10px"}}>Click + Add to create one.</span></div>);
+                  return rows.map(r=>{
+                    const flagged=xdropNeedsAttention(r);
+                    return(
+                      <div key={r.id} style={{background:"#fff",border:`1px solid ${flagged?"#f59e0b":"#e2e8f0"}`,borderLeft:`4px solid ${flagged?"#f59e0b":"#a855f7"}`,borderRadius:"7px",padding:"10px 12px",marginBottom:"10px",boxShadow:"0 1px 2px rgba(0,0,0,.04)"}}>
+                        {/* Row 1 — crossdock location headline + alert + status */}
+                        <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"8px"}}>
+                          {flagged&&<span title="Needs attention — missing required field" style={{fontSize:"13px",cursor:"help"}}>⚠️</span>}
+                          <input type="text" value={r.location||""} onChange={e=>updRow("crossdockDrops",r.id,"location",e.target.value)} placeholder="Crossdock location (where load is sitting)..." style={{...inpStyle,fontWeight:"700",fontSize:"13px",flex:1,border:"none",borderBottom:"1px solid #e2e8f0",borderRadius:"0",padding:"3px 0"}}/>
+                          <select value={r.status||""} onChange={e=>updRow("crossdockDrops",r.id,"status",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:"4px",padding:"3px 6px",fontSize:"10px",fontWeight:"700",background:"#fff",cursor:"pointer",color:r.status==="Delivered"?"#15803d":"#64748b"}}>
+                            <option value="">— Status —</option>
+                            <option value="At yard">At yard</option>
+                            <option value="Dispatched">Dispatched</option>
+                            <option value="Delivered">Delivered</option>
+                          </select>
+                        </div>
+                        {/* Row 2 — delivery location (the OTHER address) */}
+                        <div style={{marginBottom:"8px"}}>
+                          <label style={reqLblStyle}>📍 Delivery location (where it's going)</label>
+                          <input type="text" value={r.deliveryLocation||""} onChange={e=>updRow("crossdockDrops",r.id,"deliveryLocation",e.target.value)} placeholder="Final delivery destination..." style={inpStyle}/>
+                        </div>
+                        {/* Row 3 — broker + load# */}
+                        <div style={gridStyle}>
+                          <div><label style={lblStyle}>Broker</label><input type="text" value={r.broker||""} onChange={e=>updRow("crossdockDrops",r.id,"broker",e.target.value)} placeholder="Broker name" style={inpStyle}/></div>
+                          <div><label style={lblStyle}>Load #</label><input type="text" value={r.loadNum||""} onChange={e=>updRow("crossdockDrops",r.id,"loadNum",e.target.value)} placeholder="Load #" style={inpStyle}/></div>
+                        </div>
+                        {/* Row 4 — date/time */}
+                        <div style={{marginBottom:"8px"}}>
+                          <label style={lblStyle}>Date / Time</label>
+                          <input type="text" value={r.datetime||""} onChange={e=>updRow("crossdockDrops",r.id,"datetime",e.target.value)} placeholder="e.g. 6/5/2026 8AM-5PM" style={inpStyle}/>
+                        </div>
+                        {/* Row 5 — local truck + driver */}
+                        <div style={gridStyle}>
+                          <div><label style={lblStyle}>Local Truck</label>
+                            <select value={r.truck||""} onChange={e=>onPickTruck("crossdockDrops",r.id,e.target.value)} style={{...inpStyle,cursor:"pointer"}}>
+                              <option value="">— Truck —</option>
+                              {allTrucksLocal.map(t=><option key={t} value={t}>#{t}{truckAssignments[t]?" — "+truckAssignments[t]:""}</option>)}
+                            </select>
+                          </div>
+                          <div><label style={lblStyle}>Local Driver</label>
+                            <input list={`xdrop-drv-${r.id}`} value={r.driver||""} onChange={e=>updRow("crossdockDrops",r.id,"driver",e.target.value)} placeholder="Driver name" style={inpStyle}/>
+                            <datalist id={`xdrop-drv-${r.id}`}>{allDriversLocal.map(d=><option key={d} value={d}/>)}</datalist>
+                          </div>
+                        </div>
+                        {/* Row 6 — dual OTR drivers */}
+                        <div style={gridStyle}>
+                          <div><label style={reqLblStyle}>🚛 Brought by OTR</label>
+                            <input type="text" value={r.broughtByOtr||""} onChange={e=>updRow("crossdockDrops",r.id,"broughtByOtr",e.target.value)} placeholder="Who delivered to xdock" style={inpStyle}/>
+                          </div>
+                          <div><label style={reqLblStyle}>🚛 Delivering OTR</label>
+                            <input type="text" value={r.deliveringOtr||""} onChange={e=>updRow("crossdockDrops",r.id,"deliveringOtr",e.target.value)} placeholder="Who picks it up next" style={inpStyle}/>
+                          </div>
+                        </div>
+                        {/* Row 7 — notes */}
+                        <div style={{marginBottom:"6px"}}>
+                          <label style={lblStyle}>Notes</label>
+                          <textarea value={r.notes||""} onChange={e=>updRow("crossdockDrops",r.id,"notes",e.target.value)} placeholder="Notes..." rows={2} style={{...inpStyle,resize:"vertical",minHeight:"32px"}}/>
+                        </div>
+                        <div style={{display:"flex",justifyContent:"flex-end"}}>
+                          <button onClick={()=>{if(confirm("Delete this crossdock entry?"))delRow("crossdockDrops",r.id);}} style={{background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:"4px",padding:"3px 9px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>× Remove</button>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+
+                {/* ───── EXTRAS / ACCESSORIALS ───── */}
+                {activeSideTab==="acc"&&(()=>{
+                  const rows=week.accessorials||[];
+                  if(!rows.length)return(<div style={{textAlign:"center",padding:"30px 10px",color:"#94a3b8",fontSize:"12px"}}>No accessorials this week.<br/><span style={{fontSize:"10px"}}>Click + Add to create one.</span></div>);
+                  const typeColors={Detention:"#ef4444",Layover:"#f59e0b",Lumper:"#06b6d4",TONU:"#a855f7"};
+                  return rows.map(r=>{
+                    const flagged=accNeedsAttention(r);
+                    const tColor=typeColors[r.type]||"#64748b";
+                    return(
+                      <div key={r.id} style={{background:"#fff",border:`1px solid ${flagged?"#f59e0b":"#e2e8f0"}`,borderLeft:`4px solid ${flagged?"#f59e0b":tColor}`,borderRadius:"7px",padding:"10px 12px",marginBottom:"10px",boxShadow:"0 1px 2px rgba(0,0,0,.04)"}}>
+                        {/* Row 1 — type dropdown + alert + status */}
+                        <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"8px"}}>
+                          {flagged&&<span title="Needs attention — unresolved or no amount" style={{fontSize:"13px",cursor:"help"}}>⚠️</span>}
+                          <select value={r.type||"Detention"} onChange={e=>updRow("accessorials",r.id,"type",e.target.value)} style={{border:"1px solid "+tColor,background:"#fff",color:tColor,fontWeight:"700",fontSize:"12px",padding:"4px 8px",borderRadius:"5px",cursor:"pointer",flex:1}}>
+                            <option value="Detention">Detention</option>
+                            <option value="Layover">Layover</option>
+                            <option value="Lumper">Lumper</option>
+                            <option value="TONU">TONU</option>
+                          </select>
+                          <select value={r.status||""} onChange={e=>updRow("accessorials",r.id,"status",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:"4px",padding:"3px 6px",fontSize:"10px",fontWeight:"700",background:"#fff",cursor:"pointer",color:r.status==="Paid"?"#15803d":r.status==="Approved"?"#0369a1":r.status==="Requested"?"#b45309":"#64748b"}}>
+                            <option value="">— Status —</option>
+                            <option value="Requested">Requested</option>
+                            <option value="Approved">Approved</option>
+                            <option value="Paid">Paid</option>
+                          </select>
+                        </div>
+                        {/* Row 2 — broker (REQUIRED) */}
+                        <div style={{marginBottom:"8px"}}>
+                          <label style={reqLblStyle}>🏢 Brokerage (required)</label>
+                          <input type="text" value={r.broker||""} onChange={e=>updRow("accessorials",r.id,"broker",e.target.value)} placeholder="Brokerage name..." style={{...inpStyle,fontWeight:"600",border:r.broker?inpStyle.border:"1px solid #f59e0b",background:r.broker?"#fff":"#fffbeb"}}/>
+                        </div>
+                        {/* Row 3 — load# + amount */}
+                        <div style={gridStyle}>
+                          <div><label style={lblStyle}>Load #</label><input type="text" value={r.loadNum||""} onChange={e=>updRow("accessorials",r.id,"loadNum",e.target.value)} placeholder="Load #" style={inpStyle}/></div>
+                          <div><label style={lblStyle}>Amount $</label><input type="number" value={r.amount||""} onChange={e=>updRow("accessorials",r.id,"amount",e.target.value)} placeholder="0" style={{...inpStyle,fontWeight:"700",color:"#059669"}}/></div>
+                        </div>
+                        {/* Row 4 — notes */}
+                        <div style={{marginBottom:"6px"}}>
+                          <label style={lblStyle}>Notes</label>
+                          <textarea value={r.notes||""} onChange={e=>updRow("accessorials",r.id,"notes",e.target.value)} placeholder="Notes..." rows={2} style={{...inpStyle,resize:"vertical",minHeight:"32px"}}/>
+                        </div>
+                        <div style={{display:"flex",justifyContent:"flex-end"}}>
+                          <button onClick={()=>{if(confirm("Delete this accessorial?"))delRow("accessorials",r.id);}} style={{background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:"4px",padding:"3px 9px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>× Remove</button>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+
               </div>
             </div>
           )}
-          <div style={{float:"right",width:"44px",background:"#f8fafc",border:"1px solid #e2e8f0",borderRight:"none",borderRadius:"8px 0 0 8px",marginBottom:"8px"}}>
-            {_tabs.map(tab=>(
-              <div key={tab.id} onClick={()=>setActiveSideTab(activeSideTab===tab.id?null:tab.id)} title={tab.label}
-                style={{cursor:"pointer",width:"100%",padding:"10px 0 8px",display:"flex",flexDirection:"column",alignItems:"center",gap:"4px",borderBottom:"1px solid #e2e8f0",position:"relative",background:activeSideTab===tab.id?"#fff":"transparent",borderLeft:activeSideTab===tab.id?`3px solid ${tab.color}`:"3px solid transparent",boxSizing:"border-box"}}>
-                <span style={{fontSize:"13px",lineHeight:1}}>{tab.icon}</span>
-                <span style={{fontSize:"8px",fontWeight:"700",color:activeSideTab===tab.id?tab.color:"#94a3b8",textAlign:"center"}}>{tab.label}</span>
-                {tab.count>0&&<span style={{position:"absolute",top:"4px",right:"2px",background:tab.color,color:"#fff",fontSize:"8px",fontWeight:"800",padding:"0 3px",borderRadius:"8px",minWidth:"14px",textAlign:"center",lineHeight:"14px"}}>{tab.count}</span>}
-              </div>
-            ))}
+          {/* RIGHT-EDGE TAB STRIP */}
+          {isAdmin&&(
+          <div style={{float:"right",width:"48px",background:"#fff",border:"1px solid #e2e8f0",borderRight:"none",borderRadius:"8px 0 0 8px",marginBottom:"8px",overflow:"hidden"}}>
+            {_tabs.map(tab=>{
+              const active=activeSideTab===tab.id;
+              return(
+                <div key={tab.id} onClick={()=>setActiveSideTab(active?null:tab.id)} title={tab.label+(tab.alerts?" — "+tab.alerts+" need attention":"")}
+                  style={{cursor:"pointer",width:"100%",padding:"11px 0 9px",display:"flex",flexDirection:"column",alignItems:"center",gap:"4px",borderBottom:"1px solid #e2e8f0",position:"relative",background:active?tab.bg:"transparent",borderLeft:active?`3px solid ${tab.color}`:"3px solid transparent",boxSizing:"border-box",transition:"background .12s"}}>
+                  <span style={{fontSize:"15px",lineHeight:1}}>{tab.icon}</span>
+                  <span style={{fontSize:"9px",fontWeight:"700",color:active?tab.color:"#64748b",textAlign:"center"}}>{tab.label}</span>
+                  {tab.count>0&&(
+                    <span style={{position:"absolute",top:"3px",right:"3px",background:tab.color,color:"#fff",fontSize:"9px",fontWeight:"800",padding:"0 4px",borderRadius:"8px",minWidth:"15px",textAlign:"center",lineHeight:"14px"}}>{tab.count}</span>
+                  )}
+                  {/* Red alert dot — overlays count badge when there are flagged rows */}
+                  {tab.alerts>0&&(
+                    <span title={tab.alerts+" entries need attention"} style={{position:"absolute",top:"0px",right:"0px",width:"10px",height:"10px",background:"#dc2626",border:"2px solid #fff",borderRadius:"50%",boxShadow:"0 0 0 1px #dc2626"}}/>
+                  )}
+                </div>
+              );
+            })}
           </div>
+          )}
         </>);
       })()}
+
 {/* PLANNED SHIPMENTS */}
       <div id="section-main" className="section-header" style={{background:"#1a2e50",marginTop:0,borderRadius:0,display:activeSection==="all"||activeSection==="main"?"flex":"none",alignItems:"center",gap:"8px"}}>
         <span onClick={()=>toggleSection("main")} style={{cursor:"pointer"}}>{week.openSections?.main?"▼":"▶"}</span>
@@ -3852,6 +3747,16 @@ ${accRows.length>0?`
             >🗂 Compact</button>
           </div>
         )}
+        {/* Manual-mode indicator + Reset button. Shows only when user has clicked an arrow. */}
+        {week.openSections?.main&&manualOrderActive&&(
+          <div onClick={e=>e.stopPropagation()} style={{display:"flex",alignItems:"center",gap:"6px",background:"rgba(245,158,11,.18)",border:"1px solid rgba(245,158,11,.5)",borderRadius:"6px",padding:"2px 8px"}}>
+            <span style={{fontSize:"10px",fontWeight:"700",color:"#fbbf24"}} title="Trailer arrows have re-ordered the list. Auto-sort rules (doubles-on-top, sort-by-date, reschedule-on-top) are paused.">📌 Manual order</span>
+            <button onClick={()=>{if(confirm("Reset to auto-sort? Your manual order will be cleared and trailers will sort by the standard rules again."))setManualOrderActive(false);}}
+              style={{background:"rgba(255,255,255,.95)",color:"#92400e",border:"none",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}
+              title="Restore the default sort: ⏳ flagged → doubles by date → singles by date"
+            >🔁 Reset to auto-sort</button>
+          </div>
+        )}
       </div>
       {(activeSection==="all"||activeSection==="main")&&week.openSections?.main&&(
       <div style={{display:"flex",gap:"10px",alignItems:"flex-start",padding:"10px",background:"#f0f4f8",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",maxWidth:"100%",boxSizing:"border-box"}}>
@@ -3859,7 +3764,43 @@ ${accRows.length>0?`
         {/* ════ LEFT PANEL ════ */}
         <div style={{flex:"3 1 0",minWidth:0,display:"flex",flexDirection:"column",gap:"8px"}}>
 
-          {pendingGroups.filter(g=>!g.isCombined).map((group,gi)=>{
+          {(()=>{
+            // Build the ordered trailer list to render. Two modes:
+            //   AUTO-SORT (default): ⏳ flagged trailers on top → multi-stop trailers
+            //     sorted by earliest-first-stop delivery date → single-load trailers
+            //     sorted by delivery date.
+            //   MANUAL (active once user clicks any arrow): respects the saved per-week
+            //     manualPlannedOrder array of group IDs. New trailers (not in the array)
+            //     append to the bottom in their original order.
+            const planned=pendingGroups.filter(g=>!g.isCombined);
+            if(manualOrderActive){
+              const manualIds=manualPlannedOrder[week.id]||[];
+              const idxOf=id=>{const i=manualIds.indexOf(id);return i<0?9999:i;};
+              return planned.slice().sort((a,b)=>{
+                const ai=idxOf(a.id),bi=idxOf(b.id);
+                if(ai!==bi)return ai-bi;
+                return 0; // preserve original order for trailers not in manual list
+              });
+            }
+            // AUTO-SORT — three tiers
+            const tierOf=g=>{
+              if(g.needsReschedule)return 0;       // top
+              if((g.loads||[]).length>1)return 1;  // multi-stop
+              return 2;                            // single
+            };
+            // Sort key within a tier: earliest delivery date of the trailer
+            const sortKey=g=>{
+              const loads=g.loads||[];
+              if(!loads.length)return Infinity;
+              const ts=loads.map(l=>parseTS(l.delivery)).filter(t=>isFinite(t));
+              return ts.length?Math.min(...ts):Infinity;
+            };
+            return planned.slice().sort((a,b)=>{
+              const ta=tierOf(a),tb=tierOf(b);
+              if(ta!==tb)return ta-tb;
+              return sortKey(a)-sortKey(b);
+            });
+          })().map((group,gi,sortedArr)=>{
             const gsSt=GSS[group.groupStatus]||GSS["Pending"];
             const isClaimed=!!(group.securedAt&&group.groupDriver);
             const canEdit=isAdmin||!isClaimed;
@@ -3898,11 +3839,28 @@ ${accRows.length>0?`
               // Grid columns (tight): T# | Route | PU | DEL | Wt | Plt | L Truck | L Driver | Trailer | Rate | Broker+# | 📍 | Status | ✏️ ×
               // Hide trailer-level T# header for non-multi-stop, since the row itself = the load.
               const gColTpl="30px minmax(170px,2fr) 100px 100px 50px 30px 50px 65px 55px 65px minmax(100px,1fr) 120px 80px 24px";
+              // Yellow background for trailers flagged as needing reschedule (per-trailer toggle).
+              const reschedBg=group.needsReschedule?"#fef9c3":"#ffffff";
+              const reschedBorder=group.needsReschedule?"#eab308":"#64748b";
               return(
-                <div key={group.id} style={{background:"#ffffff",border:"1px solid #64748b",borderRadius:"6px",overflow:"hidden",borderLeft:`4px solid ${gsSt.tc||"#64748b"}`,marginBottom:"6px",boxShadow:"0 1px 2px rgba(15,31,61,.1)"}}>
+                <div key={group.id} style={{background:reschedBg,border:`1px solid ${reschedBorder}`,borderRadius:"6px",overflow:"hidden",borderLeft:`4px solid ${group.needsReschedule?"#eab308":(gsSt.tc||"#64748b")}`,marginBottom:"6px",boxShadow:group.needsReschedule?"0 1px 3px rgba(234,179,8,.25)":"0 1px 2px rgba(15,31,61,.1)"}}>
                   {/* TRAILER HEADER STRIP — keeps OTR Drv/Truck/Trailer/status/dollar visible */}
-                  <div style={{display:"flex",alignItems:"center",gap:"8px",padding:"4px 9px",background:"rgba(30,58,138,.06)",borderBottom:"1px solid #e5edf5",fontSize:"11px",flexWrap:"wrap"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:"8px",padding:"4px 9px",background:group.needsReschedule?"rgba(234,179,8,.12)":"rgba(30,58,138,.06)",borderBottom:`1px solid ${group.needsReschedule?"#fde68a":"#e5edf5"}`,fontSize:"11px",flexWrap:"wrap"}}>
+                    {/* Trailer-level up/down arrows — admin only, switches to manual-order mode on first click */}
+                    {isAdmin&&sortedArr.length>1&&(
+                      <span style={{display:"flex",flexDirection:"column",gap:"0",marginRight:"-3px",flexShrink:0}}>
+                        <button onClick={e=>{e.stopPropagation();movePlannedTrailer(sortedArr,group.id,"up");}}
+                          disabled={gi===0}
+                          title={gi===0?"Already at top":"Move up (switches to manual-order mode)"}
+                          style={{background:"transparent",border:"none",color:gi===0?"#cbd5e1":"#64748b",cursor:gi===0?"default":"pointer",fontSize:"10px",padding:"0 2px",lineHeight:"1"}}>▲</button>
+                        <button onClick={e=>{e.stopPropagation();movePlannedTrailer(sortedArr,group.id,"down");}}
+                          disabled={gi===sortedArr.length-1}
+                          title={gi===sortedArr.length-1?"Already at bottom":"Move down (switches to manual-order mode)"}
+                          style={{background:"transparent",border:"none",color:gi===sortedArr.length-1?"#cbd5e1":"#64748b",cursor:gi===sortedArr.length-1?"default":"pointer",fontSize:"10px",padding:"0 2px",lineHeight:"1"}}>▼</button>
+                      </span>
+                    )}
                     <span style={{fontWeight:"700",color:"#1e3a8a",background:"#dbeafe",padding:"2px 7px",borderRadius:"4px",fontSize:"10px",flexShrink:0}}>T{gi+1}</span>
+                    {group.needsReschedule&&<span style={{fontSize:"10px",fontWeight:"700",color:"#92400e",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 7px",borderRadius:"4px",flexShrink:0}}>⏳ Needs reschedule</span>}
                     {isMultiStop&&<span style={{fontSize:"9px",color:"#64748b",fontWeight:"600"}}>{(group.loads||[]).length} stops</span>}
                     {(()=>{
                       const totalGross=(group.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
@@ -3922,6 +3880,10 @@ ${accRows.length>0?`
                     {urgTag&&!isDelivered&&<span style={{fontSize:"9px",fontWeight:"700",color:"#fff",background:urgColor,padding:"1px 6px",borderRadius:"3px",flexShrink:0}}>{urgTag}</span>}
                     <span style={{fontSize:"10px",fontWeight:"600",color:gsSt.tc,background:gsSt.barBg,padding:"1px 7px",borderRadius:"3px",flexShrink:0}}>{group.groupStatus||"Pending"}</span>
                     {isAdmin&&!group.isCombined&&isMultiStop&&<button onClick={e=>{e.stopPropagation();setGroup(group.id,"isCombined",true);}} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"4px",padding:"1px 8px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>→ Combined</button>}
+                    {/* ⏳ Reschedule toggle — admin only */}
+                    {isAdmin&&<button onClick={e=>{e.stopPropagation();toggleReschedule(group.id);}}
+                      title={group.needsReschedule?"Clear reschedule flag — return to normal sort":"Flag this trailer as needing a new delivery date (sticks to top, yellow background)"}
+                      style={{background:group.needsReschedule?"#fbbf24":"#fef9c3",color:"#92400e",border:`1px solid ${group.needsReschedule?"#d97706":"#fde68a"}`,borderRadius:"4px",padding:"1px 7px",fontSize:"11px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>⏳</button>}
                     <button onClick={e=>{e.stopPropagation();setExpandedCompactGroup(group.id);}} title="Expand for editing" style={{background:"#e0e7ff",color:"#3730a3",border:"1px solid #c7d2fe",borderRadius:"4px",padding:"1px 7px",fontSize:"11px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>✏️</button>
                     {isAdmin&&<button onClick={e=>{e.stopPropagation();if(confirm("Delete this trailer and all its loads?"))delGroup(group.id);}} title="Delete trailer" style={{background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>×</button>}
                   </div>
@@ -4035,11 +3997,29 @@ ${accRows.length>0?`
                   setW("groups",(()=>{const arr=[...week.groups];const[moved]=arr.splice(from,1);arr.splice(to,0,moved);return arr;})());
                   dragGroupIdx.current=null;setDragOverIdx(null);
                 }}
-                style={{border:`1px solid ${dragOverIdx===gi?"#fbbf24":"#d1d5db"}`,borderRadius:"8px",overflow:"hidden",outline:dragOverIdx===gi?"2px solid #fbbf24":"none"}}
+                style={{border:`1px solid ${group.needsReschedule?"#eab308":(dragOverIdx===gi?"#fbbf24":"#d1d5db")}`,borderRadius:"8px",overflow:"hidden",outline:dragOverIdx===gi?"2px solid #fbbf24":"none",boxShadow:group.needsReschedule?"0 0 0 1px #fde68a inset, 0 1px 4px rgba(234,179,8,.25)":"none"}}
               >
                 {/* ── BANNER (no group-status dropdown — individual load status shown in rows) ── */}
-                <div style={{background:"linear-gradient(90deg,#0f1f3d,#1e3a5f)",padding:"5px 10px",display:"flex",alignItems:"center",gap:"7px",fontSize:"11px",color:"#fff",flexWrap:"wrap"}}>
+                <div style={{background:group.needsReschedule?"linear-gradient(90deg,#854d0e,#a16207)":"linear-gradient(90deg,#0f1f3d,#1e3a5f)",padding:"5px 10px",display:"flex",alignItems:"center",gap:"7px",fontSize:"11px",color:"#fff",flexWrap:"wrap"}}>
+                  {/* Trailer-level up/down arrows — admin only, switches to manual-order mode on first click */}
+                  {isAdmin&&sortedArr.length>1&&(
+                    <span style={{display:"flex",flexDirection:"column",gap:"0",marginRight:"-3px",flexShrink:0}}>
+                      <button onClick={e=>{e.stopPropagation();movePlannedTrailer(sortedArr,group.id,"up");}}
+                        disabled={gi===0}
+                        title={gi===0?"Already at top":"Move up (switches to manual-order mode)"}
+                        style={{background:"transparent",border:"none",color:gi===0?"rgba(255,255,255,.25)":"rgba(255,255,255,.7)",cursor:gi===0?"default":"pointer",fontSize:"10px",padding:"0 2px",lineHeight:"1"}}>▲</button>
+                      <button onClick={e=>{e.stopPropagation();movePlannedTrailer(sortedArr,group.id,"down");}}
+                        disabled={gi===sortedArr.length-1}
+                        title={gi===sortedArr.length-1?"Already at bottom":"Move down (switches to manual-order mode)"}
+                        style={{background:"transparent",border:"none",color:gi===sortedArr.length-1?"rgba(255,255,255,.25)":"rgba(255,255,255,.7)",cursor:gi===sortedArr.length-1?"default":"pointer",fontSize:"10px",padding:"0 2px",lineHeight:"1"}}>▼</button>
+                    </span>
+                  )}
                   <span style={{background:"#2563eb",padding:"1px 8px",borderRadius:"4px",fontWeight:"700",flexShrink:0}}>T{gi+1}</span>
+                  {group.needsReschedule&&<span style={{fontSize:"10px",fontWeight:"700",color:"#92400e",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 7px",borderRadius:"4px",flexShrink:0}}>⏳ Needs reschedule</span>}
+                  {/* ⏳ Reschedule toggle — admin only */}
+                  {isAdmin&&<button onClick={e=>{e.stopPropagation();toggleReschedule(group.id);}}
+                    title={group.needsReschedule?"Clear reschedule flag — return to normal sort":"Flag this trailer as needing a new delivery date (sticks to top, yellow highlight)"}
+                    style={{background:group.needsReschedule?"#fbbf24":"rgba(251,191,36,.2)",color:group.needsReschedule?"#92400e":"#fde68a",border:`1px solid ${group.needsReschedule?"#d97706":"rgba(251,191,36,.4)"}`,borderRadius:"4px",padding:"1px 6px",fontSize:"11px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>⏳</button>}
                   {/* In compact mode, this group is temporarily expanded — show a collapse button */}
                   {plannedView==="compact"&&isExpandedInCompact&&<button onClick={()=>setExpandedCompactGroup(null)} title="Collapse back to compact row" style={{background:"rgba(148,163,184,.25)",color:"#cbd5e1",border:"1px solid rgba(148,163,184,.4)",borderRadius:"4px",padding:"1px 8px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>← Collapse</button>}
                   
