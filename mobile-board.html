@@ -115,9 +115,35 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .otr-driver{font-size:13px;font-weight:700;color:#c4b5fd;flex:1;}
 .otr-truck{font-size:10px;font-weight:700;color:rgba(255,255,255,.5);background:rgba(255,255,255,.08);padding:2px 7px;border-radius:4px;}
 .otr-status-badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;}
-.otr-stop-row{padding:8px 14px;border-bottom:1px solid rgba(255,255,255,.05);display:flex;align-items:center;gap:8px;}
+.otr-stop-row{padding:8px 14px;border-bottom:1px solid rgba(255,255,255,.05);display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;}
 .otr-stop-city{font-size:12px;font-weight:600;color:#e2e8f0;flex:1;}
 .otr-stop-del{font-size:10px;color:rgba(255,255,255,.4);}
+/* Broker + load# meta line under each OTR stop. Load# is tappable to copy. */
+.otr-stop-meta{width:100%;display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap;padding-left:26px;}
+.otr-broker{font-size:10px;color:rgba(255,255,255,.55);font-weight:600;}
+.otr-loadnum{font-size:10px;font-weight:700;color:#fde047;background:rgba(252,211,77,.1);border:1px solid rgba(252,211,77,.3);padding:2px 7px;border-radius:4px;cursor:pointer;user-select:all;transition:background .15s,color .15s;}
+.otr-loadnum:active{background:rgba(252,211,77,.25);}
+.otr-loadnum[data-copied="1"]{background:rgba(34,197,94,.18);color:#86efac;border-color:rgba(34,197,94,.5);}
+
+/* PLANNED — trailer card pattern (mirrors Combined): a banner header followed by stop rows */
+.ptrailer{background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;margin-bottom:12px;box-shadow:0 1px 2px rgba(0,0,0,.04);}
+.ptrailer-hdr{padding:8px 12px;background:linear-gradient(90deg,#0f1f3d,#1e3a5f);color:#fff;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;}
+.ptrailer-tnum{background:#2563eb;color:#fff;font-weight:700;padding:1px 8px;border-radius:4px;font-size:10px;}
+.ptrailer-stops{font-size:10px;color:rgba(255,255,255,.6);font-weight:600;}
+.ptrailer-truck{font-size:10px;font-weight:700;color:rgba(255,255,255,.7);background:rgba(255,255,255,.1);padding:2px 7px;border-radius:4px;}
+.ptrailer-trailer{font-size:10px;font-weight:700;color:rgba(255,255,255,.7);background:rgba(255,255,255,.1);padding:2px 7px;border-radius:4px;}
+.ptrailer-gross{font-size:11px;color:#86efac;font-weight:800;margin-left:auto;}
+.pstop{padding:10px 12px;border-bottom:1px solid #f1f5f9;}
+.pstop:last-child{border-bottom:none;}
+.pstop-banner{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;}
+.pstop-num{width:18px;height:18px;border-radius:50%;background:#e0e7ff;color:#3730a3;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;flex-shrink:0;}
+.pstop-route{font-size:12px;font-weight:600;color:#0f1f3d;flex:1;min-width:0;}
+.pstop-status{font-size:9px;font-weight:700;padding:2px 7px;border-radius:4px;flex-shrink:0;}
+.pstop-loadnum{font-size:10px;font-weight:700;color:#b45309;background:#fef3c7;border:1px solid #fcd34d;padding:2px 7px;border-radius:4px;cursor:pointer;user-select:all;transition:background .15s,color .15s;}
+.pstop-loadnum:active{background:#fde68a;}
+.pstop-loadnum[data-copied="1"]{background:#dcfce7;color:#15803d;border-color:#86efac;}
+.pstop-broker{font-size:10px;color:#64748b;font-weight:600;}
+.pstop-details{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 12px;padding-left:26px;}
 
 /* SAMSARA LIVE LOCATION PILL — yellow pill, used on OTR cards (dark bg), Combined cards (white bg), Planned rows (white bg) */
 .live-pill{font-size:10px;font-weight:700;color:#a16207;background:#fef3c7;border:1px solid #fcd34d;padding:2px 7px;border-radius:4px;white-space:nowrap;display:inline-flex;align-items:center;gap:3px;}
@@ -944,30 +970,59 @@ function renderPlanned() {
   if (!groups.length) {
     h += '<div class="empty"><div class="empty-icon"> </div><div class="empty-text">No planned loads this week</div></div>';
   } else {
-    groups.forEach(function(g){
-      (g.loads||[]).forEach(function(l){
+    groups.forEach(function(g, gi){
+      var loads = sortByDelivery(g.loads||[]);
+      var stops = loads.length;
+      var totalGross = loads.reduce(function(s,l){ return s+(parseFloat(l.rate)||0); }, 0);
+      h += '<div class="ptrailer">';
+      // Trailer banner — T# + stop count + truck/trailer (no driver name per spec) + total gross
+      h += '<div class="ptrailer-hdr">';
+      h += '<span class="ptrailer-tnum">T'+(gi+1)+'</span>';
+      if (stops > 1) h += '<span class="ptrailer-stops">'+stops+' stops</span>';
+      if (g.groupTruck) h += '<span class="ptrailer-truck">#'+g.groupTruck+'</span>';
+      if (g.groupTrailer) h += '<span class="ptrailer-trailer">T'+g.groupTrailer+'</span>';
+      // OTR truck live pill (group-level) — kept since this is the trailer's truck
+      if (g.groupTruck) h += livePillFor(g.groupTruck, '', false);
+      if (totalGross > 0) h += '<span class="ptrailer-gross">$'+Math.round(totalGross).toLocaleString()+'</span>';
+      h += '</div>';
+      // Per-load rows
+      loads.forEach(function(l, li){
         var sr = parseSR(l.sr||'');
         var stCls = statusClass(l.status||'');
-        var gross = parseFloat(l.rate)||0;
-        var am = cityMiles(sr.s);
-        var um = (l.manualPickupMi!=null&&l.manualPickupMi!=='') ? parseFloat(l.manualPickupMi) : am;
-        var lc = l.manualLocalCharge!=null&&l.manualLocalCharge!=='' ? parseFloat(l.manualLocalCharge) : (localCharge(um)||0);
-        h += '<div class="prow">';
-        h += '<div class="prow-banner"><span class="prow-banner-route">'+(sr.s||'')+(sr.r?'   '+sr.r:'')+'</span>';
-        // Live location pill (between route and status badge)
-        if (l.localTruck) h += livePillFor(l.localTruck, l.status||'', false);
-        if (l.status) h += '<span class="prow-banner-status '+stCls+'">'+l.status+'</span>';
-        h += '</div><div class="prow-details">';
-        if (l.pickup) h += fld('  Pickup',l.pickup);
-        if (l.delivery) h += fld('  Delivery',l.delivery);
-        if (l.weight) h += fld('   Weight',l.weight+' lbs');
-        if (l.driver) h += fld('  Driver',l.driver);
-        if (l.localTruck) h += fld('  Truck','#'+l.localTruck);
-        if (l.localTrailer) h += fld('  Trailer',l.localTrailer);
-        if (gross) h += fld('  Rate','$'+gross.toLocaleString());
-        if (lc) h += fld('  Local','$'+Math.round(lc).toLocaleString());
-        h += '</div></div>';
+        // Extract broker + load# from l.broker = "Broker & 12345"
+        var brokerName = '', loadNum = '';
+        if (l.broker) {
+          var parts = l.broker.split('&');
+          brokerName = (parts[0]||'').trim();
+          loadNum = (parts[1]||'').trim();
+        }
+        if (!loadNum && l.loadNum) loadNum = String(l.loadNum).trim();
+        h += '<div class="pstop">';
+        // Banner row: # | route | broker | load# (copy) | status
+        h += '<div class="pstop-banner">';
+        h += '<div class="pstop-num">'+(li+1)+'</div>';
+        h += '<div class="pstop-route">'+(sr.s||'')+(sr.r?' → '+sr.r:'')+'</div>';
+        if (brokerName) h += '<span class="pstop-broker">'+brokerName+'</span>';
+        if (loadNum) {
+          var safeNum = String(loadNum).replace(/'/g, "\\'");
+          h += '<span class="pstop-loadnum" onclick="copyLoadNum(this, \''+safeNum+'\')" title="Tap to copy">#'+loadNum+'</span>';
+        }
+        if (l.status) h += '<span class="pstop-status '+stCls+'">'+l.status+'</span>';
+        h += '</div>';
+        // Details grid: pickup, delivery, weight, truck, trailer, rate.
+        // NO driver name (per spec), NO local charge (per spec).
+        h += '<div class="pstop-details">';
+        if (l.pickup) h += fld('  Pickup', l.pickup);
+        if (l.delivery) h += fld('  Delivery', l.delivery);
+        if (l.weight) h += fld('   Weight', l.weight+' lbs');
+        if (l.localTruck) h += fld('  Truck', '#'+l.localTruck);
+        if (l.localTrailer) h += fld('  Trailer', l.localTrailer);
+        var rate = parseFloat(l.rate)||0;
+        if (rate > 0) h += fld('  Rate', '$'+rate.toLocaleString());
+        h += '</div>';
+        h += '</div>';
       });
+      h += '</div>';
     });
   }
   document.getElementById('planned-content').innerHTML = h;
@@ -975,6 +1030,33 @@ function renderPlanned() {
 
 function fld(label, val) {
   return '<div class="prow-field"><div class="prow-field-label">'+label+'</div><div class="prow-field-val">'+val+'</div></div>';
+}
+
+// Tap-to-copy helper for load numbers. Visual flash on success via the data-copied
+// attribute on the element (CSS handles the green flash).
+function copyLoadNum(el, num) {
+  if (!num) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(num);
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = num;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    el.setAttribute('data-copied', '1');
+    var orig = el.textContent;
+    el.textContent = '✓ ' + num;
+    setTimeout(function(){
+      el.removeAttribute('data-copied');
+      el.textContent = orig;
+    }, 1100);
+  } catch(e) {}
 }
 
 //     COMBINED (admin)                                          
@@ -1018,14 +1100,31 @@ function renderOTR() {
       loads.forEach(function(l,li){
         var sr = parseSR(l.sr||'');
         var stCls = statusClass(l.status||'');
+        // Extract broker + load# from l.broker = "Broker Name & 12345"
+        var brokerName = '', loadNum = '';
+        if (l.broker) {
+          var parts = l.broker.split('&');
+          brokerName = (parts[0]||'').trim();
+          loadNum = (parts[1]||'').trim();
+        }
+        if (!loadNum && l.loadNum) loadNum = String(l.loadNum).trim();
         h += '<div class="otr-stop-row">';
         h += '<div style="width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:rgba(255,255,255,.5);flex-shrink:0">'+(li+1)+'</div>';
         h += '<div style="flex:1;min-width:0"><div class="otr-stop-city">'+(sr.r||sr.s||' ')+'</div>';
         if (l.delivery) h += '<div class="otr-stop-del">  '+l.delivery+'</div>';
         h += '</div>';
-        // Per-load local truck pill (e.g. local driver assigned for the pickup leg)
-        if (l.localTruck) h += livePillFor(l.localTruck, l.status||'', true);
+        // No per-stop local-truck pill — only the OTR truck pill at the top of the card.
         if (l.status) h += '<span class="stop-status '+stCls+'">'+l.status+'</span>';
+        // Broker + tap-to-copy load# on a second line under the stop
+        if (brokerName || loadNum) {
+          h += '<div class="otr-stop-meta">';
+          if (brokerName) h += '<span class="otr-broker">'+brokerName+'</span>';
+          if (loadNum) {
+            var safeNum = String(loadNum).replace(/'/g, "\\'");
+            h += '<span class="otr-loadnum" onclick="copyLoadNum(this, \''+safeNum+'\')" title="Tap to copy">#'+loadNum+'</span>';
+          }
+          h += '</div>';
+        }
         h += '</div>';
       });
       h += '</div>';
