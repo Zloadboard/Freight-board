@@ -328,7 +328,7 @@ function _parseEcho(text){
   // Route from the natural-language line "moving on 05/26/2026 from CITY, ST to CITY, ST"
   // Echo wraps the second city onto the next line ("to FOUNTAIN INN,\nSC ..."). The state
   // code must be preceded by whitespace (not embedded in another word — e.g. "INN" → "IN").
-  const route=text.match(/moving on\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+from\s+([A-Z][A-Z .'\-]+?),\s*([A-Z]{2})\s+to\s+([A-Z][A-Z .'\-]+?),?\s*(?:^|\s)([A-Z]{2})(?=\s)/im);
+  const route=flat.match(/moving on\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+from\s+([A-Z][A-Z .'\-]+?),\s*([A-Z]{2})\s+to\s+([A-Z][A-Z .'\-]+?),?\s+([A-Z]{2})(?=\s)/i);
   if(route){
     r.pickup={location:_rcTitle(route[2])+", "+route[3]};
     r.delivery={location:_rcTitle(route[4])+", "+route[5]};
@@ -363,6 +363,34 @@ function _parseEcho(text){
   if(p){const n=parseInt(p[1],10);if(n>=1&&n<=100){if(!r.pickup)r.pickup={};r.pickup.pallets=String(n);}}
   const cm=text.match(/Item:\s*([A-Za-z][A-Za-z0-9 ,&'\/.\-]{2,60})/);
   if(cm){if(!r.pickup)r.pickup={};r.pickup.commodity=cm[1].trim();}
+
+  // Company name + street address — Echo's "Pickup" and "Drop" blocks:
+  //   Pickup
+  //   ACACIA (TPM)                          ← company
+  //   3600 SUNSET AVENUE, c/o ACACIA (TPM)  ← street
+  //   WAUKEGAN IL 60087                     ← city/state/zip
+  const lines=text.split(/\r?\n/);
+  const findEchoCoAndAddr=(headerRe)=>{
+    for(let i=0;i<lines.length;i++){
+      if(!headerRe.test(lines[i]))continue;
+      const got=[];
+      for(let j=i+1;j<Math.min(i+6,lines.length)&&got.length<3;j++){
+        const t=lines[j].trim();
+        if(!t)continue;
+        if(/^(Pickup|Drop|Pieces|Pallets|Item|Weight|Appointment|INSTRUCTIONS|PKU#|DELV#)/i.test(t))break;
+        got.push(t);
+      }
+      const co=got[0]||"";
+      let addr=got[1]||"";
+      addr=addr.replace(/,\s*c\/o\s.*$/i,"").trim();
+      return {co:co,addr:addr};
+    }
+    return null;
+  };
+  const eShip=findEchoCoAndAddr(/^\s*Pickup\s*$/i);
+  const eRecv=findEchoCoAndAddr(/^\s*Drop\s*$/i);
+  if(eShip){r.shipperCo=eShip.co;r.shipperAddr=eShip.addr;}
+  if(eRecv){r.receiverCo=eRecv.co;r.receiverAddr=eRecv.addr;}
   return r;
 }
 
@@ -404,13 +432,15 @@ function _parseRXO(text){
       // RXO can render a time window as two lines: "13:00 -" then "15:00".
       for(let j=i+1;j<Math.min(i+10,lines.length);j++){
         const ln=lines[j];
-        // Stop scanning if we hit another PU/SO row (next stop block)
-        if(j>i&&/^\s*(PU|SO|DO)\b/.test(ln))break;
+        // Stop scanning if we hit another stop header (PU/SO/DO with NO leading whitespace).
+        // RXO reference codes ("DO 1270776", "P8 ...") are deeply indented and must not trigger this.
+        if(j>i&&/^(PU|SO|DO)\b/.test(ln))break;
         if(!location){
-          // Skip lines that look like a 5-digit zip continuation or pure facility name junk
           const cm2=ln.match(cityRe);
-          // Sanity check: city line shouldn't contain "Arrival", "N/A", or look like a date
-          if(cm2&&!/\b(Arrival|N\/A|Departure)\b/i.test(ln)&&!/^\s*\d{1,2}\/\d{1,2}\/\d{2,4}\b/.test(ln)){
+          // Sanity check: skip city candidate if line starts with "Arrival" or a date.
+          // (Don't filter on "N/A" elsewhere in the line — RXO uses "Dim: N/A × N/A" alongside
+          // the city line, and we still want the city.)
+          if(cm2&&!/^\s*(Arrival|Departure)\b/i.test(ln)&&!/^\s*\d{1,2}\/\d{1,2}\/\d{2,4}\b/.test(ln)){
             location=cm2[1].trim()+", "+cm2[2];
           }
         }
@@ -446,6 +476,60 @@ function _parseRXO(text){
   const pu=findStop("PU"),so=findStop("SO");
   if(pu)r.pickup=pu;
   if(so)r.delivery=so;
+
+  // Company name + street address — RXO has TWO formats:
+  //   FORMAT A (address present): full address in stop block
+  //   FORMAT B (address withheld): "Street Address will be shared upon tracking acceptance"
+  // Try to extract; leave blank for format B (manual fill later).
+  const findRXOCoAndAddr=(kind)=>{
+    for(let i=0;i<lines.length;i++){
+      if(!new RegExp("^\\s*"+kind+"\\b").test(lines[i]))continue;
+      let co="";
+      const parts=lines[i].split(/\s{2,}/).map(s=>s.trim()).filter(Boolean);
+      for(const part of parts){
+        if(/^(PU|SO|DO|Arrival|Departure|N\/A|\d{1,2}\/\d{1,2}\/\d{2,4})$/.test(part))continue;
+        if(/^\d{1,2}:\d{2}/.test(part))continue;
+        if(/^[A-Z]{3,12}$/.test(part)&&part===part.toUpperCase()&&!part.includes(" "))continue;
+        if(/^[A-Z][A-Za-z'\-]+(?:[ ][A-Z][A-Za-z'\-]+){0,3},\s+[A-Z]{2}(?:\s+\d{5})?$/.test(part))continue;
+        co=part;break;
+      }
+      let addr="";
+      for(let j=i+1;j<Math.min(i+10,lines.length);j++){
+        if(j>i&&/^(PU|SO|DO)\b/.test(lines[j]))break;
+        const ln=lines[j].trim();
+        const streetM=ln.match(/^(\d{1,6}\s+[NSEW]?\s*[A-Za-z][A-Za-z0-9 .'\-]+)/);
+        if(streetM){
+          const candidate=streetM[1].trim();
+          if(/^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(candidate))continue;
+          if(/^\d{5}\b/.test(candidate))continue;
+          if(/Street\s+Address\s+will\s+be\s+shared/i.test(ln))continue;
+          addr=candidate;break;
+        }
+        if(/Street\s+Address\s+will\s+be\s+shared/i.test(ln))break;
+      }
+      return{co:co,addr:addr};
+    }
+    return null;
+  };
+  const rxoShip=findRXOCoAndAddr("PU");
+  const rxoRecv=findRXOCoAndAddr("SO");
+  if(rxoShip){if(rxoShip.co)r.shipperCo=rxoShip.co;if(rxoShip.addr)r.shipperAddr=rxoShip.addr;}
+  if(rxoRecv){if(rxoRecv.co)r.receiverCo=rxoRecv.co;if(rxoRecv.addr)r.receiverAddr=rxoRecv.addr;}
+
+  // Commodity — RXO shows it as "COMMODITY NAME  WEIGHT (code)" in the stop table.
+  // Example: "FOOD STUFFS                      10625 (4651)" or "BEER       27000 (13)".
+  for(const ln of lines){
+    const cm=ln.match(/\b([A-Z]{2,}(?:\s+[A-Z]{2,}){0,3})\s{2,}\d{2,6}\s*\(\d{1,4}\)/);
+    if(cm){
+      const c=cm[1].trim();
+      if(!/^(PU|SO|DO|PO|BM|MB|SI|CR|AO|P8|SCA|ZZ|N\/A|FCFS|DIM|CARRIER|RATE)$/.test(c)
+         &&!/^(PAGE|CONFIRMATION|LOAD|TOTAL|WEIGHT|EQUIPMENT|REFERENCE)/i.test(c)){
+        if(!r.pickup)r.pickup={};
+        r.pickup.commodity=c;
+        break;
+      }
+    }
+  }
 
   // Total Carrier Pay — labelled
   const pay=text.match(/Total\s+Carrier\s+Pay\s*\$?\s*([\d,]+(?:\.\d{2})?)/i)
@@ -504,6 +588,32 @@ function _parseMolo(text){
   // Weight — "Total Wgt: 35000 lb" in commodity table
   const w=text.match(/Total\s+Wgt:?\s*([\d,]+)\s*lb/i);
   if(w){const n=parseInt(w[1].replace(/,/g,""),10);if(n>=100&&n<=80000){if(!r.pickup)r.pickup={};r.pickup.weight=String(n);}}
+
+  // Company name + street address. Molo's "Stop 1 - Pick Up" / "Stop 2 - Delivery"
+  // blocks have: company, street, city/state/zip across 3 lines. Address may be
+  // on the OTHER SIDE of a page break (with form feed), so we scan wider.
+  const findMoloCoAndAddr=(headerRe)=>{
+    for(let i=0;i<lines.length;i++){
+      if(!headerRe.test(lines[i]))continue;
+      const got=[];
+      for(let j=i+1;j<Math.min(i+15,lines.length)&&got.length<3;j++){
+        const t=lines[j].replace(/\f/g,"").trim();
+        if(!t)continue;
+        if(/MoLo\s+Solutions\s*\|\s*Route/i.test(t))continue;
+        if(/^(Date\/Time|Scheduling|Loading|Special|Pallet|PU\s*#|PO\s*#|EDI|Location|Stop\s+\d|Appt\s*#|Facility\s+Notes|Pick\s+Up\s+Instructions|Delivery\s+Instructions|Commodity\s+Details)/i.test(t))break;
+        got.push(t);
+      }
+      const co=got[0]||"";
+      let addr=got[1]||"";
+      addr=addr.replace(/,\s*$/,"").trim();
+      return{co:co,addr:addr};
+    }
+    return null;
+  };
+  const moShip=findMoloCoAndAddr(/Stop\s+\d+\s*-\s*Pick\s*Up/i);
+  const moRecv=findMoloCoAndAddr(/Stop\s+\d+\s*-\s*Delivery/i);
+  if(moShip){r.shipperCo=moShip.co;r.shipperAddr=moShip.addr;}
+  if(moRecv){r.receiverCo=moRecv.co;r.receiverAddr=moRecv.addr;}
   return r;
 }
 
@@ -590,6 +700,56 @@ function _parseArrive(text){
   // Pallets — "Total Pallets 25 Pallets"
   const p=text.match(/Total\s+Pallets\s+(\d{1,3})/i);
   if(p){const n=parseInt(p[1],10);if(n>=1&&n<=100){if(!r.pickup)r.pickup={};r.pickup.pallets=String(n);}}
+
+  // Company name + street address — Arrive's "Pickup #1" / "Delivery #1" block:
+  //   Pickup #1
+  //   Pickup Address   Appointment  Ref/PO#  Commodity  Weight   ← skip this header
+  //   CARGILL INCORPORATED                                       ← company
+  //   1445 E 98TH PL                                             ← street
+  //   Chicago, IL 60628-1716                                     ← city/state/zip
+  const findArriveCoAndAddr=(headerRe)=>{
+    for(let i=0;i<lines.length;i++){
+      if(!headerRe.test(lines[i]))continue;
+      let skipHdr=-1;
+      for(let j=i+1;j<Math.min(i+4,lines.length);j++){
+        if(/Pickup\s+Address|Delivery\s+Address/i.test(lines[j])){skipHdr=j;break;}
+      }
+      const startFrom=skipHdr>=0?skipHdr+1:i+1;
+      const got=[];
+      for(let j=startFrom;j<Math.min(startFrom+8,lines.length)&&got.length<4;j++){
+        const t=lines[j].trim();
+        if(!t)continue;
+        if(/^(Driver|Pickup\s+Notes|Delivery\s+Notes|Pickup\s+Comments|Delivery\s+Comments|Appt\.?\s+Type|By\s+Appointment|PO\s*#|SO\s*#|Confirmed|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Earliest|Latest)/i.test(t))break;
+        got.push(t);
+      }
+      const co=got[0]||"";
+      const addr=(got[1]||"").trim();
+      return{co:co,addr:addr};
+    }
+    return null;
+  };
+  const arShip=findArriveCoAndAddr(/^\s*Pickup\s*#?\s*\d/i);
+  const arRecv=findArriveCoAndAddr(/^\s*Delivery\s*#?\s*\d/i);
+  if(arShip){r.shipperCo=arShip.co;r.shipperAddr=arShip.addr;}
+  if(arRecv){r.receiverCo=arRecv.co;r.receiverAddr=arRecv.addr;}
+
+  // Commodity — Arrive shows it in the Pickup #1 block before weight, e.g.
+  // "Food ingredient    28213 lb" or "Flooring    33215 lb"
+  for(let i=0;i<lines.length;i++){
+    if(!/^\s*Pickup\s*#?\s*\d/i.test(lines[i]))continue;
+    for(let j=i+1;j<Math.min(i+12,lines.length);j++){
+      const cm=lines[j].match(/\s{2,}([A-Za-z][A-Za-z ]{2,30}?)\s+\d{3,5}\s*lb\s*$/);
+      if(cm){
+        const c=cm[1].trim();
+        if(!/^(Pallets?|Weight|lb|PO|SO)$/i.test(c)){
+          if(!r.pickup)r.pickup={};
+          r.pickup.commodity=c;
+          break;
+        }
+      }
+    }
+    break;
+  }
   return r;
 }
 
@@ -632,6 +792,31 @@ function _parseRJW(text){
     r.pickup.weight=String(n);
   }
   // Pallets — "Pieces \ Spots: 2178 \ 0"  (we don't track pieces, so leave blank)
+
+  // Company name + street address. RJW's "LOAD DETAILS" section:
+  //   SP    Name:     RJW Logistics Group       Date: 06/05/2026 0800
+  //         Address:  11240 Katherines Crossing
+  //   SO    Name:     PUBLIX                    Date: 06/09/2026 0800
+  //         Address:  2600 COUNTY LINE ROAD
+  const rjwLines=text.split(/\r?\n/);
+  const findRJWCoAndAddr=(kind)=>{
+    for(let i=0;i<rjwLines.length;i++){
+      if(!new RegExp("^\\s*"+kind+"\\b").test(rjwLines[i]))continue;
+      let co="",addr="";
+      const nameM=rjwLines[i].match(new RegExp(kind+"\\s+Name:\\s+(.+?)(?:\\s{2,}Date:|$)","i"));
+      if(nameM)co=nameM[1].trim();
+      for(let j=i;j<Math.min(i+5,rjwLines.length);j++){
+        const am=rjwLines[j].match(/Address:\s+(.+?)(?:\s{2,}|$)/i);
+        if(am){addr=am[1].trim();break;}
+      }
+      return{co:co,addr:addr};
+    }
+    return null;
+  };
+  const rjwShip=findRJWCoAndAddr("SP");
+  const rjwRecv=findRJWCoAndAddr("SO");
+  if(rjwShip){r.shipperCo=rjwShip.co;r.shipperAddr=rjwShip.addr;}
+  if(rjwRecv){r.receiverCo=rjwRecv.co;r.receiverAddr=rjwRecv.addr;}
   return r;
 }
 
@@ -685,6 +870,16 @@ function _parseGeneric(rawText){
 // Map a parseRateCon result into the freight board's load shape.
 // Returns the fields object you'd merge into a load. Non-destructive — only
 // fills fields when we have data for them.
+// Helper used by all broker parsers: PDF text extraction preserves table column
+// alignment with multi-space gaps. We pick "the first column" by splitting on
+// 2+ spaces and keeping only the first cell. Also strips trailing junk.
+function _rcFirstCell(s){
+  if(!s)return"";
+  const parts=s.split(/\s{2,}/);
+  let t=(parts[0]||"").trim();
+  t=t.replace(/[\s,;]+$/,"").trim();
+  return t;
+}
 function rateConToLoadFields(parsed){
   const out={};
   // sr = "Shipper city, ST - Receiver city, ST"
@@ -701,6 +896,14 @@ function rateConToLoadFields(parsed){
   if(parsed.pickup&&parsed.pickup.weight) out.weight=parsed.pickup.weight;
   if(parsed.pickup&&parsed.pickup.pallets)out.pallets=parsed.pickup.pallets;
   if(parsed.pickup&&parsed.pickup.commodity)out.product=parsed.pickup.commodity;
+  // Shipper/receiver company name and street address — stored silently for the
+  // Insights folder (shipper directory). NOT displayed on the board itself.
+  // Use _rcFirstCell to strip multi-space column tails that PDF text extraction
+  // appends.
+  if(parsed.shipperCo)out.shipperCo=_rcFirstCell(parsed.shipperCo);
+  if(parsed.shipperAddr)out.shipperAddr=_rcFirstCell(parsed.shipperAddr);
+  if(parsed.receiverCo)out.receiverCo=_rcFirstCell(parsed.receiverCo);
+  if(parsed.receiverAddr)out.receiverAddr=_rcFirstCell(parsed.receiverAddr);
   return out;
 }
 
@@ -744,7 +947,7 @@ const GSS={"Pending":{bg:"#f9fafb",fg:"#6b7280",br:"#d1d5db"},"Driver assigned":
 
 let _uid=Date.now();
 const uid=()=>++_uid;
-const mkLoad=(o={})=>({id:uid(),sr:"",broker:"",pickup:"",delivery:"",product:"",pallets:"",weight:"",rate:"",driver:"",truck:"",trailer:"",status:"",notes:"",manualPickupMi:"",manualLocalCharge:"",stopMiles:"",photos:[],...o});
+const mkLoad=(o={})=>({id:uid(),sr:"",broker:"",pickup:"",delivery:"",product:"",pallets:"",weight:"",rate:"",driver:"",truck:"",trailer:"",status:"",notes:"",manualPickupMi:"",manualLocalCharge:"",stopMiles:"",photos:[],shipperCo:"",shipperAddr:"",receiverCo:"",receiverAddr:"",...o});
 const mkGroup=()=>({id:uid(),tripMiles:"",groupDriver:"",groupTruck:"",groupTrailer:"",groupStatus:"Pending",groupNotes:"",loads:[mkLoad()]});
 const mkWeek=(label)=>({id:uid(),label:label||"New Week",groups:[mkGroup()],localDeliveries:[],crossdockDrops:[],accessorials:[],openSections:{main:true,local:false,xdrop:false,acc:false,otr:true}});
 const mkLocal=()=>({id:uid(),destination:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",otrBroughtBy:"",notes:"",status:""});
@@ -1176,6 +1379,10 @@ function App(){
   useEffect(()=>{localStorage.setItem("fcbv2_plannedView",plannedView);},[plannedView]);
   // Track which single group is expanded for editing when in compact view
   const[expandedCompactGroup,setExpandedCompactGroup]=useState(null);
+  // Insights page tabs: "shippers" | "brokers" | "receivers"
+  const[insightsTab,setInsightsTab]=useState("shippers");
+  // Which shipper row is currently expanded in the directory (null = all collapsed)
+  const[expandedShipper,setExpandedShipper]=useState(null);
   // Manual-order mode for Planned section: once the user clicks any reorder arrow,
   // the entire list flips to "manual" and stays that way until they click "Reset to
   // auto-sort". manualPlannedOrder is a per-week map: { weekId: [groupId1, groupId2, ...] }
@@ -1972,6 +2179,11 @@ function App(){
   },[saveToSheets]);
 
   const week=weeks[Math.min(activeWeek,weeks.length-1)];
+  // Merged set: live + archived weeks. Used by statistics, driver scores, top
+  // dispatchers, and the Stats tab — anywhere that asks "what's the lifetime
+  // performance?". Archiving a week must NEVER erase its contribution to history.
+  // For editing/saving/active operations, keep using `weeks` (live only).
+  const allTimeWeeks=React.useMemo(()=>[...weeks,...archivedWeeks],[weeks,archivedWeeks]);
   const computed=useMemo(()=>(week?.groups||[]).map(calcGroup),[week?.groups]);
   const allLoads=computed.flatMap(g=>g.loads);
   const totGross=computed.reduce((s,g)=>s+g.gross,0);
@@ -2470,10 +2682,29 @@ ${accRows.length>0?`
   const setGroup=(gid,f,v)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,[f]:v}));
 
   // Toggle the ⏳ "needs reschedule" flag on a trailer. Flagged trailers get yellow
-  // highlight + sort to the very top of the auto-sort list. Toggling is purely manual.
-  const toggleReschedule=gid=>{
-    setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,needsReschedule:!g.needsReschedule}));
+  // Per-LOAD reschedule flag (replaced the old per-trailer flag).
+  // A trailer with ANY flagged load gets pinned to the top of the auto-sort list.
+  // Toggling a per-load flag also auto-migrates any leftover group-level flag away
+  // (legacy data with group.needsReschedule=true gets cleaned up the first time
+  // a user touches any load in that group).
+  const toggleLoadReschedule=(gid,lid)=>{
+    setW("groups",week.groups.map(g=>{
+      if(g.id!==gid)return g;
+      const loads=g.loads.map(l=>l.id!==lid?l:{...l,needsReschedule:!l.needsReschedule});
+      // Strip legacy group-level flag — per-load is now the source of truth
+      const {needsReschedule:_legacyFlag,...rest}=g;
+      return{...rest,loads};
+    }));
   };
+
+  // Helper: does this group have ANY flagged load? Treats legacy group.needsReschedule
+  // as "all loads in this group are flagged" (backward compat for old data).
+  const groupHasFlaggedLoad=(g)=>{
+    if(g.needsReschedule)return true; // legacy group-level flag
+    return(g.loads||[]).some(l=>l.needsReschedule);
+  };
+  // Helper: is THIS load flagged?
+  const isLoadFlagged=(load,group)=>load.needsReschedule||(group&&group.needsReschedule);
 
   // Move a trailer up or down in the Planned list. The first arrow click flips the
   // section to manual-order mode, freezing the current visible order, then nudges
@@ -3784,7 +4015,7 @@ ${accRows.length>0?`
             }
             // AUTO-SORT — three tiers
             const tierOf=g=>{
-              if(g.needsReschedule)return 0;       // top
+              if(groupHasFlaggedLoad(g))return 0;   // top
               if((g.loads||[]).length>1)return 1;  // multi-stop
               return 2;                            // single
             };
@@ -3836,16 +4067,15 @@ ${accRows.length>0?`
             // card (only one group expanded at a time — tracked by expandedCompactGroup state).
             const isExpandedInCompact=expandedCompactGroup===group.id;
             if(plannedView==="compact"&&!isExpandedInCompact){
-              // Grid columns (tight): T# | Route | PU | DEL | Wt | Plt | L Truck | L Driver | Trailer | Rate | Broker+# | 📍 | Status | ✏️ ×
-              // Hide trailer-level T# header for non-multi-stop, since the row itself = the load.
-              const gColTpl="30px minmax(170px,2fr) 100px 100px 50px 30px 50px 65px 55px 65px minmax(100px,1fr) 120px 80px 24px";
-              // Yellow background for trailers flagged as needing reschedule (per-trailer toggle).
-              const reschedBg=group.needsReschedule?"#fef9c3":"#ffffff";
-              const reschedBorder=group.needsReschedule?"#eab308":"#64748b";
+              // Grid columns (tight): T# + ⏳ toggle | Route | PU | DEL | Wt | Plt | L Truck | L Driver | Trailer | Rate | Broker+# | 📍 | Status | ✏️ ×
+              const gColTpl="52px minmax(170px,2fr) 100px 100px 50px 30px 50px 65px 55px 65px minmax(100px,1fr) 120px 80px 24px";
+              // Reschedule flag is now per-LOAD. The trailer header gets only a subtle
+              // badge when any load is flagged (full attention goes to the row itself).
+              const hasFlagged=groupHasFlaggedLoad(group);
               return(
-                <div key={group.id} style={{background:reschedBg,border:`1px solid ${reschedBorder}`,borderRadius:"6px",overflow:"hidden",borderLeft:`4px solid ${group.needsReschedule?"#eab308":(gsSt.tc||"#64748b")}`,marginBottom:"6px",boxShadow:group.needsReschedule?"0 1px 3px rgba(234,179,8,.25)":"0 1px 2px rgba(15,31,61,.1)"}}>
+                <div key={group.id} style={{background:"#ffffff",border:"1px solid #64748b",borderRadius:"6px",overflow:"hidden",borderLeft:`4px solid ${gsSt.tc||"#64748b"}`,marginBottom:"6px",boxShadow:"0 1px 2px rgba(15,31,61,.1)"}}>
                   {/* TRAILER HEADER STRIP — keeps OTR Drv/Truck/Trailer/status/dollar visible */}
-                  <div style={{display:"flex",alignItems:"center",gap:"8px",padding:"4px 9px",background:group.needsReschedule?"rgba(234,179,8,.12)":"rgba(30,58,138,.06)",borderBottom:`1px solid ${group.needsReschedule?"#fde68a":"#e5edf5"}`,fontSize:"11px",flexWrap:"wrap"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:"8px",padding:"4px 9px",background:"rgba(30,58,138,.06)",borderBottom:"1px solid #e5edf5",fontSize:"11px",flexWrap:"wrap"}}>
                     {/* Trailer-level up/down arrows — admin only, switches to manual-order mode on first click */}
                     {isAdmin&&sortedArr.length>1&&(
                       <span style={{display:"flex",flexDirection:"column",gap:"0",marginRight:"-3px",flexShrink:0}}>
@@ -3860,7 +4090,7 @@ ${accRows.length>0?`
                       </span>
                     )}
                     <span style={{fontWeight:"700",color:"#1e3a8a",background:"#dbeafe",padding:"2px 7px",borderRadius:"4px",fontSize:"10px",flexShrink:0}}>T{gi+1}</span>
-                    {group.needsReschedule&&<span style={{fontSize:"10px",fontWeight:"700",color:"#92400e",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 7px",borderRadius:"4px",flexShrink:0}}>⏳ Needs reschedule</span>}
+                    {hasFlagged&&<span title="One or more loads in this trailer need a new appointment" style={{fontSize:"10px",fontWeight:"700",color:"#92400e",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 6px",borderRadius:"4px",flexShrink:0,cursor:"help"}}>⏳</span>}
                     {isMultiStop&&<span style={{fontSize:"9px",color:"#64748b",fontWeight:"600"}}>{(group.loads||[]).length} stops</span>}
                     {(()=>{
                       const totalGross=(group.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
@@ -3880,10 +4110,6 @@ ${accRows.length>0?`
                     {urgTag&&!isDelivered&&<span style={{fontSize:"9px",fontWeight:"700",color:"#fff",background:urgColor,padding:"1px 6px",borderRadius:"3px",flexShrink:0}}>{urgTag}</span>}
                     <span style={{fontSize:"10px",fontWeight:"600",color:gsSt.tc,background:gsSt.barBg,padding:"1px 7px",borderRadius:"3px",flexShrink:0}}>{group.groupStatus||"Pending"}</span>
                     {isAdmin&&!group.isCombined&&isMultiStop&&<button onClick={e=>{e.stopPropagation();setGroup(group.id,"isCombined",true);}} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"4px",padding:"1px 8px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>→ Combined</button>}
-                    {/* ⏳ Reschedule toggle — admin only */}
-                    {isAdmin&&<button onClick={e=>{e.stopPropagation();toggleReschedule(group.id);}}
-                      title={group.needsReschedule?"Clear reschedule flag — return to normal sort":"Flag this trailer as needing a new delivery date (sticks to top, yellow background)"}
-                      style={{background:group.needsReschedule?"#fbbf24":"#fef9c3",color:"#92400e",border:`1px solid ${group.needsReschedule?"#d97706":"#fde68a"}`,borderRadius:"4px",padding:"1px 7px",fontSize:"11px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>⏳</button>}
                     <button onClick={e=>{e.stopPropagation();setExpandedCompactGroup(group.id);}} title="Expand for editing" style={{background:"#e0e7ff",color:"#3730a3",border:"1px solid #c7d2fe",borderRadius:"4px",padding:"1px 7px",fontSize:"11px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>✏️</button>
                     {isAdmin&&<button onClick={e=>{e.stopPropagation();if(confirm("Delete this trailer and all its loads?"))delGroup(group.id);}} title="Delete trailer" style={{background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>×</button>}
                   </div>
@@ -3942,9 +4168,15 @@ ${accRows.length>0?`
                     // Shared cell styles. cellBase = centered (numbers, short fields). cellLeft = left-aligned (Route, Broker which have variable-length text).
                     const cellBase={color:"#1f2937",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",fontSize:"12px",padding:"0 4px",borderRight:"1px solid #cbd5e1",minWidth:0,textAlign:"center"};
                     const cellLeft={...cellBase,textAlign:"left"};
+                    const flagged=isLoadFlagged(load,group);
                     return(
-                      <div key={load.id} style={{display:"grid",gridTemplateColumns:gColTpl,gap:"0",padding:"5px 9px",alignItems:"center",fontSize:"12px",borderBottom:li<(group.loads.length-1)?"1px solid #cbd5e1":"none"}}>
-                        <span style={{...cellBase,fontSize:"10px",fontWeight:"700",color:"#64748b",background:"#fff",border:"1px solid #e2e8f0",borderRadius:"3px",padding:"0 4px",justifySelf:"start",borderRight:"1px solid #e2e8f0"}}>{li+1}</span>
+                      <div key={load.id} style={{display:"grid",gridTemplateColumns:gColTpl,gap:"0",padding:"5px 9px",alignItems:"center",fontSize:"12px",borderBottom:li<(group.loads.length-1)?"1px solid #cbd5e1":"none",background:flagged?"#fef9c3":undefined}}>
+                        <span style={{...cellBase,padding:"0",borderRight:"1px solid #e2e8f0",display:"flex",alignItems:"center",gap:"3px",justifyContent:"flex-start"}}>
+                          <span style={{fontSize:"10px",fontWeight:"700",color:"#64748b",background:"#fff",border:"1px solid #e2e8f0",borderRadius:"3px",padding:"0 4px"}}>{li+1}</span>
+                          {isAdmin&&<button onClick={e=>{e.stopPropagation();toggleLoadReschedule(group.id,load.id);}}
+                            title={flagged?"Clear reschedule flag for this load":"Flag this load as needing a new appointment"}
+                            style={{background:flagged?"#fbbf24":"transparent",color:flagged?"#92400e":"#94a3b8",border:`1px solid ${flagged?"#d97706":"#e2e8f0"}`,borderRadius:"3px",padding:"0 4px",fontSize:"10px",fontWeight:"700",cursor:"pointer",lineHeight:"1.4"}}>⏳</button>}
+                        </span>
                         <span style={cellLeft} title={(sr.s||"")+" → "+(sr.r||"")}>
                           {sr.s&&<span>{sr.s}</span>}
                           {sr.s&&sr.r&&<span style={{margin:"0 3px"}}>→</span>}
@@ -3997,10 +4229,10 @@ ${accRows.length>0?`
                   setW("groups",(()=>{const arr=[...week.groups];const[moved]=arr.splice(from,1);arr.splice(to,0,moved);return arr;})());
                   dragGroupIdx.current=null;setDragOverIdx(null);
                 }}
-                style={{border:`1px solid ${group.needsReschedule?"#eab308":(dragOverIdx===gi?"#fbbf24":"#d1d5db")}`,borderRadius:"8px",overflow:"hidden",outline:dragOverIdx===gi?"2px solid #fbbf24":"none",boxShadow:group.needsReschedule?"0 0 0 1px #fde68a inset, 0 1px 4px rgba(234,179,8,.25)":"none"}}
+                style={{border:`1px solid ${dragOverIdx===gi?"#fbbf24":"#d1d5db"}`,borderRadius:"8px",overflow:"hidden",outline:dragOverIdx===gi?"2px solid #fbbf24":"none"}}
               >
                 {/* ── BANNER (no group-status dropdown — individual load status shown in rows) ── */}
-                <div style={{background:group.needsReschedule?"linear-gradient(90deg,#854d0e,#a16207)":"linear-gradient(90deg,#0f1f3d,#1e3a5f)",padding:"5px 10px",display:"flex",alignItems:"center",gap:"7px",fontSize:"11px",color:"#fff",flexWrap:"wrap"}}>
+                <div style={{background:"linear-gradient(90deg,#0f1f3d,#1e3a5f)",padding:"5px 10px",display:"flex",alignItems:"center",gap:"7px",fontSize:"11px",color:"#fff",flexWrap:"wrap"}}>
                   {/* Trailer-level up/down arrows — admin only, switches to manual-order mode on first click */}
                   {isAdmin&&sortedArr.length>1&&(
                     <span style={{display:"flex",flexDirection:"column",gap:"0",marginRight:"-3px",flexShrink:0}}>
@@ -4015,11 +4247,7 @@ ${accRows.length>0?`
                     </span>
                   )}
                   <span style={{background:"#2563eb",padding:"1px 8px",borderRadius:"4px",fontWeight:"700",flexShrink:0}}>T{gi+1}</span>
-                  {group.needsReschedule&&<span style={{fontSize:"10px",fontWeight:"700",color:"#92400e",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 7px",borderRadius:"4px",flexShrink:0}}>⏳ Needs reschedule</span>}
-                  {/* ⏳ Reschedule toggle — admin only */}
-                  {isAdmin&&<button onClick={e=>{e.stopPropagation();toggleReschedule(group.id);}}
-                    title={group.needsReschedule?"Clear reschedule flag — return to normal sort":"Flag this trailer as needing a new delivery date (sticks to top, yellow highlight)"}
-                    style={{background:group.needsReschedule?"#fbbf24":"rgba(251,191,36,.2)",color:group.needsReschedule?"#92400e":"#fde68a",border:`1px solid ${group.needsReschedule?"#d97706":"rgba(251,191,36,.4)"}`,borderRadius:"4px",padding:"1px 6px",fontSize:"11px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>⏳</button>}
+                  {groupHasFlaggedLoad(group)&&<span title="One or more loads in this trailer need a new appointment" style={{fontSize:"10px",fontWeight:"700",color:"#92400e",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 7px",borderRadius:"4px",flexShrink:0,cursor:"help"}}>⏳</span>}
                   {/* In compact mode, this group is temporarily expanded — show a collapse button */}
                   {plannedView==="compact"&&isExpandedInCompact&&<button onClick={()=>setExpandedCompactGroup(null)} title="Collapse back to compact row" style={{background:"rgba(148,163,184,.25)",color:"#cbd5e1",border:"1px solid rgba(148,163,184,.4)",borderRadius:"4px",padding:"1px 8px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>← Collapse</button>}
                   
@@ -4149,6 +4377,8 @@ ${accRows.length>0?`
                   const otrDriver=group.groupDriver||"";
                   const localDriver=load.driver||"";
 
+                  const flagged=isLoadFlagged(load,group);
+
                   return(
                     <Fragment key={load.id}>
                       {/* COLLAPSED ROW — status badge visible, OTR drv + truck + trailer */}
@@ -4158,19 +4388,31 @@ ${accRows.length>0?`
                         onDragOver={e=>{if(!dragLoad.current)return;e.preventDefault();e.currentTarget.style.boxShadow="inset 0 -3px 0 #3b82f6";}}
                         onDragLeave={e=>{e.currentTarget.style.boxShadow="";}}
                         onDrop={e=>{e.preventDefault();e.currentTarget.style.boxShadow="";if(!dragLoad.current||!isAdmin)return;const dl=dragLoad.current;dragLoad.current=null;moveLoad(dl.fromGroupId,group.id,dl.loadId,li);}}
-                        style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 130px 55px 65px 78px 22px",gap:"10px",padding:"7px 12px",alignItems:"center",fontSize:"12px",background:isExp?"#eff6ff":li%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #e5edf5",cursor:"pointer",transition:"background .1s",borderLeft:isExp?"3px solid #3b82f6":"3px solid transparent"}}
+                        style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 130px 55px 65px 78px 22px 22px",gap:"10px",padding:"7px 12px",alignItems:"center",fontSize:"12px",background:flagged?"#fef9c3":isExp?"#eff6ff":li%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #e5edf5",cursor:"pointer",transition:"background .1s",borderLeft:isExp?"3px solid #3b82f6":flagged?"3px solid #eab308":"3px solid transparent"}}
                       >
                         {/* Stop dot */}
                         <div style={{width:"18px",height:"18px",borderRadius:"50%",background:dupLoadIds.has(load.id)?"#fbcfe8":isExp?"#bfdbfe":isAdmin?"#c7d2fe":"#e2e8f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"10px",fontWeight:"700",color:dupLoadIds.has(load.id)?"#9d174d":isExp?"#1e40af":isAdmin?"#4338ca":"#64748b",flexShrink:0,cursor:isAdmin?"grab":"default",userSelect:"none"}} draggable={isAdmin} onDragStart={e=>{if(!isAdmin)return;e.stopPropagation();dragLoad.current={loadId:load.id,fromGroupId:group.id};dragGroupIdx.current=null;e.dataTransfer.effectAllowed="move";const row=e.currentTarget.closest("[id='load-"+load.id+"']");if(row){row.style.opacity="0.5";row.style.outline="2px solid #3b82f6";}}} onDragEnd={e=>{e.stopPropagation();const row=document.getElementById("load-"+load.id);if(row){row.style.opacity="1";row.style.outline="";}dragLoad.current=null;dragGroupIdx.current=null;}} title={dupLoadIds.has(load.id)?"⚠ Possible duplicate — matches another load this week":"Drag to combine with another trailer"}>{load.stop||li+1}</div>
 
-                        {/* Route — shipper / receiver */}
+                        {/* Route — shipper / receiver. Tiny 📍 next to city = address captured (hover for full text). */}
                         <div style={{minWidth:0}}>
                           {isAdmin?(<>
-                            <input key={load.id+"s"} defaultValue={srP.s} onBlur={e=>{const v=e.target.value;if(v!==srP.s){setLoad(group.id,load.id,"sr",v+" - "+parseSR(load.sr||"").r);trackField("sr");}}} onClick={e=>e.stopPropagation()} style={{display:"block",width:"100%",border:"none",background:"transparent",fontSize:"10px",color:"#94a3b8",padding:0,outline:"none",fontFamily:"inherit",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} placeholder="Shipper"/>
-                            <input key={load.id+"r"} defaultValue={srP.r} onBlur={e=>{const v=e.target.value;if(v!==srP.r){setLoad(group.id,load.id,"sr",parseSR(load.sr||"").s+" - "+v);trackField("sr");}}} onClick={e=>e.stopPropagation()} style={{display:"block",width:"100%",border:"none",background:"transparent",fontSize:"12px",fontWeight:"600",color:"#0f1f3d",padding:0,outline:"none",fontFamily:"inherit",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} placeholder="Receiver"/>
+                            <div style={{display:"flex",alignItems:"center",gap:"3px",minWidth:0}}>
+                              <input key={load.id+"s"} defaultValue={srP.s} onBlur={e=>{const v=e.target.value;if(v!==srP.s){setLoad(group.id,load.id,"sr",v+" - "+parseSR(load.sr||"").r);trackField("sr");}}} onClick={e=>e.stopPropagation()} style={{flex:1,minWidth:0,border:"none",background:"transparent",fontSize:"10px",color:"#94a3b8",padding:0,outline:"none",fontFamily:"inherit",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} placeholder="Shipper"/>
+                              {load.shipperAddr&&<span title={load.shipperAddr+(load.shipperCo?" — "+load.shipperCo:"")} style={{fontSize:"9px",color:"#059669",cursor:"help",flexShrink:0,opacity:.6}}>📍</span>}
+                            </div>
+                            <div style={{display:"flex",alignItems:"center",gap:"3px",minWidth:0}}>
+                              <input key={load.id+"r"} defaultValue={srP.r} onBlur={e=>{const v=e.target.value;if(v!==srP.r){setLoad(group.id,load.id,"sr",parseSR(load.sr||"").s+" - "+v);trackField("sr");}}} onClick={e=>e.stopPropagation()} style={{flex:1,minWidth:0,border:"none",background:"transparent",fontSize:"12px",fontWeight:"600",color:"#0f1f3d",padding:0,outline:"none",fontFamily:"inherit",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} placeholder="Receiver"/>
+                              {load.receiverAddr&&<span title={load.receiverAddr+(load.receiverCo?" — "+load.receiverCo:"")} style={{fontSize:"9px",color:"#0891b2",cursor:"help",flexShrink:0,opacity:.6}}>📍</span>}
+                            </div>
                           </>):(<>
-                            <div style={{fontSize:"10px",color:"#94a3b8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{srP.s||"—"}</div>
-                            <div style={{fontSize:"12px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{srP.r||"—"}</div>
+                            <div style={{display:"flex",alignItems:"center",gap:"3px",minWidth:0}}>
+                              <span style={{flex:1,minWidth:0,fontSize:"10px",color:"#94a3b8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{srP.s||"—"}</span>
+                              {load.shipperAddr&&<span title={load.shipperAddr} style={{fontSize:"9px",color:"#059669",cursor:"help",flexShrink:0,opacity:.6}}>📍</span>}
+                            </div>
+                            <div style={{display:"flex",alignItems:"center",gap:"3px",minWidth:0}}>
+                              <span style={{flex:1,minWidth:0,fontSize:"12px",fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{srP.r||"—"}</span>
+                              {load.receiverAddr&&<span title={load.receiverAddr} style={{fontSize:"9px",color:"#0891b2",cursor:"help",flexShrink:0,opacity:.6}}>📍</span>}
+                            </div>
                           </>)}
                         </div>
 
@@ -4321,6 +4563,13 @@ ${accRows.length>0?`
                             {effectiveSt||"Not set"}
                           </span>
                         </div>
+
+                        {/* ⏳ Per-load reschedule toggle — admin only */}
+                        {isAdmin?(
+                          <button onClick={e=>{e.stopPropagation();toggleLoadReschedule(group.id,load.id);}}
+                            title={flagged?"Clear reschedule flag for this load":"Flag this load as needing a new appointment"}
+                            style={{background:flagged?"#fbbf24":"transparent",color:flagged?"#92400e":"#cbd5e1",border:`1px solid ${flagged?"#d97706":"transparent"}`,borderRadius:"4px",padding:"1px 4px",fontSize:"12px",cursor:"pointer",lineHeight:1}}>⏳</button>
+                        ):<span/>}
 
                         {/* Expand arrow */}
                         <span style={{textAlign:"center",fontSize:"13px",color:"#94a3b8",display:"inline-block",transition:"transform .15s",transform:isExp?"rotate(180deg)":"rotate(0deg)"}}>▾</span>
@@ -5450,7 +5699,9 @@ ${accRows.length>0?`
       {(()=>{
         // Compute per-driver stats — group-based, only In Transit/Delivered groups count
         const driverStats={};
-        weeks.forEach(w=>{
+        // Use allTimeWeeks so driver lifetime numbers don't disappear when a week
+        // is archived. A driver leaving the company doesn't erase their score either.
+        allTimeWeeks.forEach(w=>{
           (w.groups||[]).forEach(g=>{
             const calcG=calcGroup(g);
             const groupStatus=g.groupStatus||"";
@@ -5481,7 +5732,7 @@ ${accRows.length>0?`
 
         // Driver detail view - all loads for selected driver
         if(selectedDriver){
-          const dLoads=weeks.flatMap(w=>(w.groups||[]).flatMap(g=>(g.loads||[]).map(l=>({...l,weekLabel:w.label,groupDriver:g.groupDriver,groupTruck:g.groupTruck,groupTrailer:g.groupTrailer,groupStatus:g.groupStatus}))));
+          const dLoads=allTimeWeeks.flatMap(w=>(w.groups||[]).flatMap(g=>(g.loads||[]).map(l=>({...l,weekLabel:w.label,groupDriver:g.groupDriver,groupTruck:g.groupTruck,groupTrailer:g.groupTrailer,groupStatus:g.groupStatus}))));
           const myLoads=dLoads.filter(l=>(l.driver&&l.driver.trim()===selectedDriver)||(l.groupDriver&&l.groupDriver.trim()===selectedDriver));
           const ds=driverStats[selectedDriver]||{loads:0,delivered:0,gross:0,miles:0,weeks:new Set()};
           return(
@@ -5664,115 +5915,295 @@ ${accRows.length>0?`
 
     {/* INSIGHTS TAB */}
     {activeTab==="insights"&&isAdmin&&(
-      <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}> 
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"20px",marginBottom:"20px"}}>
-          <div>
-            <div style={{fontWeight:"700",fontSize:"13px",color:"#0891b2",marginBottom:"12px",display:"flex",alignItems:"center",gap:"6px"}}>
-              <span>⏱</span> Time by Section
-            </div>
-            {Object.keys(sectionTime.current).length===0?(
-              <div style={{color:"#94a3b8",fontSize:"12px",padding:"12px",background:"#f8fafc",borderRadius:"8px",textAlign:"center"}}>
-                Navigate between tabs to start tracking
+      <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"0"}}>
+        {/* Sub-tab navigation */}
+        <div style={{display:"flex",borderBottom:"1px solid #e2e8f0",background:"#f8fafc"}}>
+          {[
+            {id:"shippers",label:"📍 Shippers",color:"#059669"},
+            {id:"brokers", label:"🏢 Brokers", color:"#7c3aed"},
+            {id:"receivers",label:"📦 Receivers",color:"#0891b2"}
+          ].map(t=>(
+            <button key={t.id} onClick={()=>setInsightsTab(t.id)}
+              style={{flex:1,padding:"12px 16px",background:insightsTab===t.id?"#fff":"transparent",color:insightsTab===t.id?t.color:"#64748b",border:"none",borderBottom:insightsTab===t.id?`3px solid ${t.color}`:"3px solid transparent",fontSize:"13px",fontWeight:"700",cursor:"pointer"}}>{t.label}</button>
+          ))}
+        </div>
+
+        {/* ─────────────── SHIPPER DIRECTORY ─────────────── */}
+        {insightsTab==="shippers"&&(()=>{
+          // Aggregate: for each unique shipper address, collect stats across allTimeWeeks.
+          // Key = shipper street address (primary) — falls back to "City, ST (no address)" when missing.
+          // Combined = trailer with 2+ loads. Single = trailer with 1 load.
+          const shippers={};
+          allTimeWeeks.forEach(w=>{
+            (w.groups||[]).forEach(g=>{
+              const isCombined=(g.loads||[]).length>=2;
+              (g.loads||[]).forEach(l=>{
+                const sr=parseSR(l.sr||"");
+                const addr=(l.shipperAddr||"").trim();
+                // Build key: prefer address. If missing, use city+state with a tag so user knows to fill.
+                const key=addr?addr:(sr.s?sr.s+" (no address)":null);
+                if(!key)return;
+                if(!shippers[key]){
+                  shippers[key]={
+                    addr:addr,
+                    city:sr.s||"",
+                    company:l.shipperCo||"",
+                    combined:0,
+                    single:0,
+                    totalLoads:0,
+                    totalRate:0,
+                    pallets:[],
+                    receiverStates:{},
+                    hasAddress:!!addr
+                  };
+                }
+                const s=shippers[key];
+                if(isCombined)s.combined++;else s.single++;
+                s.totalLoads++;
+                const rate=parseFloat(l.rate)||0;
+                if(rate>0)s.totalRate+=rate;
+                const p=parseInt(l.pallets,10);
+                if(p>0&&p<=100)s.pallets.push(p);
+                const rState=(sr.r||"").split(",").map(x=>x.trim()).pop();
+                if(rState&&rState.length===2){s.receiverStates[rState]=(s.receiverStates[rState]||0)+1;}
+                if(!s.company&&l.shipperCo)s.company=l.shipperCo;
+              });
+            });
+          });
+          const list=Object.entries(shippers).sort((a,b)=>b[1].totalLoads-a[1].totalLoads);
+          if(!list.length)return(<div style={{padding:"40px 20px",textAlign:"center",color:"#94a3b8",fontSize:"13px"}}>No shipper data yet. Drop rate-cons onto loads to start tracking.</div>);
+          return(
+            <div style={{padding:"20px"}}>
+              <div style={{fontSize:"12px",color:"#64748b",marginBottom:"16px"}}>
+                <strong>{list.length}</strong> unique shipper{list.length===1?"":"s"} across <strong>{list.reduce((s,[,v])=>s+v.totalLoads,0)}</strong> loads.
+                Combined loads earn revenue, single-stop loads do not.
               </div>
-            ):(
-              <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
-                {Object.entries(sectionTime.current).sort((a,b)=>b[1]-a[1]).map((entry)=>{
-                  const total=Object.values(sectionTime.current).reduce((s,v)=>s+v,0)||1;
-                  const pct=Math.round(entry[1]/total*100);
-                  const mins=Math.round(entry[1]/60000);
-                  const labels={"weeks":"Board","stats":"Stats","roster":"Roster","insights":"Insights","equipment":"Equipment","archive":"Archive","xdock":"Crossdock"};
+              <div style={{display:"flex",flexDirection:"column",gap:"4px"}}>
+                {/* Column header for the collapsed rows */}
+                <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) 70px 70px 80px 24px",gap:"12px",padding:"6px 12px",fontSize:"9px",fontWeight:"700",color:"#94a3b8",textTransform:"uppercase",letterSpacing:".06em",borderBottom:"1px solid #e2e8f0"}}>
+                  <span>Shipper address · city</span>
+                  <span style={{textAlign:"center"}}>Combined</span>
+                  <span style={{textAlign:"center"}}>Single</span>
+                  <span style={{textAlign:"center"}}>Combine %</span>
+                  <span/>
+                </div>
+                {list.map(([key,s])=>{
+                  const total=s.totalLoads;
+                  const combinePct=total>0?Math.round(s.combined/total*100):0;
+                  const avgRate=total>0?Math.round(s.totalRate/total):0;
+                  const isExp=expandedShipper===key;
+                  const pallets=s.pallets.slice().sort((a,b)=>a-b);
+                  const palletMin=pallets[0]||0;
+                  const palletMax=pallets[pallets.length-1]||0;
+                  const palletAvg=pallets.length>0?Math.round(pallets.reduce((a,b)=>a+b,0)/pallets.length):0;
+                  const buckets={"1-5":0,"6-10":0,"11-15":0,"16-20":0,"21+":0};
+                  pallets.forEach(p=>{
+                    if(p<=5)buckets["1-5"]++;
+                    else if(p<=10)buckets["6-10"]++;
+                    else if(p<=15)buckets["11-15"]++;
+                    else if(p<=20)buckets["16-20"]++;
+                    else buckets["21+"]++;
+                  });
+                  const topStates=Object.entries(s.receiverStates).sort((a,b)=>b[1]-a[1]).slice(0,5);
+                  // Combine % color: green if mostly combined, red if mostly single, amber in middle
+                  const pctColor=combinePct>=60?"#059669":combinePct>=30?"#b45309":"#b91c1c";
                   return(
-                    <div key={entry[0]}>
-                      <div style={{display:"flex",justifyContent:"space-between",fontSize:"11px",marginBottom:"3px"}}>
-                        <span style={{fontWeight:"600",textTransform:"capitalize"}}>{labels[entry[0]]||entry[0]}</span>
-                        <span style={{color:"#64748b"}}>{mins}m · {pct}%</span>
+                    <div key={key} style={{background:"#fff",border:"1px solid #e2e8f0",borderLeft:s.hasAddress?"3px solid #059669":"3px solid #f59e0b",borderRadius:"6px",overflow:"hidden",boxShadow:isExp?"0 2px 6px rgba(0,0,0,.08)":"0 1px 2px rgba(0,0,0,.03)"}}>
+                      {/* COLLAPSED ROW — click anywhere to toggle */}
+                      <div onClick={()=>setExpandedShipper(isExp?null:key)} style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) 70px 70px 80px 24px",gap:"12px",padding:"9px 12px",alignItems:"center",cursor:"pointer",background:isExp?"#f8fafc":"transparent",transition:"background .1s"}}>
+                        <div style={{minWidth:0,overflow:"hidden"}}>
+                          <div style={{fontSize:"12px",fontWeight:"700",color:s.hasAddress?"#0f1f3d":"#b45309",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                            {s.hasAddress?<>📍 {s.addr}</>:<>⚠️ No address</>}
+                          </div>
+                          {s.city&&<div style={{fontSize:"10px",color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.city}{s.company?" · "+s.company:""}</div>}
+                        </div>
+                        <div style={{textAlign:"center",fontSize:"14px",fontWeight:"800",color:"#15803d"}}>{s.combined}</div>
+                        <div style={{textAlign:"center",fontSize:"14px",fontWeight:"800",color:"#b91c1c"}}>{s.single}</div>
+                        <div style={{textAlign:"center",fontSize:"14px",fontWeight:"800",color:pctColor}}>{combinePct}%</div>
+                        <div style={{textAlign:"center",fontSize:"12px",color:"#94a3b8",transition:"transform .15s",transform:isExp?"rotate(180deg)":"rotate(0deg)"}}>▾</div>
                       </div>
-                      <div style={{height:"8px",background:"#e2e8f0",borderRadius:"4px",overflow:"hidden"}}>
-                        <div style={{height:"100%",width:pct+"%",background:"#0891b2",borderRadius:"4px",transition:"width .3s"}}/>
-                      </div>
+                      {/* EXPANDED DETAIL */}
+                      {isExp&&(
+                        <div style={{padding:"12px 14px 14px",borderTop:"1px solid #e2e8f0",background:"#fafbfc"}}>
+                          {/* Pallet distribution */}
+                          {pallets.length>0&&(
+                            <div style={{marginBottom:"12px"}}>
+                              <div style={{fontSize:"10px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"6px"}}>
+                                Pallets · min {palletMin} / max {palletMax} / avg {palletAvg}
+                              </div>
+                              <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:"3px",fontSize:"9px"}}>
+                                {Object.entries(buckets).map(([range,count])=>(
+                                  <div key={range} style={{background:count>0?"#f1f5f9":"#fff",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"4px 2px",textAlign:"center"}}>
+                                    <div style={{fontWeight:"700",color:count>0?"#0f1f3d":"#cbd5e1"}}>{count}</div>
+                                    <div style={{color:"#94a3b8"}}>{range}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {/* Top destinations + avg rate */}
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"12px"}}>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Top destinations</div>
+                              {topStates.length>0?<div style={{display:"flex",flexWrap:"wrap",gap:"3px"}}>{topStates.map(([st,c])=>(<span key={st} style={{fontSize:"10px",background:"#f1f5f9",color:"#475569",padding:"2px 6px",borderRadius:"3px",fontWeight:"600"}}>{st} <span style={{color:"#94a3b8"}}>×{c}</span></span>))}</div>:<span style={{fontSize:"10px",color:"#cbd5e1"}}>—</span>}
+                            </div>
+                            <div style={{textAlign:"right",flexShrink:0}}>
+                              <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Avg rate</div>
+                              <div style={{fontSize:"14px",fontWeight:"800",color:avgRate>0?"#059669":"#cbd5e1"}}>{avgRate>0?"$"+avgRate.toLocaleString():"—"}</div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
-            )}
-          </div>
-          <div>
-            <div style={{fontWeight:"700",fontSize:"13px",color:"#7c3aed",marginBottom:"12px",display:"flex",alignItems:"center",gap:"6px"}}>
-              <span>✏️</span> Field Edit Heatmap
             </div>
-            {Object.keys(fieldCounts.current).length===0?(
-              <div style={{color:"#94a3b8",fontSize:"12px",padding:"12px",background:"#f8fafc",borderRadius:"8px",textAlign:"center"}}>
-                Edit load fields to start tracking
+          );
+        })()}
+
+        {/* ─────────────── BROKER SUMMARY ─────────────── */}
+        {insightsTab==="brokers"&&(()=>{
+          // Aggregate per-broker: total loads, then per-receiver-state avg rate
+          const brokers={};
+          allTimeWeeks.forEach(w=>{
+            (w.groups||[]).forEach(g=>{
+              (g.loads||[]).forEach(l=>{
+                // brokerShort handles "Echo Global & 12345" → "Echo Global"
+                const bShort=brokerShort(l.broker)||"";
+                if(!bShort)return;
+                if(!brokers[bShort])brokers[bShort]={totalLoads:0,totalRate:0,states:{}};
+                const b=brokers[bShort];
+                b.totalLoads++;
+                const rate=parseFloat(l.rate)||0;
+                if(rate>0)b.totalRate+=rate;
+                const sr=parseSR(l.sr||"");
+                const rState=(sr.r||"").split(",").map(x=>x.trim()).pop();
+                if(rState&&rState.length===2){
+                  if(!b.states[rState])b.states[rState]={count:0,totalRate:0};
+                  b.states[rState].count++;
+                  if(rate>0)b.states[rState].totalRate+=rate;
+                }
+              });
+            });
+          });
+          const list=Object.entries(brokers).sort((a,b)=>b[1].totalLoads-a[1].totalLoads);
+          if(!list.length)return(<div style={{padding:"40px 20px",textAlign:"center",color:"#94a3b8",fontSize:"13px"}}>No broker data yet.</div>);
+          return(
+            <div style={{padding:"20px"}}>
+              <div style={{fontSize:"12px",color:"#64748b",marginBottom:"16px"}}>
+                <strong>{list.length}</strong> broker{list.length===1?"":"s"} · <strong>{list.reduce((s,[,v])=>s+v.totalLoads,0)}</strong> total loads booked. Avg rate is per receiver state.
               </div>
-            ):(
-              <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
-                {Object.entries(fieldCounts.current).sort((a,b)=>b[1]-a[1]).map((entry)=>{
-                  const maxVal=Math.max(...Object.values(fieldCounts.current))||1;
-                  const pct=Math.round(entry[1]/maxVal*100);
-                  const fieldLabels={"sr":"Shipper/Receiver","rate":"Rate $","driver":"Driver","status":"Status","pickup":"Pickup Date","delivery":"Delivery Date","product":"Product","broker":"Broker/Load#","truck":"Truck","trailer":"Trailer","stopMiles":"Stop Miles","manualPickupMi":"Manual Miles","manualLocalCharge":"Local Charge"};
-                  const colors={"sr":"#2563eb","rate":"#059669","driver":"#c2410c","status":"#7c3aed","pickup":"#0891b2","delivery":"#0891b2","product":"#64748b","broker":"#374151","truck":"#0f766e","trailer":"#7c3aed","stopMiles":"#d97706","manualPickupMi":"#d97706","manualLocalCharge":"#d97706"};
-                  const clr=colors[entry[0]]||"#475569";
+              <div style={{display:"flex",flexDirection:"column",gap:"12px"}}>
+                {list.map(([name,b])=>{
+                  const avgRate=b.totalLoads>0?Math.round(b.totalRate/b.totalLoads):0;
+                  const stateList=Object.entries(b.states).sort((a,b)=>b[1].count-a[1].count);
                   return(
-                    <div key={entry[0]} style={{display:"flex",alignItems:"center",gap:"8px"}}>
-                      <span style={{fontSize:"11px",minWidth:"110px",color:"#374151"}}>{fieldLabels[entry[0]]||entry[0]}</span>
-                      <div style={{flex:1,height:"8px",background:"#e2e8f0",borderRadius:"4px",overflow:"hidden"}}>
-                        <div style={{height:"100%",width:pct+"%",background:clr,borderRadius:"4px"}}/>
+                    <div key={name} style={{background:"#fff",border:"1px solid #e2e8f0",borderLeft:"4px solid #7c3aed",borderRadius:"8px",padding:"14px",boxShadow:"0 1px 3px rgba(0,0,0,.04)"}}>
+                      {/* Broker header */}
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"12px",borderBottom:"1px solid #e2e8f0",paddingBottom:"10px"}}>
+                        <div>
+                          <div style={{fontSize:"15px",fontWeight:"800",color:"#0f1f3d"}}>{name}</div>
+                          <div style={{fontSize:"11px",color:"#64748b",marginTop:"2px"}}>{stateList.length} destination state{stateList.length===1?"":"s"}</div>
+                        </div>
+                        <div style={{display:"flex",gap:"16px",textAlign:"right"}}>
+                          <div>
+                            <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em"}}>Total Loads</div>
+                            <div style={{fontSize:"20px",fontWeight:"800",color:"#7c3aed"}}>{b.totalLoads}</div>
+                          </div>
+                          <div>
+                            <div style={{fontSize:"9px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em"}}>Overall Avg</div>
+                            <div style={{fontSize:"20px",fontWeight:"800",color:"#059669"}}>${avgRate.toLocaleString()}</div>
+                          </div>
+                        </div>
                       </div>
-                      <span style={{fontSize:"11px",color:"#64748b",minWidth:"24px",textAlign:"right"}}>{entry[1]}</span>
+                      {/* Per-state table */}
+                      {stateList.length>0?(
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:"6px"}}>
+                          {stateList.map(([st,d])=>{
+                            const stAvg=d.count>0?Math.round(d.totalRate/d.count):0;
+                            return(
+                              <div key={st} style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"6px",padding:"8px 10px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px"}}>
+                                <div>
+                                  <div style={{fontSize:"13px",fontWeight:"800",color:"#1d4ed8"}}>{st}</div>
+                                  <div style={{fontSize:"10px",color:"#64748b"}}>{d.count} load{d.count===1?"":"s"}</div>
+                                </div>
+                                <div style={{textAlign:"right"}}>
+                                  <div style={{fontSize:"13px",fontWeight:"700",color:stAvg>0?"#059669":"#cbd5e1"}}>{stAvg>0?"$"+stAvg.toLocaleString():"—"}</div>
+                                  <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"600",textTransform:"uppercase"}}>avg</div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ):<div style={{fontSize:"11px",color:"#94a3b8"}}>No state data — cities not parsed yet</div>}
                     </div>
                   );
                 })}
               </div>
-            )}
-          </div>
-        </div>
-        <div style={{borderTop:"1px solid #e2e8f0",paddingTop:"16px",marginBottom:"16px"}}>
-          <div style={{fontWeight:"700",fontSize:"13px",color:"#059669",marginBottom:"12px",display:"flex",alignItems:"center",gap:"6px"}}>
-            <span>💡</span> Workflow Insights
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"10px",marginBottom:"12px"}}>
-            <div style={{background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:"8px",padding:"10px",textAlign:"center"}}>
-              <div style={{fontSize:"22px",fontWeight:"800",color:"#059669"}}>{activityLog.current.length}</div>
-              <div style={{fontSize:"10px",color:"#64748b",fontWeight:"600"}}>Total Edits</div>
             </div>
-            <div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:"8px",padding:"10px",textAlign:"center"}}>
-              <div style={{fontSize:"22px",fontWeight:"800",color:"#2563eb"}}>{Math.round((Date.now()-sessionStart.current)/60000)}m</div>
-              <div style={{fontSize:"10px",color:"#64748b",fontWeight:"600"}}>Session Time</div>
+          );
+        })()}
+
+        {/* ─────────────── RECEIVERS ─────────────── */}
+        {insightsTab==="receivers"&&(()=>{
+          // Aggregate top receiver cities + states across allTimeWeeks
+          const cities={};
+          const states={};
+          allTimeWeeks.forEach(w=>{
+            (w.groups||[]).forEach(g=>{
+              (g.loads||[]).forEach(l=>{
+                const sr=parseSR(l.sr||"");
+                if(!sr.r)return;
+                cities[sr.r]=(cities[sr.r]||0)+1;
+                const st=sr.r.split(",").map(x=>x.trim()).pop();
+                if(st&&st.length===2)states[st]=(states[st]||0)+1;
+              });
+            });
+          });
+          const cityList=Object.entries(cities).sort((a,b)=>b[1]-a[1]);
+          const stateList=Object.entries(states).sort((a,b)=>b[1]-a[1]);
+          if(!cityList.length)return(<div style={{padding:"40px 20px",textAlign:"center",color:"#94a3b8",fontSize:"13px"}}>No receiver data yet.</div>);
+          return(
+            <div style={{padding:"20px"}}>
+              <div style={{fontSize:"12px",color:"#64748b",marginBottom:"16px"}}>
+                <strong>{cityList.length}</strong> unique destination cit{cityList.length===1?"y":"ies"} across <strong>{stateList.length}</strong> states.
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"20px"}}>
+                {/* Top states */}
+                <div>
+                  <div style={{fontSize:"12px",fontWeight:"700",color:"#0891b2",marginBottom:"10px"}}>Top destination states</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+                    {stateList.slice(0,20).map(([st,c])=>{
+                      const pct=Math.round(c/stateList[0][1]*100);
+                      return(
+                        <div key={st} style={{display:"flex",alignItems:"center",gap:"8px",fontSize:"12px"}}>
+                          <div style={{width:"30px",fontWeight:"800",color:"#1d4ed8"}}>{st}</div>
+                          <div style={{flex:1,height:"18px",background:"#f1f5f9",borderRadius:"4px",overflow:"hidden",position:"relative"}}>
+                            <div style={{height:"100%",width:pct+"%",background:"linear-gradient(90deg,#06b6d4,#0891b2)",borderRadius:"4px"}}/>
+                          </div>
+                          <div style={{minWidth:"40px",textAlign:"right",fontWeight:"700",color:"#1f2937"}}>{c}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                {/* Top cities */}
+                <div>
+                  <div style={{fontSize:"12px",fontWeight:"700",color:"#0891b2",marginBottom:"10px"}}>Top destination cities</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+                    {cityList.slice(0,20).map(([city,c])=>(
+                      <div key={city} style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:"12px",padding:"4px 8px",background:"#f8fafc",borderRadius:"4px"}}>
+                        <span style={{color:"#1f2937"}}>{city}</span>
+                        <span style={{fontWeight:"700",color:"#0891b2"}}>×{c}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
-            <div style={{background:"#fdf4ff",border:"1px solid #e9d5ff",borderRadius:"8px",padding:"10px",textAlign:"center"}}>
-              <div style={{fontSize:"22px",fontWeight:"800",color:"#7c3aed"}}>{activityLog.current.length>0?Math.round(activityLog.current.length/Math.max((Date.now()-sessionStart.current)/60000,1)*10)/10:0}</div>
-              <div style={{fontSize:"10px",color:"#64748b",fontWeight:"600"}}>Edits/min</div>
-            </div>
-          </div>
-          <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:"8px",padding:"12px"}}>
-            <div style={{fontWeight:"700",fontSize:"11px",color:"#92400e",marginBottom:"8px"}}>🔍 Smart Recommendations</div>
-            <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
-              {(()=>{
-                const recs=[];
-                const fc=fieldCounts.current;
-                const total=Object.values(fc).reduce((s,v)=>s+v,0)||1;
-                const topField=Object.entries(fc).sort((a,b)=>b[1]-a[1])[0];
-                if(topField&&topField[1]/total>0.3){recs.push("🎯 You edit '"+topField[0]+"' most often ("+Math.round(topField[1]/total*100)+"%). Consider using Rate Con AI scan to auto-fill.");}
-                const srRate=fc["sr"]||0;const rateRate=fc["rate"]||0;
-                if(srRate>0&&rateRate===0){recs.push("💰 You're entering routes but not rates. Don't forget to fill in the Rate $ field for financial tracking.");}
-                if((fc["status"]||0)<(fc["sr"]||0)*0.3&&(fc["sr"]||0)>3){recs.push("📋 Status is rarely updated. Try using the quick PU/IT/DL buttons to track load progress faster.");}
-                if((fc["stopMiles"]||0)===0&&(fc["sr"]||0)>0){recs.push("📍 No stop miles entered. For multi-stop trailers, enter leg miles for accurate RPM calculations.");}
-                const stKeys=Object.keys(sectionTime.current);
-                const weeksTime=sectionTime.current["weeks"]||0;
-                const totalTime=Object.values(sectionTime.current).reduce((s,v)=>s+v,0)||1;
-                if(weeksTime/totalTime>0.8&&stKeys.length>1){recs.push("⚡ You spend "+Math.round(weeksTime/totalTime*100)+"% on the main board - very focused workflow!");}
-                if(recs.length===0){recs.push("✅ Not enough data yet. Keep using the board and insights will appear automatically.");}
-                return recs.map((rec,i)=>(
-                  <div key={i} style={{fontSize:"11px",color:"#78350f",lineHeight:"1.4"}}>{rec}</div>
-                ));
-              })()}
-            </div>
-          </div>
-        </div>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:"11px",color:"#94a3b8",borderTop:"1px solid #e2e8f0",paddingTop:"12px"}}>
-          <span>Tracking since session start · Saves automatically</span>
-          <button onClick={()=>{activityLog.current=[];fieldCounts.current={};sectionTime.current={};try{localStorage.removeItem("fcbv2_activity");}catch(e){}}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"5px",padding:"3px 10px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>Reset Tracking</button>
-        </div>
+          );
+        })()}
       </div>
     )}
 
@@ -5844,9 +6275,8 @@ ${accRows.length>0?`
           const drvFrom=driverDateFrom?new Date(driverDateFrom):null;
           const drvTo=driverDateTo?new Date(driverDateTo):null;
           if(drvTo)drvTo.setHours(23,59,59,999);
-          // "All Time" includes archived weeks — archiving is a housekeeping
-          // action and must not erase a driver/dispatcher's lifetime earnings.
-          const allTimeWeeks=[...weeks,...archivedWeeks];
+          // Top Drivers + Top Dispatchers use the global allTimeWeeks (live + archived)
+          // — archiving must never erase someone's lifetime earnings.
           const allDriverGross={};
           const CG_OK=new Set(["Delivered","In Transit"]); // committed work counts
           allTimeWeeks.forEach(w=>{
@@ -6522,9 +6952,9 @@ ${accRows.length>0?`
       <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
         <div style={{fontWeight:"700",fontSize:"14px",color:"#1a2e50",marginBottom:"16px"}}>📊 Statistics — All Weeks</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:"12px"}}>
-          {[{label:"Total Trailers",value:weeks.reduce((s,w)=>s+(w.groups||[]).length,0),color:"#2563eb"},
-            {label:"Total Loads",value:weeks.reduce((s,w)=>s+(w.groups||[]).flatMap(g=>g.loads||[]).length,0),color:"#7c3aed"},
-            {label:"Total Gross",value:"$"+weeks.reduce((s,w)=>s+(w.groups||[]).flatMap(g=>g.loads||[]).reduce((s2,l)=>s2+(parseFloat(l.rate)||0),0),0).toLocaleString(),color:"#059669"}
+          {[{label:"Total Trailers",value:allTimeWeeks.reduce((s,w)=>s+(w.groups||[]).length,0),color:"#2563eb"},
+            {label:"Total Loads",value:allTimeWeeks.reduce((s,w)=>s+(w.groups||[]).flatMap(g=>g.loads||[]).length,0),color:"#7c3aed"},
+            {label:"Total Gross",value:"$"+allTimeWeeks.reduce((s,w)=>s+(w.groups||[]).flatMap(g=>g.loads||[]).reduce((s2,l)=>s2+(parseFloat(l.rate)||0),0),0).toLocaleString(),color:"#059669"}
           ].map((statItem)=>{
             const lbl=statItem.label; const val=statItem.value; const clr=statItem.color;
             return(
@@ -6546,14 +6976,18 @@ ${accRows.length>0?`
               </tr>
             </thead>
             <tbody>
-              {weeks.map((w,i)=>{
+              {allTimeWeeks.map((w,i)=>{
                 const grps=w.groups||[];
                 const loads=grps.flatMap(g=>g.loads||[]);
                 const gross=loads.reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
                 const rowBg=i%2===0?"#fff":"#f8fafc";
+                const isArchived=i>=weeks.length;
                 return(
-                  <tr key={w.id} style={{background:rowBg,borderBottom:"1px solid #e2e8f0"}}>
-                    <td style={{padding:"8px",fontSize:"12px",fontWeight:"600",color:"#1a2e50"}}>{w.label}</td>
+                  <tr key={w.id} style={{background:rowBg,borderBottom:"1px solid #e2e8f0",opacity:isArchived?0.75:1}}>
+                    <td style={{padding:"8px",fontSize:"12px",fontWeight:"600",color:"#1a2e50"}}>
+                      {w.label}
+                      {isArchived&&<span style={{marginLeft:"8px",fontSize:"9px",background:"#fef3c7",color:"#92400e",padding:"1px 6px",borderRadius:"3px",fontWeight:"700"}}>ARCHIVED</span>}
+                    </td>
                     <td style={{padding:"8px",fontSize:"12px"}}>{grps.length}</td>
                     <td style={{padding:"8px",fontSize:"12px"}}>{loads.length}</td>
                     <td style={{padding:"8px",fontSize:"12px",fontWeight:"700",color:"#059669"}}>${gross.toLocaleString()}</td>
