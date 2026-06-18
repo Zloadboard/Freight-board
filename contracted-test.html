@@ -547,40 +547,51 @@
     .clb-bucket__head { padding: 7px 10px; font-size: 12px; }
     .clb-bucket__count { font-size: 11px; }
 
-    /* === Card head — clean three-row layout on phones ===
-       Row 1: caret · broker · load#  →  rate · status (right)
-       Row 2: full-width lane (pickup → delivery)
-       Row 3: info badges (driver, trailer, delivery date) →  ⏳ + claim (right)
-       Achieved with `flex-wrap` + per-element `order` so the layout is
-       deterministic regardless of which optional fields exist. */
+    /* === Card head — strict 4-row grid layout on phones ===
+       Row 1: caret · broker (small) · load#       → status
+       Row 2: lane (pickup → delivery)             → trailer
+       Row 3: delivery date(s)                     → rate
+       Row 4: driver/truck                         → waiting · claim
+       Grid areas guarantee a stable, deterministic layout: each element
+       owns its slot whether or not other optional fields are present. */
     .clb-card__head {
+      display: grid;
+      grid-template-columns: auto auto minmax(0, 1fr) auto;
+      grid-template-areas:
+        "caret  broker   loadnum  status"
+        "lane   lane     lane     trailer"
+        "deliv  deliv    deliv    rate"
+        "driver driver   waiting  claim";
+      gap: 8px 8px;
       padding: 12px;
-      gap: 7px;
       align-items: center;
     }
-    /* Row 1 */
-    .clb-card__caret   { order: 1; }
-    .clb-card__broker  { order: 2; font-size: 14px; }
-    .clb-card__loadnum { order: 3; font-size: 11px; padding: 3px 8px; }
-    .clb-card__rate    { order: 4; margin-left: auto; font-size: 15px; }
-    .clb-card__status  { order: 5; font-size: 10px; padding: 4px 9px; }
-    /* Row 2 — lane gets its own line, slightly accented */
-    .clb-card__lane {
-      order: 10;
-      flex: 1 1 100%; min-width: 0;
-      margin-top: 2px; padding-top: 8px;
-      border-top: 1px dashed #e2e8f0;
-      font-size: 13px; font-weight: 600; color: #1e293b;
+    .clb-card__caret       { grid-area: caret; }
+    .clb-card__broker      {
+      grid-area: broker;
+      font-size: 11px; font-weight: 600;
+      white-space: nowrap; color: #475569;
+    }
+    .clb-card__loadnum     { grid-area: loadnum; font-size: 11px; padding: 3px 8px; justify-self: start; }
+    .clb-card__status      { grid-area: status;  font-size: 10px; padding: 4px 8px; justify-self: end; }
+    .clb-card__lane        {
+      grid-area: lane; min-width: 0;
+      font-size: 13px; font-weight: 700; color: #1e293b;
       line-height: 1.35; white-space: normal;
     }
-    /* Row 3 — info pills on left, actions pushed right */
-    .clb-card__driver       { order: 11; font-size: 11px; padding: 3px 8px; }
-    .clb-card__trailer      { order: 12; font-size: 11px; padding: 3px 8px; }
-    .clb-card__delivery-dt  { order: 13; font-size: 11px; padding: 3px 8px; }
-    .clb-card__waiting      { order: 14; margin-left: auto; font-size: 11px; padding: 5px 10px; }
-    .clb-card__claim,
-    .clb-card__claim--free,
-    .clb-card__claim--taken { order: 15; font-size: 11px; padding: 5px 10px; }
+    .clb-card__trailer     { grid-area: trailer; font-size: 11px; padding: 3px 8px; justify-self: end; }
+    .clb-card__delivery-dt {
+      grid-area: deliv; min-width: 0;
+      font-size: 11px; padding: 3px 8px; justify-self: start;
+    }
+    .clb-card__rate        { grid-area: rate;    font-size: 14px; justify-self: end; }
+    .clb-card__driver      {
+      grid-area: driver; min-width: 0;
+      font-size: 11px; padding: 3px 8px; justify-self: start;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .clb-card__waiting     { grid-area: waiting; font-size: 10px; padding: 4px 8px; justify-self: end; }
+    .clb-card__claim       { grid-area: claim;   font-size: 11px; padding: 4px 10px; justify-self: end; }
 
     /* Expanded body — form fields stack one column (the 560px rule already
        handles --2 and --3 grids; this just tightens padding). 16px input
