@@ -562,36 +562,40 @@
         "lane   lane     lane     trailer"
         "deliv  deliv    deliv    rate"
         "driver driver   waiting  claim";
-      gap: 8px 8px;
+      gap: 11px 8px;
       padding: 12px;
       align-items: center;
     }
-    .clb-card__caret       { grid-area: caret; }
+    .clb-card__caret       { grid-area: caret; font-size: 10px; }
     .clb-card__broker      {
       grid-area: broker;
-      font-size: 11px; font-weight: 600;
-      white-space: nowrap; color: #475569;
+      font-size: 10px; font-weight: 700;
+      color: #64748b; letter-spacing: .02em;
+      white-space: nowrap;
     }
-    .clb-card__loadnum     { grid-area: loadnum; font-size: 11px; padding: 3px 8px; justify-self: start; }
-    .clb-card__status      { grid-area: status;  font-size: 10px; padding: 4px 8px; justify-self: end; }
+    .clb-card__loadnum     { grid-area: loadnum; font-size: 10px; padding: 2px 7px; justify-self: start; }
+    .clb-card__status      { grid-area: status;  font-size: 9px;  padding: 3px 7px; justify-self: end; }
     .clb-card__lane        {
       grid-area: lane; min-width: 0;
-      font-size: 13px; font-weight: 700; color: #1e293b;
+      font-size: 12px; font-weight: 700; color: #1e293b;
       line-height: 1.35; white-space: normal;
     }
-    .clb-card__trailer     { grid-area: trailer; font-size: 11px; padding: 3px 8px; justify-self: end; }
+    .clb-card__trailer     { grid-area: trailer; font-size: 10px; padding: 2px 7px; justify-self: end; }
     .clb-card__delivery-dt {
       grid-area: deliv; min-width: 0;
-      font-size: 11px; padding: 3px 8px; justify-self: start;
+      font-size: 10px; padding: 2px 7px; justify-self: start;
     }
-    .clb-card__rate        { grid-area: rate;    font-size: 14px; justify-self: end; }
+    .clb-card__rate        { grid-area: rate;    font-size: 13px; justify-self: end; }
     .clb-card__driver      {
       grid-area: driver; min-width: 0;
-      font-size: 11px; padding: 3px 8px; justify-self: start;
+      font-size: 10px; padding: 2px 7px; justify-self: start;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .clb-card__waiting     { grid-area: waiting; font-size: 10px; padding: 4px 8px; justify-self: end; }
-    .clb-card__claim       { grid-area: claim;   font-size: 11px; padding: 4px 10px; justify-self: end; }
+    .clb-card__waiting     { grid-area: waiting; font-size: 9px;  padding: 3px 7px; justify-self: end; }
+    .clb-card__claim       { grid-area: claim;   font-size: 10px; padding: 3px 8px; justify-self: end; }
+
+    /* Cards spaced apart vertically so they're not visually merging */
+    .clb-bucket__body > .clb-card + .clb-card { margin-top: 8px; }
 
     /* Expanded body — form fields stack one column (the 560px rule already
        handles --2 and --3 grids; this just tightens padding). 16px input
