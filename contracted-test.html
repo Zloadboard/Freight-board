@@ -552,12 +552,12 @@
        Row 2: lane (pickup → delivery)             → trailer
        Row 3: delivery date(s)                     → rate
        Row 4: driver/truck                         → waiting · claim
-       Grid areas guarantee a stable layout. Column 4 is hard-capped so a
-       long status name like "ENROUTE TO DELIVERY" wraps to two lines
-       instead of overflowing into the load#. */
+       Both side columns are hard-capped so long broker names and long
+       driver names can't push the layout around. Long status text wraps
+       to 2 lines; long driver names wrap to 2 lines. */
     .clb-card__head {
       display: grid;
-      grid-template-columns: 14px auto minmax(0, 1fr) 90px;
+      grid-template-columns: 14px minmax(0, 84px) minmax(0, 1fr) 90px;
       grid-template-areas:
         "caret  broker   loadnum  status"
         "lane   lane     lane     trailer"
@@ -569,10 +569,11 @@
     }
     .clb-card__caret       { grid-area: caret; font-size: 10px; }
     .clb-card__broker      {
-      grid-area: broker;
+      grid-area: broker; min-width: 0;
       font-size: 10px; font-weight: 700;
       color: #64748b; letter-spacing: .02em;
       white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
     }
     .clb-card__loadnum     {
       grid-area: loadnum; min-width: 0;
@@ -602,9 +603,11 @@
     .clb-card__rate        { grid-area: rate; font-size: 13px; justify-self: end; }
     .clb-card__driver      {
       grid-area: driver; min-width: 0;
-      font-size: 10px; padding: 2px 7px;
-      /* No justify-self → defaults to stretch so overflow:hidden clips */
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 10px; padding: 3px 7px;
+      /* Allow wrap so "Ananias Lisimwege" goes to 2 lines instead of
+         overflowing into the waiting button. */
+      white-space: normal; line-height: 1.25;
+      overflow-wrap: break-word; word-break: normal;
     }
     .clb-card__waiting     { grid-area: waiting; font-size: 9px; padding: 3px 6px; justify-self: end; }
     .clb-card__claim       { grid-area: claim; font-size: 10px; padding: 3px 7px; justify-self: end; }
