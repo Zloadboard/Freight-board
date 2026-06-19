@@ -552,17 +552,18 @@
        Row 2: lane (pickup → delivery)             → trailer
        Row 3: delivery date(s)                     → rate
        Row 4: driver/truck                         → waiting · claim
-       Grid areas guarantee a stable, deterministic layout: each element
-       owns its slot whether or not other optional fields are present. */
+       Grid areas guarantee a stable layout. Column 4 is hard-capped so a
+       long status name like "ENROUTE TO DELIVERY" wraps to two lines
+       instead of overflowing into the load#. */
     .clb-card__head {
       display: grid;
-      grid-template-columns: auto auto minmax(0, 1fr) auto;
+      grid-template-columns: 14px auto minmax(0, 1fr) 90px;
       grid-template-areas:
         "caret  broker   loadnum  status"
         "lane   lane     lane     trailer"
         "deliv  deliv    deliv    rate"
         "driver driver   waiting  claim";
-      gap: 11px 8px;
+      gap: 10px 8px;
       padding: 12px;
       align-items: center;
     }
@@ -573,8 +574,19 @@
       color: #64748b; letter-spacing: .02em;
       white-space: nowrap;
     }
-    .clb-card__loadnum     { grid-area: loadnum; font-size: 10px; padding: 2px 7px; justify-self: start; }
-    .clb-card__status      { grid-area: status;  font-size: 9px;  padding: 3px 7px; justify-self: end; }
+    .clb-card__loadnum     {
+      grid-area: loadnum; min-width: 0;
+      font-size: 10px; padding: 2px 7px;
+      justify-self: start;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .clb-card__status      {
+      grid-area: status;
+      font-size: 9px; padding: 3px 5px;
+      white-space: normal; text-align: center;
+      line-height: 1.15; letter-spacing: 0;
+      justify-self: stretch; align-self: center;
+    }
     .clb-card__lane        {
       grid-area: lane; min-width: 0;
       font-size: 12px; font-weight: 700; color: #1e293b;
@@ -583,16 +595,19 @@
     .clb-card__trailer     { grid-area: trailer; font-size: 10px; padding: 2px 7px; justify-self: end; }
     .clb-card__delivery-dt {
       grid-area: deliv; min-width: 0;
-      font-size: 10px; padding: 2px 7px; justify-self: start;
-    }
-    .clb-card__rate        { grid-area: rate;    font-size: 13px; justify-self: end; }
-    .clb-card__driver      {
-      grid-area: driver; min-width: 0;
-      font-size: 10px; padding: 2px 7px; justify-self: start;
+      font-size: 10px; padding: 2px 7px;
+      justify-self: start;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .clb-card__waiting     { grid-area: waiting; font-size: 9px;  padding: 3px 7px; justify-self: end; }
-    .clb-card__claim       { grid-area: claim;   font-size: 10px; padding: 3px 8px; justify-self: end; }
+    .clb-card__rate        { grid-area: rate; font-size: 13px; justify-self: end; }
+    .clb-card__driver      {
+      grid-area: driver; min-width: 0;
+      font-size: 10px; padding: 2px 7px;
+      /* No justify-self → defaults to stretch so overflow:hidden clips */
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .clb-card__waiting     { grid-area: waiting; font-size: 9px; padding: 3px 6px; justify-self: end; }
+    .clb-card__claim       { grid-area: claim; font-size: 10px; padding: 3px 7px; justify-self: end; }
 
     /* Cards spaced apart vertically so they're not visually merging */
     .clb-bucket__body > .clb-card + .clb-card { margin-top: 8px; }
