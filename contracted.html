@@ -135,6 +135,8 @@
   }
   .clb-card:hover { box-shadow: 0 4px 14px rgba(15,23,42,.08); }
   .clb-card--delivered { opacity: .62; }
+  .clb-card--canceled  { opacity: .58; }
+  .clb-card--canceled .clb-card__lane { text-decoration: line-through; }
   .clb-card--unclaimed {
     background: #fef2f2;
     border-left: 3px solid #ef4444;
@@ -510,24 +512,132 @@
   }
 
   /* small screen adjustments */
+  /* ===== Tablet / narrow desktop ===== */
   @media (max-width: 720px) {
     .clb-app { padding: 10px; }
     .clb-header { padding: 12px; gap: 10px; }
-    .clb-search { width: 140px; }
     .clb-card__head { gap: 6px; }
     .clb-card__lane { min-width: 140px; font-size: 12px; }
     .clb-summary { gap: 6px; }
     .clb-chip { padding: 8px 10px; }
     .clb-chip__val { font-size: 18px; }
   }
+
+  /* ===== Phone — all features present, layout adapted ===== */
+  @media (max-width: 640px) {
+    .clb-app { padding: 8px; }
+
+    /* Header: title + actions on one row, search bar on its own full-width row */
+    .clb-header { padding: 12px; gap: 8px; border-radius: 10px; }
+    .clb-title { font-size: 16px; margin-right: 0; }
+    .clb-title small { display: none; }      /* hide subtitle on phone */
+    .clb-search {
+      width: 100%; flex: 1 1 100%;
+      font-size: 16px; padding: 10px 12px;   /* 16px prevents iOS zoom-on-focus */
+    }
+    .clb-btn { padding: 8px 12px; font-size: 13px; }
+    .clb-save { font-size: 10px; padding: 3px 8px; }
+
+    /* Summary chips: compact */
+    .clb-summary { gap: 6px; margin-bottom: 12px; }
+    .clb-chip { padding: 6px 8px; }
+    .clb-chip__val { font-size: 15px; }
+    .clb-chip__lbl { font-size: 9px; }
+
+    /* Bucket header */
+    .clb-bucket { margin-bottom: 14px; }
+    .clb-bucket__head { padding: 7px 10px; font-size: 12px; }
+    .clb-bucket__count { font-size: 11px; }
+
+    /* === Card head — strict 4-row grid layout on phones ===
+       Row 1: caret · broker (small) · load#       → status
+       Row 2: lane (pickup → delivery)             → trailer
+       Row 3: delivery date(s)                     → rate
+       Row 4: driver/truck                         → waiting · claim
+       Both side columns are hard-capped so long broker names and long
+       driver names can't push the layout around. Long status text wraps
+       to 2 lines; long driver names wrap to 2 lines. */
+    .clb-card__head {
+      display: grid;
+      grid-template-columns: 14px minmax(0, 84px) minmax(0, 1fr) 90px;
+      grid-template-areas:
+        "caret  broker   loadnum  status"
+        "lane   lane     lane     trailer"
+        "deliv  deliv    deliv    rate"
+        "driver driver   waiting  claim";
+      gap: 10px 8px;
+      padding: 12px;
+      align-items: center;
+    }
+    .clb-card__caret       { grid-area: caret; font-size: 10px; }
+    .clb-card__broker      {
+      grid-area: broker; min-width: 0;
+      font-size: 10px; font-weight: 700;
+      color: #64748b; letter-spacing: .02em;
+      white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .clb-card__loadnum     {
+      grid-area: loadnum; min-width: 0;
+      font-size: 10px; padding: 2px 7px;
+      justify-self: start;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .clb-card__status      {
+      grid-area: status;
+      font-size: 9px; padding: 3px 5px;
+      white-space: normal; text-align: center;
+      line-height: 1.15; letter-spacing: 0;
+      justify-self: stretch; align-self: center;
+    }
+    .clb-card__lane        {
+      grid-area: lane; min-width: 0;
+      font-size: 12px; font-weight: 700; color: #1e293b;
+      line-height: 1.35; white-space: normal;
+    }
+    .clb-card__trailer     { grid-area: trailer; font-size: 10px; padding: 2px 7px; justify-self: end; }
+    .clb-card__delivery-dt {
+      grid-area: deliv; min-width: 0;
+      font-size: 10px; padding: 2px 7px;
+      justify-self: start;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .clb-card__rate        { grid-area: rate; font-size: 13px; justify-self: end; }
+    .clb-card__driver      {
+      grid-area: driver; min-width: 0;
+      font-size: 10px; padding: 3px 7px;
+      /* Allow wrap so "Ananias Lisimwege" goes to 2 lines instead of
+         overflowing into the waiting button. */
+      white-space: normal; line-height: 1.25;
+      overflow-wrap: break-word; word-break: normal;
+    }
+    .clb-card__waiting     { grid-area: waiting; font-size: 9px; padding: 3px 6px; justify-self: end; }
+    .clb-card__claim       { grid-area: claim; font-size: 10px; padding: 3px 7px; justify-self: end; }
+
+    /* Cards spaced apart vertically so they're not visually merging */
+    .clb-bucket__body > .clb-card + .clb-card { margin-top: 8px; }
+
+    /* Expanded body — form fields stack one column (the 560px rule already
+       handles --2 and --3 grids; this just tightens padding). 16px input
+       font prevents iOS Safari from zooming in when fields gain focus. */
+    .clb-card__body { padding: 10px 12px; }
+    .clb-field input,
+    .clb-field textarea,
+    .clb-field select,
+    .clb-auth__input { font-size: 16px; }
+
+    /* Modal: fits phone screen with safe-area padding */
+    .clb-modal-bg { padding: 8px; }
+    .clb-modal { width: 100%; max-width: 100%; padding: 16px; max-height: 92vh; overflow-y: auto; }
+  }
 </style>
 </head>
 <body>
 <div id="root"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.26.4/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.23.5/babel.min.js"></script>
 
 <script type="text/babel">
 /* ============================================================
@@ -621,7 +731,7 @@ const TRUCK_NUMBERS = ["13","15","29","029","407","408","414","422","432","444",
 // This is a read; we never write to the freight board from here.
 const FREIGHT_BOARD_URL = "https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec";
 
-const STATUSES = ["Need to Drop","OTR Pickup","Dropped at shipper","Ready at shipper","Yard","Enroute to Delivery","Delivered"];
+const STATUSES = ["Need to Drop","OTR Pickup","Dropped at shipper","Ready at shipper","Yard","Enroute to Delivery","Delivered","Canceled"];
 
 const STATUS_STYLES = {
   "Need to Drop":        { bg:"#fef9c3", color:"#854d0e", border:"#eab308" },
@@ -630,7 +740,8 @@ const STATUS_STYLES = {
   "Ready at shipper":    { bg:"#e0e7ff", color:"#3730a3", border:"#6366f1" },
   "Yard":                { bg:"#ffedd5", color:"#9a3412", border:"#fb923c" },
   "Enroute to Delivery": { bg:"#ccfbf1", color:"#115e59", border:"#14b8a6" },
-  "Delivered":           { bg:"#dcfce7", color:"#14532d", border:"#16a34a" }
+  "Delivered":           { bg:"#dcfce7", color:"#14532d", border:"#16a34a" },
+  "Canceled":            { bg:"#f1f5f9", color:"#475569", border:"#94a3b8" }
 };
 
 // Per-dispatcher claim colors. Case-insensitive name → CSS modifier class
@@ -677,6 +788,7 @@ function buildBuckets(today) {
   }
   out.push({ key: "future",    label: "Future",    color: "#475569", bg: "#f8fafc" });
   out.push({ key: "delivered", label: "Delivered", color: "#16a34a", bg: "#f0fdf4" });
+  out.push({ key: "canceled",  label: "Canceled",  color: "#64748b", bg: "#f1f5f9" });
   return out;
 }
 
@@ -707,6 +819,7 @@ function todayMidnight() {
 }
 
 function getBucket(load, today, tomorrow) {
+  if (load.status === "Canceled")  return "canceled";
   if (load.status === "Delivered") return "delivered";
 
   // Earliest pickup date is the urgency anchor (when the truck needs to be there).
@@ -1888,11 +2001,12 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
   const claimerKey  = (load.claimedBy || "").trim().toLowerCase();
   const claimVariant = load.claimedBy
     ? (CLAIMER_COLORS[claimerKey] ? " clb-card--claim-" + CLAIMER_COLORS[claimerKey] : " clb-card--claimed")
-    : (load.status !== "Delivered" ? " clb-card--unclaimed" : "");
+    : (load.status !== "Delivered" && load.status !== "Canceled" ? " clb-card--unclaimed" : "");
 
   return (
     <div className={"clb-card" +
                     (load.status === "Delivered" ? " clb-card--delivered" : "") +
+                    (load.status === "Canceled"  ? " clb-card--canceled"  : "") +
                     (load.waitingUpdate ? " clb-card--waiting" : "") +
                     claimVariant}
          style={{ "--bucket-color": bucketColor }}>
@@ -2447,15 +2561,16 @@ function App() {
 
     const cur = dataRef.current;
     const curWeek = getCurrentWeek(cur);
-    const carry = curWeek && curWeek.loads.some(l => l.status !== "Delivered")
-      ? window.confirm("Carry forward any non-Delivered loads from the current week into the new week?")
+    const isClosed = l => l.status === "Delivered" || l.status === "Canceled";
+    const carry = curWeek && curWeek.loads.some(l => !isClosed(l))
+      ? window.confirm("Carry forward any open (non-Delivered, non-Canceled) loads from the current week into the new week?")
       : false;
 
     let updatedWeeks = cur.weeks.slice();
     let newWeekLoads = [];
     if (carry && curWeek) {
-      const incomplete = curWeek.loads.filter(l => l.status !== "Delivered");
-      const completed  = curWeek.loads.filter(l => l.status === "Delivered");
+      const incomplete = curWeek.loads.filter(l => !isClosed(l));
+      const completed  = curWeek.loads.filter(l =>  isClosed(l));
       // Strip ids so duplicates don't collide between weeks
       newWeekLoads = incomplete.map(l => ({ ...l, id: uid(), createdAt: Date.now(), updatedAt: Date.now() }));
       updatedWeeks = updatedWeeks.map(w => w.id !== curWeek.id ? w : { ...w, loads: completed });
@@ -2546,7 +2661,7 @@ function App() {
     setSession(null);
   };
 
-  // ---- One-click pull-in of drivers/trucks/assignments from the freight board ----
+  // ---- One-click import of drivers/trucks/assignments from the freight board ----
   const importFromFreight = useCallback(async () => {
     if (!window.confirm(
       "Import drivers, trucks, and the driver→truck assignment map from your Freight Board?\n\n" +
