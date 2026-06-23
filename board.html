@@ -4035,11 +4035,13 @@ ${accRows.length>0?`
             const gsSt=GSS[group.groupStatus]||GSS["Pending"];
             const isClaimed=!!(group.securedAt&&group.groupDriver);
             const canEdit=isAdmin||!isClaimed;
-            // Smart urgency tag: only consider loads NOT yet in progress (still need pickup).
-            // Loads already Dispatched, Dock, Yard, Picked Up, Loaded, In Transit, Delivered
-            // shouldn't drive the urgency — they're past the pickup phase.
-            const inProgressStatuses=["Dispatched","Dock","Yard","Picked Up","Loaded","In Transit","Delivered"];
-            const pendingLoads=(group.loads||[]).filter(l=>!inProgressStatuses.includes(l.status||""));
+            // Smart urgency tag: only consider loads NOT yet physically picked up.
+            // "Dispatched" alone doesn't mean the load is off the dock — driver is assigned
+            // but truck hasn't grabbed it yet, so PU TODAY/TOMORROW is still meaningful.
+            // Once the load is at the dock, yard, picked up, loaded, in transit, or delivered,
+            // the pickup phase is genuinely behind us and the tag stops being useful.
+            const pickedUpStatuses=["Dock","Yard","Picked Up","Loaded","In Transit","Delivered"];
+            const pendingLoads=(group.loads||[]).filter(l=>!pickedUpStatuses.includes(l.status||""));
             const earliestPendingPU=pendingLoads.length?Math.min(...pendingLoads.map(l=>parseTS(l.pickup))):Infinity;
             const pendPuDate=isFinite(earliestPendingPU)?new Date(earliestPendingPU):null;
             const pendPuDay=pendPuDate?new Date(pendPuDate.getFullYear(),pendPuDate.getMonth(),pendPuDate.getDate()):null;
@@ -4053,9 +4055,10 @@ ${accRows.length>0?`
             const isDelivered=group.groupStatus==="Delivered";
             const statusDone=["Dispatched","Loaded","In Transit","Delivered","Driver assigned"].includes(group.groupStatus);
             // Tag: PU TODAY / TOMORROW only. OVERDUE removed per user preference.
-            // Use pendPuDay (earliest pending load's pickup) so once today's load is in progress,
-            // the tag advances to reflect the next pending load.
-            const urgTag=isDelivered||statusDone?"":pendPuDay&&pendPuDay.getTime()===today.getTime()?"PU TODAY":pendPuDay&&pendPuDay.getTime()===tomorrowDay.getTime()?"TOMORROW":"";
+            // Use pendPuDay (earliest pending load's pickup) — pendingLoads already filters out
+            // anything In Progress (Dispatched/Loaded/In Transit/etc), so we don't double-suppress
+            // on group-level statusDone. Only Delivered trailers hide the tag entirely.
+            const urgTag=isDelivered?"":pendPuDay&&pendPuDay.getTime()===today.getTime()?"PU TODAY":pendPuDay&&pendPuDay.getTime()===tomorrowDay.getTime()?"TOMORROW":"";
             const urgColor=urgTag==="PU TODAY"?"#ef4444":"#eab308";
             const hasDriver=!!(group.groupDriver&&group.groupDriver.trim());
             const route=(group.loads||[]).map(l=>parseSR(l.sr||"").r).filter(Boolean).join(" → ");
@@ -4248,6 +4251,7 @@ ${accRows.length>0?`
                   )}
                   <span style={{background:"#2563eb",padding:"1px 8px",borderRadius:"4px",fontWeight:"700",flexShrink:0}}>T{gi+1}</span>
                   {groupHasFlaggedLoad(group)&&<span title="One or more loads in this trailer need a new appointment" style={{fontSize:"10px",fontWeight:"700",color:"#92400e",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 7px",borderRadius:"4px",flexShrink:0,cursor:"help"}}>⏳</span>}
+                  {urgTag&&<span style={{fontSize:"10px",fontWeight:"800",color:"#fff",background:urgColor,padding:"2px 8px",borderRadius:"4px",flexShrink:0,letterSpacing:".02em"}}>{urgTag}</span>}
                   {/* In compact mode, this group is temporarily expanded — show a collapse button */}
                   {plannedView==="compact"&&isExpandedInCompact&&<button onClick={()=>setExpandedCompactGroup(null)} title="Collapse back to compact row" style={{background:"rgba(148,163,184,.25)",color:"#cbd5e1",border:"1px solid rgba(148,163,184,.4)",borderRadius:"4px",padding:"1px 8px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>← Collapse</button>}
                   
