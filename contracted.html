@@ -489,6 +489,29 @@
     color: #64748b; font-size: 14px;
   }
 
+  /* ---- Reconnecting banner: shown when the backend is unreachable but
+     we still have a cached snapshot to display read-only. ---- */
+  .clb-reconnect {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #f59e0b;
+    border-radius: 8px;
+    padding: 9px 14px;
+    margin: 10px 0;
+    font-size: 13px;
+    font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .clb-reconnect__dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #f59e0b;
+    animation: clb-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes clb-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: .3; }
+  }
+
   /* ---- Modal ---- */
   .clb-modal-bg {
     position: fixed; inset: 0;
@@ -710,7 +733,8 @@ const { useState, useEffect, useRef, useMemo, useCallback } = React;
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxDDf6EUF1VwZe_wn5qNUrS_2J_0EADhF_3bfAfn--3uvBLEASNiKNufe4HLETNelHa/exec";
 
 const STORAGE = {
-  session: "fcbc_session"
+  session: "fcbc_session",
+  cache:   "fcbc_cache"
 };
 
 // Admin passcode. Viewers need no code; admins enter this to unlock
@@ -1583,6 +1607,38 @@ async function apiLoad() {
   return j.data || {};
 }
 
+// Retry wrapper. Apps Script occasionally returns an HTML error page
+// (quota hits, Google service blips, lock-timeout) — those clear on
+// their own within seconds, so we try a few times before giving up.
+async function apiLoadWithRetry(attempts = 3, delayMs = 1500) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await apiLoad();
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
+// Last-known-good snapshot kept in localStorage so the board can show
+// something (read-mostly) while the backend is unreachable.
+function saveCacheToLocal(data) {
+  try {
+    localStorage.setItem(STORAGE.cache, JSON.stringify({ data, at: Date.now() }));
+  } catch (e) { /* quota — ignore */ }
+}
+function readCacheFromLocal() {
+  try {
+    const raw = localStorage.getItem(STORAGE.cache);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return (parsed && parsed.data) ? parsed : null;
+  } catch (e) { return null; }
+}
+
 async function apiSave(data) {
   return apiCall({ action: "save", data });
 }
@@ -2381,6 +2437,7 @@ function App() {
   const [expandedIds, setExpandedIds] = useState(() => new Set());
   const [search,      setSearch]      = useState("");
   const [loadError,   setLoadError]   = useState("");
+  const [reconnecting,setReconnecting]= useState(false);
 
   const allDrivers = useMemo(() => {
     const set = new Set(DRIVERS);
@@ -2419,25 +2476,41 @@ function App() {
   }, [loadNumIndex]);
 
   // ---- Initial load ----
+  // Try the backend up to 3 times. If all attempts fail but we have a
+  // cached snapshot from a previous session, fall through to that so the
+  // board is still usable (with a "Reconnecting…" banner up top).
   useEffect(() => {
     let dead = false;
-    apiLoad()
+    const restoreSession = () => {
+      try {
+        const raw = localStorage.getItem(STORAGE.session);
+        if (raw) {
+          const s = JSON.parse(raw);
+          if (s && (s.role === "viewer" || s.role === "admin") && s.name) {
+            setSession(s);
+          }
+        }
+      } catch (e) {}
+    };
+    apiLoadWithRetry(3, 1500)
       .then(d => {
         if (dead) return;
-        setData(normalizeData(d));
-        // Restore a previous Viewer/Admin session for this device
-        try {
-          const raw = localStorage.getItem(STORAGE.session);
-          if (raw) {
-            const s = JSON.parse(raw);
-            if (s && (s.role === "viewer" || s.role === "admin") && s.name) {
-              setSession(s);
-            }
-          }
-        } catch (e) {}
+        const normalized = normalizeData(d);
+        setData(normalized);
+        saveCacheToLocal(normalized);
+        setReconnecting(false);
+        restoreSession();
       })
       .catch(e => {
-        if (!dead) setLoadError("Could not reach backend: " + e.message);
+        if (dead) return;
+        const cached = readCacheFromLocal();
+        if (cached && cached.data) {
+          setData(normalizeData(cached.data));
+          setReconnecting(true);
+          restoreSession();
+        } else {
+          setLoadError("Could not reach backend: " + e.message);
+        }
       });
     return () => { dead = true; };
   }, []);
@@ -2445,6 +2518,8 @@ function App() {
   // ---- Polling: refresh from server every N seconds ----
   // Merges server data with local instead of replacing it wholesale, so a
   // poll never reverts a local edit that hasn't finished saving yet.
+  // A failed poll flips the reconnecting banner on; the next successful
+  // poll clears it.
   useEffect(() => {
     if (!data || !session) return;
     const timer = setInterval(async () => {
@@ -2457,10 +2532,19 @@ function App() {
         if (JSON.stringify(merged) !== JSON.stringify(dataRef.current)) {
           setData(merged);
         }
-      } catch (e) { /* swallow — periodic poll */ }
+        setReconnecting(false);
+      } catch (e) {
+        setReconnecting(true);
+      }
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [session, saveStatus]);
+
+  // ---- Cache last-known-good data to localStorage whenever it changes ----
+  // So if Apps Script is unreachable next session, we can show this snapshot.
+  useEffect(() => {
+    if (data) saveCacheToLocal(data);
+  }, [data]);
 
   // ---- Debounced save ----
   const saveTimerRef = useRef(null);
@@ -2812,6 +2896,12 @@ function App() {
         storageSize={storageSize}
         online={online}
       />
+      {reconnecting && (
+        <div className="clb-reconnect">
+          <span className="clb-reconnect__dot"></span>
+          Reconnecting to backend… showing last known data. Your changes will save once the connection is back.
+        </div>
+      )}
       <SummaryBar data={data} today={today} tomorrow={tomorrow} buckets={buckets} />
 
       {(() => {
