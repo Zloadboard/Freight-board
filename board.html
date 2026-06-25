@@ -1383,6 +1383,13 @@ function App(){
   const[insightsTab,setInsightsTab]=useState("shippers");
   // Which shipper row is currently expanded in the directory (null = all collapsed)
   const[expandedShipper,setExpandedShipper]=useState(null);
+  // Which load's flag-picker popup is currently open (null = none).
+  // Stored as "gid:lid" so we can find the anchor on next render.
+  // Which load's flag-picker popup is currently open. Stores the load identity AND
+  // the screen-pixel coordinates of the ⏳ button that opened it, so the popup
+  // can render as a position:fixed overlay (escaping all overflow:hidden ancestors).
+  // Shape: null OR { key:"gid:lid", x:number, y:number, gid, lid }
+  const[flagPickerFor,setFlagPickerFor]=useState(null);
   // Manual-order mode for Planned section: once the user clicks any reorder arrow,
   // the entire list flips to "manual" and stays that way until they click "Reset to
   // auto-sort". manualPlannedOrder is a per-week map: { weekId: [groupId1, groupId2, ...] }
@@ -2681,44 +2688,182 @@ ${accRows.length>0?`
   };
   const setGroup=(gid,f,v)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,[f]:v}));
 
-  // Toggle the ⏳ "needs reschedule" flag on a trailer. Flagged trailers get yellow
-  // Per-LOAD reschedule flag (replaced the old per-trailer flag).
-  // A trailer with ANY flagged load gets pinned to the top of the auto-sort list.
-  // Toggling a per-load flag also auto-migrates any leftover group-level flag away
-  // (legacy data with group.needsReschedule=true gets cleaned up the first time
-  // a user touches any load in that group).
-  const toggleLoadReschedule=(gid,lid)=>{
+  // Per-LOAD flag system. Each load can have ONE flag at a time:
+  //   • 'reschedule' — waiting on a new appointment (yellow)
+  //   • 'important'  — pick this first (light red)
+  // Click the ⏳ button on a load to open a popup menu and pick one or clear it.
+  // A trailer with ANY flagged load gets pinned to the top of the auto-sort list;
+  // 'important' trailers outrank 'reschedule' trailers.
+  // Backward compat: legacy boolean `needsReschedule:true` on a load OR group
+  // is interpreted as flag='reschedule' until the user touches it.
+  const setLoadFlag=(gid,lid,flag)=>{
+    // flag: 'reschedule' | 'important' | null (clear)
     setW("groups",week.groups.map(g=>{
       if(g.id!==gid)return g;
-      const loads=g.loads.map(l=>l.id!==lid?l:{...l,needsReschedule:!l.needsReschedule});
-      // Strip legacy group-level flag — per-load is now the source of truth
-      const {needsReschedule:_legacyFlag,...rest}=g;
-      return{...rest,loads};
+      const loads=g.loads.map(l=>{
+        if(l.id!==lid)return l;
+        // Strip legacy boolean + set new field
+        const{needsReschedule:_l,...rest}=l;
+        if(flag)return{...rest,flag};
+        // Clearing — also drop the flag key
+        const{flag:_f,...cleared}=rest;
+        return cleared;
+      });
+      // Strip legacy group-level flag too
+      const{needsReschedule:_g,...gRest}=g;
+      return{...gRest,loads};
     }));
   };
 
-  // Helper: does this group have ANY flagged load? Treats legacy group.needsReschedule
-  // as "all loads in this group are flagged" (backward compat for old data).
-  const groupHasFlaggedLoad=(g)=>{
-    if(g.needsReschedule)return true; // legacy group-level flag
-    return(g.loads||[]).some(l=>l.needsReschedule);
+  // Read the effective flag for a load. Handles backward compat with legacy
+  // needsReschedule boolean (on load OR group).
+  const getLoadFlag=(load,group)=>{
+    if(load.flag==="important"||load.flag==="reschedule")return load.flag;
+    if(load.needsReschedule)return "reschedule";
+    if(group&&group.needsReschedule)return "reschedule";
+    return null;
   };
-  // Helper: is THIS load flagged?
-  const isLoadFlagged=(load,group)=>load.needsReschedule||(group&&group.needsReschedule);
+  // Helper: does this group have ANY flagged load?
+  const groupHasFlaggedLoad=(g)=>{
+    if(g.needsReschedule)return true; // legacy
+    return(g.loads||[]).some(l=>l.flag==="important"||l.flag==="reschedule"||l.needsReschedule);
+  };
+  // Helper: does this group have an IMPORTANT load? (used for sort priority)
+  const groupHasImportantLoad=(g)=>(g.loads||[]).some(l=>l.flag==="important");
+  // Helper: is THIS load flagged? Returns truthy when there's any flag.
+  const isLoadFlagged=(load,group)=>!!getLoadFlag(load,group);
+
+  // Close flag picker on any outside click. The picker buttons stop propagation,
+  // so a click that bubbles up to the document means user clicked elsewhere.
+  //
+  // SUBTLE BUG WE'RE GUARDING AGAINST: when the user clicks the ⏳ button to OPEN
+  // the picker, that same click event is still propagating up the DOM. If we install
+  // the document listener synchronously, it catches that opening click and
+  // immediately closes the picker. Defer the listener install to the next tick
+  // so the opening click finishes first.
+  React.useEffect(()=>{
+    if(!flagPickerFor)return;
+    let cancelled=false;
+    const handler=()=>setFlagPickerFor(null);
+    const t=setTimeout(()=>{
+      if(!cancelled)document.addEventListener("click",handler);
+    },0);
+    return()=>{
+      cancelled=true;
+      clearTimeout(t);
+      document.removeEventListener("click",handler);
+    };
+  },[flagPickerFor]);
+
+  // Popup menu shown when user clicks the ⏳ button. Anchored to the button via
+  // absolute positioning. Three options: Waiting new appt, Important, Clear.
+  // Open the flag picker, anchoring its popup below the button that was clicked.
+  // We capture the button's screen position so the picker can render as
+  // position:fixed at the document root, escaping all overflow:hidden parents
+  // (the compact view's # cell clips a normally-positioned popup).
+  const openFlagPicker=(e,gid,lid)=>{
+    e.stopPropagation();
+    const key=gid+":"+lid;
+    if(flagPickerFor&&flagPickerFor.key===key){
+      setFlagPickerFor(null);
+      return;
+    }
+    const rect=e.currentTarget.getBoundingClientRect();
+    setFlagPickerFor({
+      key,gid,lid,
+      x:rect.left,
+      y:rect.bottom+4
+    });
+  };
+
+  // Popup menu shown when user clicks the ⏳ button. Rendered as a
+  // position:fixed overlay anchored to the button's coordinates so it can't
+  // be clipped by parent overflow:hidden.
+  const renderFlagPickerOverlay=()=>{
+    if(!flagPickerFor)return null;
+    const{gid,lid,x,y}=flagPickerFor;
+    // Find the load and current flag
+    const g=week.groups.find(g=>g.id===gid);
+    const l=g&&g.loads.find(l=>l.id===lid);
+    if(!l)return null;
+    const currentFlag=getLoadFlag(l,g);
+    // Keep popup on-screen if near the right edge
+    const viewportW=typeof window!=="undefined"?window.innerWidth:1200;
+    const finalX=Math.min(x,viewportW-200);
+    return(
+      <div onClick={e=>e.stopPropagation()}
+        style={{position:"fixed",top:y+"px",left:finalX+"px",background:"#fff",border:"1px solid #cbd5e1",borderRadius:"6px",boxShadow:"0 4px 14px rgba(0,0,0,.22)",zIndex:9999,minWidth:"180px",padding:"4px",fontSize:"12px"}}>
+        <button onClick={e=>{e.stopPropagation();setLoadFlag(gid,lid,"reschedule");setFlagPickerFor(null);}}
+          style={{display:"flex",alignItems:"center",gap:"8px",width:"100%",padding:"6px 8px",background:currentFlag==="reschedule"?"#fef3c7":"transparent",border:"none",borderRadius:"4px",cursor:"pointer",textAlign:"left",fontSize:"12px",fontWeight:"600",color:"#92400e"}}>
+          <span style={{width:"10px",height:"10px",borderRadius:"50%",background:"#eab308",flexShrink:0}}/>
+          Waiting new appt
+          {currentFlag==="reschedule"&&<span style={{marginLeft:"auto",color:"#059669"}}>✓</span>}
+        </button>
+        <button onClick={e=>{e.stopPropagation();setLoadFlag(gid,lid,"important");setFlagPickerFor(null);}}
+          style={{display:"flex",alignItems:"center",gap:"8px",width:"100%",padding:"6px 8px",background:currentFlag==="important"?"#fee2e2":"transparent",border:"none",borderRadius:"4px",cursor:"pointer",textAlign:"left",fontSize:"12px",fontWeight:"600",color:"#991b1b"}}>
+          <span style={{width:"10px",height:"10px",borderRadius:"50%",background:"#ef4444",flexShrink:0}}/>
+          Important — pick first
+          {currentFlag==="important"&&<span style={{marginLeft:"auto",color:"#059669"}}>✓</span>}
+        </button>
+        {currentFlag&&(
+          <button onClick={e=>{e.stopPropagation();setLoadFlag(gid,lid,null);setFlagPickerFor(null);}}
+            style={{display:"flex",alignItems:"center",gap:"8px",width:"100%",padding:"6px 8px",background:"transparent",border:"none",borderTop:"1px solid #e2e8f0",borderRadius:"4px",cursor:"pointer",textAlign:"left",fontSize:"11px",fontWeight:"600",color:"#64748b",marginTop:"2px"}}>
+            <span style={{width:"10px",height:"10px",borderRadius:"50%",background:"#cbd5e1",flexShrink:0}}/>
+            Clear flag
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  // Old inline-positioned picker kept for any callers I might've missed.
+  const renderFlagPicker=(gid,lid,currentFlag)=>(
+    <div onClick={e=>e.stopPropagation()}
+      style={{position:"absolute",top:"100%",left:0,marginTop:"4px",background:"#fff",border:"1px solid #cbd5e1",borderRadius:"6px",boxShadow:"0 4px 12px rgba(0,0,0,.18)",zIndex:50,minWidth:"180px",padding:"4px",fontSize:"12px"}}>
+      <button onClick={e=>{e.stopPropagation();setLoadFlag(gid,lid,"reschedule");setFlagPickerFor(null);}}
+        style={{display:"flex",alignItems:"center",gap:"8px",width:"100%",padding:"6px 8px",background:currentFlag==="reschedule"?"#fef3c7":"transparent",border:"none",borderRadius:"4px",cursor:"pointer",textAlign:"left",fontSize:"12px",fontWeight:"600",color:"#92400e"}}>
+        <span style={{width:"10px",height:"10px",borderRadius:"50%",background:"#eab308",flexShrink:0}}/>
+        Waiting new appt
+        {currentFlag==="reschedule"&&<span style={{marginLeft:"auto",color:"#059669"}}>✓</span>}
+      </button>
+      <button onClick={e=>{e.stopPropagation();setLoadFlag(gid,lid,"important");setFlagPickerFor(null);}}
+        style={{display:"flex",alignItems:"center",gap:"8px",width:"100%",padding:"6px 8px",background:currentFlag==="important"?"#fee2e2":"transparent",border:"none",borderRadius:"4px",cursor:"pointer",textAlign:"left",fontSize:"12px",fontWeight:"600",color:"#991b1b"}}>
+        <span style={{width:"10px",height:"10px",borderRadius:"50%",background:"#ef4444",flexShrink:0}}/>
+        Important — pick first
+        {currentFlag==="important"&&<span style={{marginLeft:"auto",color:"#059669"}}>✓</span>}
+      </button>
+      {currentFlag&&(
+        <button onClick={e=>{e.stopPropagation();setLoadFlag(gid,lid,null);setFlagPickerFor(null);}}
+          style={{display:"flex",alignItems:"center",gap:"8px",width:"100%",padding:"6px 8px",background:"transparent",border:"none",borderTop:"1px solid #e2e8f0",borderRadius:"4px",cursor:"pointer",textAlign:"left",fontSize:"11px",fontWeight:"600",color:"#64748b",marginTop:"2px"}}>
+          <span style={{width:"10px",height:"10px",borderRadius:"50%",background:"#cbd5e1",flexShrink:0}}/>
+          Clear flag
+        </button>
+      )}
+    </div>
+  );
 
   // Move a trailer up or down in the Planned list. The first arrow click flips the
   // section to manual-order mode, freezing the current visible order, then nudges
   // the target trailer by one position. Subsequent clicks just nudge within that
   // saved order.
   const movePlannedTrailer=(currentVisibleOrder, gid, direction)=>{
-    // Build the manual-order array. If we're not yet in manual mode, seed it from
-    // the current visible (sorted) order so the trailer's position stays put before
-    // we move it.
-    const seedOrder=(manualPlannedOrder[week.id]&&manualPlannedOrder[week.id].length)
-      ? manualPlannedOrder[week.id].slice()
-      : currentVisibleOrder.map(g=>g.id);
+    // Always reconcile the saved manual order against what's actually visible right now:
+    //   1. Take saved IDs but filter out any that no longer exist (deleted trailers).
+    //   2. Append any visible trailers that aren't in the saved list yet (new trailers
+    //      added since the last reorder).
+    //
+    // Without this, the function silently no-ops on any trailer that isn't in the
+    // saved snapshot (e.g. a trailer added after the user clicked an arrow once),
+    // because indexOf returns -1 and we return early.
+    const visibleIds=currentVisibleOrder.map(g=>g.id);
+    const visibleSet=new Set(visibleIds);
+    const savedIds=(manualPlannedOrder[week.id]||[]).filter(id=>visibleSet.has(id));
+    const seedOrder=savedIds.slice();
+    for(const id of visibleIds){
+      if(!seedOrder.includes(id))seedOrder.push(id);
+    }
     const idx=seedOrder.indexOf(gid);
-    if(idx<0)return; // shouldn't happen
+    if(idx<0)return; // shouldn't happen now — every visible trailer is in seedOrder
     const newIdx=direction==="up"?Math.max(0,idx-1):Math.min(seedOrder.length-1,idx+1);
     if(newIdx===idx)return; // already at edge
     const next=seedOrder.slice();
@@ -2878,6 +3023,9 @@ ${accRows.length>0?`
 
   return(
   <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",padding:"12px"}} onClick={()=>setShowHdrMenu(false)}>
+
+    {/* ── FLAG PICKER OVERLAY — floats above everything when a load's ⏳ is open ── */}
+    {renderFlagPickerOverlay()}
 
     {/* ── LOAD DETAIL PANEL ── */}
     {loadDetailId&&<DetailErrorBoundary onClose={()=>setLoadDetailId(null)}><LoadDetailPanel
@@ -4015,9 +4163,10 @@ ${accRows.length>0?`
             }
             // AUTO-SORT — three tiers
             const tierOf=g=>{
-              if(groupHasFlaggedLoad(g))return 0;   // top
-              if((g.loads||[]).length>1)return 1;  // multi-stop
-              return 2;                            // single
+              if(groupHasImportantLoad(g))return 0;   // VERY top: marked Important
+              if(groupHasFlaggedLoad(g))return 1;     // next: waiting new appt
+              if((g.loads||[]).length>1)return 2;     // multi-stop
+              return 3;                                // single
             };
             // Sort key within a tier: earliest delivery date of the trailer
             const sortKey=g=>{
@@ -4035,17 +4184,36 @@ ${accRows.length>0?`
             const gsSt=GSS[group.groupStatus]||GSS["Pending"];
             const isClaimed=!!(group.securedAt&&group.groupDriver);
             const canEdit=isAdmin||!isClaimed;
-            // Smart urgency tag: only consider loads NOT yet physically picked up.
-            // "Dispatched" alone doesn't mean the load is off the dock — driver is assigned
-            // but truck hasn't grabbed it yet, so PU TODAY/TOMORROW is still meaningful.
-            // Once the load is at the dock, yard, picked up, loaded, in transit, or delivered,
-            // the pickup phase is genuinely behind us and the tag stops being useful.
+            // ── Pending-pickup definition ─────────────────────────────────
+            // A load is "pending pickup" when:
+            //   1. Its status is NOT in pickedUpStatuses (i.e. truck hasn't grabbed it yet)
+            //   2. No local truck OR local driver assigned to it yet
+            //
+            // Once a local is assigned, the dispatcher knows who's handling that load
+            // and stops worrying about its urgency — even if the truck hasn't physically
+            // arrived at the dock yet. (Per user spec: "as soon as local assigned, the
+            // header should disappear.")
             const pickedUpStatuses=["Dock","Yard","Picked Up","Loaded","In Transit","Delivered"];
-            const pendingLoads=(group.loads||[]).filter(l=>!pickedUpStatuses.includes(l.status||""));
-            const earliestPendingPU=pendingLoads.length?Math.min(...pendingLoads.map(l=>parseTS(l.pickup))):Infinity;
-            const pendPuDate=isFinite(earliestPendingPU)?new Date(earliestPendingPU):null;
-            const pendPuDay=pendPuDate?new Date(pendPuDate.getFullYear(),pendPuDate.getMonth(),pendPuDate.getDate()):null;
-            // Keep the original earliest-of-all for misc downstream uses (delivery, etc.)
+            const isLoadPending=l=>(
+              !pickedUpStatuses.includes(l.status||"")
+              &&!(l.localTruck&&String(l.localTruck).trim())
+              &&!(l.localDriver&&String(l.localDriver).trim())
+            );
+            const pendingPickupLoads=(group.loads||[]).filter(isLoadPending);
+            const pendingCount=pendingPickupLoads.length;
+            // Per-load urgency tag — returns {label,color} or null. Used on each load row.
+            const loadUrgency=l=>{
+              if(group.groupStatus==="Delivered")return null;
+              if(!isLoadPending(l))return null;
+              const ts=parseTS(l.pickup);
+              if(!isFinite(ts))return null;
+              const d=new Date(ts);
+              const day=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+              if(day.getTime()===today.getTime())return{label:"PU TODAY",color:"#ef4444"};
+              if(day.getTime()===tomorrowDay.getTime())return{label:"TOMORROW",color:"#eab308"};
+              return null;
+            };
+            // Keep these for downstream date logic that still references puDate/delDate
             const earliestPU=Math.min(...group.loads.map(l=>parseTS(l.pickup)));
             const puDate=isFinite(earliestPU)?new Date(earliestPU):null;
             const puDay=puDate?new Date(puDate.getFullYear(),puDate.getMonth(),puDate.getDate()):null;
@@ -4054,12 +4222,13 @@ ${accRows.length>0?`
             const delDay=delDate?new Date(delDate.getFullYear(),delDate.getMonth(),delDate.getDate()):null;
             const isDelivered=group.groupStatus==="Delivered";
             const statusDone=["Dispatched","Loaded","In Transit","Delivered","Driver assigned"].includes(group.groupStatus);
-            // Tag: PU TODAY / TOMORROW only. OVERDUE removed per user preference.
-            // Use pendPuDay (earliest pending load's pickup) — pendingLoads already filters out
-            // anything In Progress (Dispatched/Loaded/In Transit/etc), so we don't double-suppress
-            // on group-level statusDone. Only Delivered trailers hide the tag entirely.
-            const urgTag=isDelivered?"":pendPuDay&&pendPuDay.getTime()===today.getTime()?"PU TODAY":pendPuDay&&pendPuDay.getTime()===tomorrowDay.getTime()?"TOMORROW":"";
-            const urgColor=urgTag==="PU TODAY"?"#ef4444":"#eab308";
+            // Trailer-level urgency replaced with pending-pickup count. Shown only when
+            // there are still loads to pick up AND trailer not delivered.
+            const trailerPendingTag=isDelivered||pendingCount===0?"":pendingCount+" pending pickup";
+            // Legacy compatibility — some downstream code still reads urgTag/urgColor.
+            // These now reflect the COUNT-style trailer banner, not the old date-based pill.
+            const urgTag=trailerPendingTag;
+            const urgColor="#3b82f6";
             const hasDriver=!!(group.groupDriver&&group.groupDriver.trim());
             const route=(group.loads||[]).map(l=>parseSR(l.sr||"").r).filter(Boolean).join(" → ");
             const isMultiStop=(group.loads||[]).length>1;
@@ -4072,9 +4241,7 @@ ${accRows.length>0?`
             if(plannedView==="compact"&&!isExpandedInCompact){
               // Grid columns (tight): T# + ⏳ toggle | Route | PU | DEL | Wt | Plt | L Truck | L Driver | Trailer | Rate | Broker+# | 📍 | Status | ✏️ ×
               const gColTpl="52px minmax(170px,2fr) 100px 100px 50px 30px 50px 65px 55px 65px minmax(100px,1fr) 120px 80px 24px";
-              // Reschedule flag is now per-LOAD. The trailer header gets only a subtle
-              // badge when any load is flagged (full attention goes to the row itself).
-              const hasFlagged=groupHasFlaggedLoad(group);
+              // Reschedule/Important flag indicators now live in the inline IIFE below.
               return(
                 <div key={group.id} style={{background:"#ffffff",border:"1px solid #64748b",borderRadius:"6px",overflow:"hidden",borderLeft:`4px solid ${gsSt.tc||"#64748b"}`,marginBottom:"6px",boxShadow:"0 1px 2px rgba(15,31,61,.1)"}}>
                   {/* TRAILER HEADER STRIP — keeps OTR Drv/Truck/Trailer/status/dollar visible */}
@@ -4093,11 +4260,34 @@ ${accRows.length>0?`
                       </span>
                     )}
                     <span style={{fontWeight:"700",color:"#1e3a8a",background:"#dbeafe",padding:"2px 7px",borderRadius:"4px",fontSize:"10px",flexShrink:0}}>T{gi+1}</span>
-                    {hasFlagged&&<span title="One or more loads in this trailer need a new appointment" style={{fontSize:"10px",fontWeight:"700",color:"#92400e",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 6px",borderRadius:"4px",flexShrink:0,cursor:"help"}}>⏳</span>}
+                    {(()=>{
+                      if(!groupHasFlaggedLoad(group))return null;
+                      const hasImportant=groupHasImportantLoad(group);
+                      const tip=hasImportant?"One or more loads in this trailer marked Important":"One or more loads in this trailer need a new appointment";
+                      const bg=hasImportant?"#fee2e2":"#fef3c7";
+                      const fg=hasImportant?"#991b1b":"#92400e";
+                      const bd=hasImportant?"#ef4444":"#fcd34d";
+                      return <span title={tip} style={{fontSize:"10px",fontWeight:"700",color:fg,background:bg,border:`1px solid ${bd}`,padding:"1px 6px",borderRadius:"4px",flexShrink:0,cursor:"help"}}>⏳</span>;
+                    })()}
                     {isMultiStop&&<span style={{fontSize:"9px",color:"#64748b",fontWeight:"600"}}>{(group.loads||[]).length} stops</span>}
                     {(()=>{
                       const totalGross=(group.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
-                      return totalGross>0?<span style={{fontSize:"11px",color:"#059669",fontWeight:"700"}}>${totalGross.toLocaleString()}</span>:null;
+                      if(totalGross<=0)return null;
+                      // Total local charge across all loads — same per-load formula as Cards view.
+                      const totalLocal=(group.loads||[]).reduce((s,l)=>{
+                        if(l.manualLocalCharge!==""&&l.manualLocalCharge!=null)return s+(parseFloat(l.manualLocalCharge)||0);
+                        const{s:shipper}=parseSR(l.sr||"");
+                        const am=cityMiles(shipper);
+                        const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
+                        const lc=um!=null?localCharge(um):null;
+                        return s+(lc||0);
+                      },0);
+                      const net=totalGross-totalLocal;
+                      return(<>
+                        <span style={{fontSize:"11px",color:"#059669",fontWeight:"700"}}>${totalGross.toLocaleString()}</span>
+                        {totalLocal>0&&<span style={{fontSize:"10px",color:"#b45309",fontWeight:"700"}}>−${Math.round(totalLocal).toLocaleString()}</span>}
+                        {totalLocal>0&&<span style={{fontSize:"11px",color:"#0f1f3d",fontWeight:"800"}}>= ${Math.round(net).toLocaleString()}</span>}
+                      </>);
                     })()}
                     {/* Miles + RPM — same values shown when the card is expanded.
                         Miles use manual override > calculated > auto fallback (matches expanded card). */}
@@ -4171,14 +4361,20 @@ ${accRows.length>0?`
                     // Shared cell styles. cellBase = centered (numbers, short fields). cellLeft = left-aligned (Route, Broker which have variable-length text).
                     const cellBase={color:"#1f2937",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",fontSize:"12px",padding:"0 4px",borderRight:"1px solid #cbd5e1",minWidth:0,textAlign:"center"};
                     const cellLeft={...cellBase,textAlign:"left"};
-                    const flagged=isLoadFlagged(load,group);
+                    const loadFlag=getLoadFlag(load,group);
+                    const flagged=!!loadFlag;
+                    const flagBg=loadFlag==="important"?"#fee2e2":loadFlag==="reschedule"?"#fef9c3":undefined;
+                    const flagBorder=loadFlag==="important"?"#ef4444":loadFlag==="reschedule"?"#d97706":"#e2e8f0";
+                    const flagFg=loadFlag==="important"?"#991b1b":loadFlag==="reschedule"?"#92400e":"#94a3b8";
+                    const flagBtnBg=loadFlag==="important"?"#fca5a5":loadFlag==="reschedule"?"#fbbf24":"transparent";
+                    const pickerKey=group.id+":"+load.id;
                     return(
-                      <div key={load.id} style={{display:"grid",gridTemplateColumns:gColTpl,gap:"0",padding:"5px 9px",alignItems:"center",fontSize:"12px",borderBottom:li<(group.loads.length-1)?"1px solid #cbd5e1":"none",background:flagged?"#fef9c3":undefined}}>
+                      <div key={load.id} style={{display:"grid",gridTemplateColumns:gColTpl,gap:"0",padding:"5px 9px",alignItems:"center",fontSize:"12px",borderBottom:li<(group.loads.length-1)?"1px solid #cbd5e1":"none",background:flagBg}}>
                         <span style={{...cellBase,padding:"0",borderRight:"1px solid #e2e8f0",display:"flex",alignItems:"center",gap:"3px",justifyContent:"flex-start"}}>
                           <span style={{fontSize:"10px",fontWeight:"700",color:"#64748b",background:"#fff",border:"1px solid #e2e8f0",borderRadius:"3px",padding:"0 4px"}}>{li+1}</span>
-                          {isAdmin&&<button onClick={e=>{e.stopPropagation();toggleLoadReschedule(group.id,load.id);}}
-                            title={flagged?"Clear reschedule flag for this load":"Flag this load as needing a new appointment"}
-                            style={{background:flagged?"#fbbf24":"transparent",color:flagged?"#92400e":"#94a3b8",border:`1px solid ${flagged?"#d97706":"#e2e8f0"}`,borderRadius:"3px",padding:"0 4px",fontSize:"10px",fontWeight:"700",cursor:"pointer",lineHeight:"1.4"}}>⏳</button>}
+                          {isAdmin&&<button onClick={e=>openFlagPicker(e,group.id,load.id)}
+                            title="Click to set flag (Waiting new appt / Important / Clear)"
+                            style={{background:flagBtnBg,color:flagFg,border:`1px solid ${flagBorder}`,borderRadius:"3px",padding:"0 4px",fontSize:"10px",fontWeight:"700",cursor:"pointer",lineHeight:"1.4"}}>⏳</button>}
                         </span>
                         <span style={cellLeft} title={(sr.s||"")+" → "+(sr.r||"")}>
                           {sr.s&&<span>{sr.s}</span>}
@@ -4201,7 +4397,12 @@ ${accRows.length>0?`
                         <span style={cellLeft}>
                           {liveShort?<span title={liveTk.address+" — "+liveAgo(liveTk.asOf)} style={{fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 5px",borderRadius:"3px",cursor:"help",whiteSpace:"nowrap"}}>📍 {liveShort}</span>:<span>—</span>}
                         </span>
-                        <span style={{...cellBase,fontSize:"10px",fontWeight:"700",color:rc.tc||"#1f2937",background:rc.barBg||"transparent",padding:"1px 5px",borderRadius:"3px",justifySelf:"start",border:rc.barBg?"none":"1px solid #e2e8f0",borderRight:rc.barBg?"none":"1px solid #cbd5e1"}}>{load.status||"—"}</span>
+                        {/* Status cell with optional per-load urgency badge above it.
+                            Urgency hides automatically when localTruck/localDriver is set. */}
+                        <span style={{...cellBase,padding:"0 4px",display:"flex",flexDirection:"column",alignItems:"flex-start",justifyContent:"center",gap:"1px",lineHeight:"1.1"}}>
+                          {(()=>{const u=loadUrgency(load);return u?<span style={{fontSize:"8px",fontWeight:"800",color:"#fff",background:u.color,padding:"1px 4px",borderRadius:"2px",letterSpacing:".02em"}}>{u.label}</span>:null;})()}
+                          <span style={{fontSize:"10px",fontWeight:"700",color:rc.tc||"#1f2937",background:rc.barBg||"transparent",padding:"1px 5px",borderRadius:"3px",border:rc.barBg?"none":"1px solid #e2e8f0"}}>{load.status||"—"}</span>
+                        </span>
                         <span style={{borderRight:"none"}}/>
                       </div>
                     );
@@ -4250,7 +4451,15 @@ ${accRows.length>0?`
                     </span>
                   )}
                   <span style={{background:"#2563eb",padding:"1px 8px",borderRadius:"4px",fontWeight:"700",flexShrink:0}}>T{gi+1}</span>
-                  {groupHasFlaggedLoad(group)&&<span title="One or more loads in this trailer need a new appointment" style={{fontSize:"10px",fontWeight:"700",color:"#92400e",background:"#fef3c7",border:"1px solid #fcd34d",padding:"1px 7px",borderRadius:"4px",flexShrink:0,cursor:"help"}}>⏳</span>}
+                  {(()=>{
+                    if(!groupHasFlaggedLoad(group))return null;
+                    const hasImportant=groupHasImportantLoad(group);
+                    const tip=hasImportant?"One or more loads in this trailer marked Important":"One or more loads in this trailer need a new appointment";
+                    const bg=hasImportant?"#fee2e2":"#fef3c7";
+                    const fg=hasImportant?"#991b1b":"#92400e";
+                    const bd=hasImportant?"#ef4444":"#fcd34d";
+                    return <span title={tip} style={{fontSize:"10px",fontWeight:"700",color:fg,background:bg,border:`1px solid ${bd}`,padding:"1px 7px",borderRadius:"4px",flexShrink:0,cursor:"help"}}>⏳</span>;
+                  })()}
                   {urgTag&&<span style={{fontSize:"10px",fontWeight:"800",color:"#fff",background:urgColor,padding:"2px 8px",borderRadius:"4px",flexShrink:0,letterSpacing:".02em"}}>{urgTag}</span>}
                   {/* In compact mode, this group is temporarily expanded — show a collapse button */}
                   {plannedView==="compact"&&isExpandedInCompact&&<button onClick={()=>setExpandedCompactGroup(null)} title="Collapse back to compact row" style={{background:"rgba(148,163,184,.25)",color:"#cbd5e1",border:"1px solid rgba(148,163,184,.4)",borderRadius:"4px",padding:"1px 8px",fontSize:"9px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>← Collapse</button>}
@@ -4381,7 +4590,10 @@ ${accRows.length>0?`
                   const otrDriver=group.groupDriver||"";
                   const localDriver=load.driver||"";
 
-                  const flagged=isLoadFlagged(load,group);
+                  const loadFlag=getLoadFlag(load,group);
+                  const flagged=!!loadFlag;
+                  const cardRowBg=loadFlag==="important"?"#fee2e2":loadFlag==="reschedule"?"#fef9c3":isExp?"#eff6ff":li%2===0?"#fff":"#f8fafc";
+                  const cardRowBorder=isExp?"3px solid #3b82f6":loadFlag==="important"?"3px solid #ef4444":loadFlag==="reschedule"?"3px solid #eab308":"3px solid transparent";
 
                   return(
                     <Fragment key={load.id}>
@@ -4392,7 +4604,7 @@ ${accRows.length>0?`
                         onDragOver={e=>{if(!dragLoad.current)return;e.preventDefault();e.currentTarget.style.boxShadow="inset 0 -3px 0 #3b82f6";}}
                         onDragLeave={e=>{e.currentTarget.style.boxShadow="";}}
                         onDrop={e=>{e.preventDefault();e.currentTarget.style.boxShadow="";if(!dragLoad.current||!isAdmin)return;const dl=dragLoad.current;dragLoad.current=null;moveLoad(dl.fromGroupId,group.id,dl.loadId,li);}}
-                        style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 130px 55px 65px 78px 22px 22px",gap:"10px",padding:"7px 12px",alignItems:"center",fontSize:"12px",background:flagged?"#fef9c3":isExp?"#eff6ff":li%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #e5edf5",cursor:"pointer",transition:"background .1s",borderLeft:isExp?"3px solid #3b82f6":flagged?"3px solid #eab308":"3px solid transparent"}}
+                        style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 130px 55px 65px 78px 22px 22px",gap:"10px",padding:"7px 12px",alignItems:"center",fontSize:"12px",background:cardRowBg,borderBottom:"1px solid #e5edf5",cursor:"pointer",transition:"background .1s",borderLeft:cardRowBorder}}
                       >
                         {/* Stop dot */}
                         <div style={{width:"18px",height:"18px",borderRadius:"50%",background:dupLoadIds.has(load.id)?"#fbcfe8":isExp?"#bfdbfe":isAdmin?"#c7d2fe":"#e2e8f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"10px",fontWeight:"700",color:dupLoadIds.has(load.id)?"#9d174d":isExp?"#1e40af":isAdmin?"#4338ca":"#64748b",flexShrink:0,cursor:isAdmin?"grab":"default",userSelect:"none"}} draggable={isAdmin} onDragStart={e=>{if(!isAdmin)return;e.stopPropagation();dragLoad.current={loadId:load.id,fromGroupId:group.id};dragGroupIdx.current=null;e.dataTransfer.effectAllowed="move";const row=e.currentTarget.closest("[id='load-"+load.id+"']");if(row){row.style.opacity="0.5";row.style.outline="2px solid #3b82f6";}}} onDragEnd={e=>{e.stopPropagation();const row=document.getElementById("load-"+load.id);if(row){row.style.opacity="1";row.style.outline="";}dragLoad.current=null;dragGroupIdx.current=null;}} title={dupLoadIds.has(load.id)?"⚠ Possible duplicate — matches another load this week":"Drag to combine with another trailer"}>{load.stop||li+1}</div>
@@ -4557,23 +4769,32 @@ ${accRows.length>0?`
                           )}
                         </div>
 
-                        {/* STATUS badge — click to expand for editing */}
-                        <div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
-                          <select value={load.status||""} onChange={e=>{setLoad(group.id,load.id,"status",e.target.value);trackField("status");}} style={{position:"absolute",inset:0,opacity:0,cursor:isAdmin?"pointer":"default",width:"100%",height:"100%",zIndex:2}} disabled={!isAdmin}>
-                            <option value="">— Not set —</option>{LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}
-                          </select>
-                          <span style={{display:"inline-flex",alignItems:"center",gap:"4px",fontSize:"10px",fontWeight:"700",padding:"3px 7px",borderRadius:"4px",background:sp.bg,color:sp.c,border:`1.5px solid ${sp.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}>
-                            <span style={{width:"6px",height:"6px",borderRadius:"50%",background:sp.bd,flexShrink:0}}/>
-                            {effectiveSt||"Not set"}
-                          </span>
+                        {/* STATUS badge — click to expand for editing. Per-load urgency
+                            badge (PU TODAY / TOMORROW) stacks above when relevant. */}
+                        <div style={{position:"relative",display:"flex",flexDirection:"column",alignItems:"center",gap:"2px"}} onClick={e=>e.stopPropagation()}>
+                          {(()=>{const u=loadUrgency(load);return u?<span style={{fontSize:"8px",fontWeight:"800",color:"#fff",background:u.color,padding:"1px 5px",borderRadius:"3px",letterSpacing:".02em",pointerEvents:"none"}}>{u.label}</span>:null;})()}
+                          <div style={{position:"relative",width:"100%",textAlign:"center"}}>
+                            <select value={load.status||""} onChange={e=>{setLoad(group.id,load.id,"status",e.target.value);trackField("status");}} style={{position:"absolute",inset:0,opacity:0,cursor:isAdmin?"pointer":"default",width:"100%",height:"100%",zIndex:2}} disabled={!isAdmin}>
+                              <option value="">— Not set —</option>{LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}
+                            </select>
+                            <span style={{display:"inline-flex",alignItems:"center",gap:"4px",fontSize:"10px",fontWeight:"700",padding:"3px 7px",borderRadius:"4px",background:sp.bg,color:sp.c,border:`1.5px solid ${sp.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}>
+                              <span style={{width:"6px",height:"6px",borderRadius:"50%",background:sp.bd,flexShrink:0}}/>
+                              {effectiveSt||"Not set"}
+                            </span>
+                          </div>
                         </div>
 
-                        {/* ⏳ Per-load reschedule toggle — admin only */}
-                        {isAdmin?(
-                          <button onClick={e=>{e.stopPropagation();toggleLoadReschedule(group.id,load.id);}}
-                            title={flagged?"Clear reschedule flag for this load":"Flag this load as needing a new appointment"}
-                            style={{background:flagged?"#fbbf24":"transparent",color:flagged?"#92400e":"#cbd5e1",border:`1px solid ${flagged?"#d97706":"transparent"}`,borderRadius:"4px",padding:"1px 4px",fontSize:"12px",cursor:"pointer",lineHeight:1}}>⏳</button>
-                        ):<span/>}
+                        {/* ⏳ Per-load flag picker — admin only. Opens a popup with options. */}
+                        {isAdmin?(()=>{
+                          const btnBg=loadFlag==="important"?"#fca5a5":loadFlag==="reschedule"?"#fbbf24":"transparent";
+                          const btnFg=loadFlag==="important"?"#991b1b":loadFlag==="reschedule"?"#92400e":"#cbd5e1";
+                          const btnBorder=loadFlag==="important"?"#ef4444":loadFlag==="reschedule"?"#d97706":"transparent";
+                          return(
+                            <button onClick={e=>openFlagPicker(e,group.id,load.id)}
+                              title="Click to set flag (Waiting new appt / Important / Clear)"
+                              style={{background:btnBg,color:btnFg,border:`1px solid ${btnBorder}`,borderRadius:"4px",padding:"1px 4px",fontSize:"12px",cursor:"pointer",lineHeight:1}}>⏳</button>
+                          );
+                        })():<span/>}
 
                         {/* Expand arrow */}
                         <span style={{textAlign:"center",fontSize:"13px",color:"#94a3b8",display:"inline-block",transition:"transform .15s",transform:isExp?"rotate(180deg)":"rotate(0deg)"}}>▾</span>
