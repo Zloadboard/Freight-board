@@ -1244,6 +1244,28 @@ function rjwFormatTime(s) {
   return h12 + ":" + String(mm).padStart(2, "0") + ap;
 }
 
+// Normalizes a time string to 4-digit military "HHMM". Handles both
+// the old RJW format ("1800", "0002") and the newer AM/PM format
+// ("06:00PM", "12:02AM"). Returns null if it can't parse.
+function rjwNormalizeTime(s) {
+  if (s == null) return null;
+  const str = String(s).trim();
+  // AM/PM: "06:00PM", "6:00 PM", "12:02AM"
+  let m = str.match(/^(\d{1,2}):(\d{2})\s*([AP])M$/i);
+  if (m) {
+    let h = parseInt(m[1], 10);
+    const mn = m[2];
+    const isPM = m[3].toUpperCase() === "P";
+    if (isPM && h < 12) h += 12;
+    if (!isPM && h === 12) h = 0;
+    return String(h).padStart(2, "0") + mn;
+  }
+  // Military 3-4 digit: "1800", "0002", "600"
+  m = str.match(/^(\d{3,4})$/);
+  if (m) return m[1].padStart(4, "0");
+  return null;
+}
+
 // Parse a single PU/SP/SO block from the LOAD DETAILS section.
 // Extracts city/state and the date window (start + end). The datetime
 // string is kept in the PDF's exact format: "MM/DD/YYYY HHMM - HHMM"
@@ -1253,12 +1275,14 @@ function parseRJWStopBlock(content) {
   const cityM = content.match(/\b([A-Z][A-Z .\-&]*?[A-Z])\s+([A-Z]{2})\s+(\d{5})\b/);
   if (!cityM) return null;
 
-  // Pull every "<MM/DD/YYYY> <HHMM>" pair in this block — windows have two.
-  const dtRe = /(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{3,4})\b/g;
+  // Pull every "<MM/DD/YYYY> <time>" pair in this block — windows have two.
+  // Time can be military ("1800", "0002") or AM/PM ("06:00PM", "12:02AM").
+  const dtRe = /(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2}\s*[AP]M|\d{3,4})\b/gi;
   const dts = [];
   let dm;
   while ((dm = dtRe.exec(content)) !== null) {
-    dts.push({ date: dm[1], time: dm[2].padStart(4, "0") });
+    const t = rjwNormalizeTime(dm[2]);
+    if (t) dts.push({ date: dm[1], time: t });
   }
 
   const stop = {
@@ -1311,19 +1335,25 @@ function parseRJW(rawText) {
     // City State pattern within the summary — bounded so we only match valid pairs
     // e.g. "Pickup City: LOCKPORT IL    Scheduled Pickup: ..."
     const puCity = summary.match(/Pickup\s+City:\s*([A-Z][A-Z .\-&]*?)\s+([A-Z]{2})(?=\s|$)/i);
-    const puDt   = summary.match(/Scheduled\s+Pickup:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{3,4})/i);
+    const puDt   = summary.match(/Scheduled\s+Pickup:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2}\s*[AP]M|\d{3,4})\b/i);
     if (puCity || puDt) {
       result.pickup = {};
       if (puCity) result.pickup.location = rjwCapitalizeCity(puCity[1]) + ", " + puCity[2];
-      if (puDt)   result.pickup.datetime = rjwFormatDate(puDt[1]) + " " + rjwFormatTime(puDt[2]);
+      if (puDt) {
+        const t = rjwNormalizeTime(puDt[2]);
+        if (t) result.pickup.datetime = rjwFormatDate(puDt[1]) + " " + rjwFormatTime(t);
+      }
     }
 
     const dCity = summary.match(/Delivery\s+City:\s*([A-Z][A-Z .\-&]*?)\s+([A-Z]{2})(?=\s|$)/i);
-    const dDt   = summary.match(/Scheduled\s+Delivery:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{3,4})/i);
+    const dDt   = summary.match(/Scheduled\s+Delivery:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2}\s*[AP]M|\d{3,4})\b/i);
     if (dCity || dDt) {
       result.delivery = {};
       if (dCity) result.delivery.location = rjwCapitalizeCity(dCity[1]) + ", " + dCity[2];
-      if (dDt)   result.delivery.datetime = rjwFormatDate(dDt[1]) + " " + rjwFormatTime(dDt[2]);
+      if (dDt) {
+        const t = rjwNormalizeTime(dDt[2]);
+        if (t) result.delivery.datetime = rjwFormatDate(dDt[1]) + " " + rjwFormatTime(t);
+      }
     }
 
     const payM = summary.match(/Total\s+Carrier\s+Pay:\s*\$?\s*([\d,]+(?:\.\d+)?)/i);
