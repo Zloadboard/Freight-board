@@ -1383,6 +1383,15 @@ function App(){
   const[insightsTab,setInsightsTab]=useState("shippers");
   // Which shipper row is currently expanded in the directory (null = all collapsed)
   const[expandedShipper,setExpandedShipper]=useState(null);
+  // Search filter for the Shipper Directory (lowercase substring match)
+  const[shipperSearch,setShipperSearch]=useState("");
+  // Manual shipper-address entry popup. null = closed, else {gid, lid} of the load
+  // being edited. When user submits, we also prompt to apply to other loads with
+  // the same shipper city that are missing an address.
+  const[addrEntryFor,setAddrEntryFor]=useState(null);
+  // Transient toast notifications (parser-miss alerts, etc.). Each toast =
+  // {id, kind:"addr-miss", gid, lid, msg}. Auto-dismissed via timeout.
+  const[toasts,setToasts]=useState([]);
   // Which load's flag-picker popup is currently open (null = none).
   // Stored as "gid:lid" so we can find the anchor on next render.
   // Which load's flag-picker popup is currently open. Stores the load identity AND
@@ -1992,6 +2001,17 @@ function App(){
     const newLoad=mkLoad({...fields,rateConUploading:true});
     setWeeksAndSave(p=>p.map((w,i)=>i!==activeWeek?w:{...w,groups:w.groups.map(g=>g.id!==groupId?g:{...g,loads:[...g.loads,newLoad]})}));
     setRcLoading(p=>({...p,[groupId]:false}));
+
+    // ---- 4b. If the parser missed the shipper address, fire a toast so the user
+    // can fix it without hunting for the load. The toast clicks open the manual
+    // entry popup pointed at the same load.
+    if(!fields.shipperAddr||String(fields.shipperAddr).trim()===""){
+      const sCity=(()=>{const{s}=parseSR(fields.sr||"");return s||"this load";})();
+      const tId="addrmiss-"+newLoad.id;
+      setToasts(t=>[...t,{id:tId,kind:"addr-miss",gid:groupId,lid:newLoad.id,msg:"Couldn't read shipper address for "+sCity+". Click to enter manually."}]);
+      // Auto-dismiss after 12s if not clicked
+      setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==tId)),12000);
+    }
 
     // ---- 5. Kick off Drive upload in the background (non-blocking) ----
     uploadRateConToDrive(file,groupId,newLoad.id);
@@ -2696,6 +2716,55 @@ ${accRows.length>0?`
   // 'important' trailers outrank 'reschedule' trailers.
   // Backward compat: legacy boolean `needsReschedule:true` on a load OR group
   // is interpreted as flag='reschedule' until the user touches it.
+  // Save a manually-entered shipper address to one load, then offer to apply it
+  // to other loads in the same shipper city that ALSO have no address. This is
+  // the one-time-tedium workaround: enter the address once, fill 8 other loads
+  // automatically. The "same city" check uses the load's parsed pickup city — the
+  // most stable signal we have for matching shippers.
+  //
+  // Scope: live weeks only (not archived). Archived weeks are historical record;
+  // editing them invites confusion. If the user genuinely wants the address on
+  // archived loads, they'd need to unarchive first.
+  const saveManualShipperAddr=(gid,lid,address)=>{
+    const trimmed=String(address||"").trim();
+    if(!trimmed){setAddrEntryFor(null);return;}
+    // Identify the shipper city of THIS load so we can find siblings
+    const targetGroup=week.groups.find(g=>g.id===gid);
+    const targetLoad=targetGroup&&targetGroup.loads.find(l=>l.id===lid);
+    if(!targetLoad){setAddrEntryFor(null);return;}
+    const{s:sCity}=parseSR(targetLoad.sr||"");
+    const normCity=(sCity||"").trim().toLowerCase();
+    // Count siblings: loads in any LIVE week with the same shipper city, missing address
+    let siblingCount=0;
+    weeks.forEach(w=>(w.groups||[]).forEach(g=>(g.loads||[]).forEach(l=>{
+      if(g.id===gid&&l.id===lid)return; // skip the load we're editing
+      if(l.shipperAddr&&String(l.shipperAddr).trim())return; // already has address
+      const{s:lsCity}=parseSR(l.sr||"");
+      if(!lsCity||!normCity)return;
+      if(lsCity.trim().toLowerCase()===normCity)siblingCount++;
+    })));
+    // Save to the target load first
+    const applyToTarget=ws=>ws.map(w=>({...w,groups:(w.groups||[]).map(g=>g.id!==gid?g:{...g,loads:(g.loads||[]).map(l=>l.id!==lid?l:{...l,shipperAddr:trimmed})})}));
+    // Helper to ALSO apply to all matching siblings in live weeks
+    const applyToAll=ws=>ws.map(w=>({...w,groups:(w.groups||[]).map(g=>({...g,loads:(g.loads||[]).map(l=>{
+      if(l.id===lid&&g.id===gid)return{...l,shipperAddr:trimmed};
+      if(l.shipperAddr&&String(l.shipperAddr).trim())return l;
+      const{s:lsCity}=parseSR(l.sr||"");
+      if(!lsCity||!normCity)return l;
+      if(lsCity.trim().toLowerCase()===normCity)return{...l,shipperAddr:trimmed};
+      return l;
+    })}))}));
+    if(siblingCount>0){
+      const yes=confirm("Apply this address to "+siblingCount+" other "+sCity+" load"+(siblingCount===1?"":"s")+" that "+(siblingCount===1?"is":"are")+" also missing an address?\n\nClick OK to apply broadly, Cancel to save only this one.");
+      setWeeksAndSave(yes?applyToAll:applyToTarget);
+    } else {
+      setWeeksAndSave(applyToTarget);
+    }
+    // Close popup, dismiss any addr-miss toast for this load
+    setAddrEntryFor(null);
+    setToasts(t=>t.filter(x=>!(x.kind==="addr-miss"&&x.gid===gid&&x.lid===lid)));
+  };
+
   const setLoadFlag=(gid,lid,flag)=>{
     // flag: 'reschedule' | 'important' | null (clear)
     setW("groups",week.groups.map(g=>{
@@ -3026,6 +3095,61 @@ ${accRows.length>0?`
 
     {/* ── FLAG PICKER OVERLAY — floats above everything when a load's ⏳ is open ── */}
     {renderFlagPickerOverlay()}
+
+    {/* ── TOAST NOTIFICATIONS — bottom-right stack. Click to act, × to dismiss ── */}
+    {toasts.length>0&&(
+      <div style={{position:"fixed",bottom:"20px",right:"20px",zIndex:9998,display:"flex",flexDirection:"column",gap:"8px",maxWidth:"360px"}}>
+        {toasts.map(t=>(
+          <div key={t.id} onClick={()=>{
+            if(t.kind==="addr-miss"){setAddrEntryFor({gid:t.gid,lid:t.lid});}
+            setToasts(prev=>prev.filter(x=>x.id!==t.id));
+          }}
+            style={{background:"#fff",border:"1px solid #fcd34d",borderLeft:"4px solid #f59e0b",borderRadius:"8px",padding:"10px 12px",boxShadow:"0 4px 12px rgba(0,0,0,.15)",cursor:"pointer",display:"flex",alignItems:"flex-start",gap:"10px"}}>
+            <span style={{fontSize:"18px",lineHeight:1,flexShrink:0}}>⚠️</span>
+            <div style={{flex:1,fontSize:"12px",color:"#451a03",lineHeight:"1.4"}}>{t.msg}</div>
+            <button onClick={e=>{e.stopPropagation();setToasts(prev=>prev.filter(x=>x.id!==t.id));}}
+              style={{background:"none",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:"14px",padding:"0 2px",lineHeight:1,flexShrink:0}}>×</button>
+          </div>
+        ))}
+      </div>
+    )}
+
+    {/* ── MANUAL ADDRESS ENTRY MODAL ── */}
+    {addrEntryFor&&(()=>{
+      const g=week.groups.find(g=>g.id===addrEntryFor.gid);
+      const l=g&&g.loads.find(l=>l.id===addrEntryFor.lid);
+      if(!l){setAddrEntryFor(null);return null;}
+      const{s:sCity}=parseSR(l.sr||"");
+      return(
+        <div onClick={()=>setAddrEntryFor(null)}
+          style={{position:"fixed",inset:0,background:"rgba(15,31,61,.45)",zIndex:9997,display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}}>
+          <div onClick={e=>e.stopPropagation()}
+            style={{background:"#fff",borderRadius:"10px",boxShadow:"0 12px 36px rgba(0,0,0,.3)",padding:"18px 20px",maxWidth:"440px",width:"100%"}}>
+            <div style={{fontSize:"14px",fontWeight:"800",color:"#0f1f3d",marginBottom:"4px"}}>Enter shipper address</div>
+            <div style={{fontSize:"11px",color:"#64748b",marginBottom:"12px",lineHeight:"1.4"}}>
+              <strong>{sCity||"(unknown city)"}</strong>{l.broker?<> · {l.broker}</>:null}
+            </div>
+            <input
+              autoFocus
+              type="text"
+              defaultValue={l.shipperAddr||""}
+              placeholder="e.g. 1208 N SCHMIDT RD"
+              onKeyDown={e=>{
+                if(e.key==="Enter"){saveManualShipperAddr(addrEntryFor.gid,addrEntryFor.lid,e.currentTarget.value);}
+                else if(e.key==="Escape"){setAddrEntryFor(null);}
+              }}
+              id="manualAddrInput"
+              style={{width:"100%",padding:"10px 12px",border:"2px solid #cbd5e1",borderRadius:"6px",fontSize:"14px",fontFamily:"inherit",outline:"none",marginBottom:"12px"}}
+            />
+            <div style={{display:"flex",justifyContent:"flex-end",gap:"8px"}}>
+              <button onClick={()=>setAddrEntryFor(null)} style={{background:"#f1f5f9",color:"#475569",border:"1px solid #cbd5e1",borderRadius:"6px",padding:"7px 14px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Cancel</button>
+              <button onClick={()=>{const v=document.getElementById("manualAddrInput")?.value||"";saveManualShipperAddr(addrEntryFor.gid,addrEntryFor.lid,v);}}
+                style={{background:"#059669",color:"#fff",border:"none",borderRadius:"6px",padding:"7px 14px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Save</button>
+            </div>
+          </div>
+        </div>
+      );
+    })()}
 
     {/* ── LOAD DETAIL PANEL ── */}
     {loadDetailId&&<DetailErrorBoundary onClose={()=>setLoadDetailId(null)}><LoadDetailPanel
@@ -4614,7 +4738,11 @@ ${accRows.length>0?`
                           {isAdmin?(<>
                             <div style={{display:"flex",alignItems:"center",gap:"3px",minWidth:0}}>
                               <input key={load.id+"s"} defaultValue={srP.s} onBlur={e=>{const v=e.target.value;if(v!==srP.s){setLoad(group.id,load.id,"sr",v+" - "+parseSR(load.sr||"").r);trackField("sr");}}} onClick={e=>e.stopPropagation()} style={{flex:1,minWidth:0,border:"none",background:"transparent",fontSize:"10px",color:"#94a3b8",padding:0,outline:"none",fontFamily:"inherit",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} placeholder="Shipper"/>
-                              {load.shipperAddr&&<span title={load.shipperAddr+(load.shipperCo?" — "+load.shipperCo:"")} style={{fontSize:"9px",color:"#059669",cursor:"help",flexShrink:0,opacity:.6}}>📍</span>}
+                              {load.shipperAddr
+                                ?<span title={load.shipperAddr+(load.shipperCo?" — "+load.shipperCo:"")} style={{fontSize:"9px",color:"#059669",cursor:"help",flexShrink:0,opacity:.6}}>📍</span>
+                                :<button onClick={e=>{e.stopPropagation();setAddrEntryFor({gid:group.id,lid:load.id});}}
+                                  title="Shipper address missing — click to enter manually"
+                                  style={{fontSize:"9px",color:"#b45309",background:"#fef3c7",border:"1px solid #fcd34d",borderRadius:"3px",padding:"0 4px",cursor:"pointer",fontWeight:"700",lineHeight:1.3,flexShrink:0}}>⚠️</button>}
                             </div>
                             <div style={{display:"flex",alignItems:"center",gap:"3px",minWidth:0}}>
                               <input key={load.id+"r"} defaultValue={srP.r} onBlur={e=>{const v=e.target.value;if(v!==srP.r){setLoad(group.id,load.id,"sr",parseSR(load.sr||"").s+" - "+v);trackField("sr");}}} onClick={e=>e.stopPropagation()} style={{flex:1,minWidth:0,border:"none",background:"transparent",fontSize:"12px",fontWeight:"600",color:"#0f1f3d",padding:0,outline:"none",fontFamily:"inherit",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} placeholder="Receiver"/>
@@ -6159,7 +6287,9 @@ ${accRows.length>0?`
           // Key = shipper street address (primary) — falls back to "City, ST (no address)" when missing.
           // Combined = trailer with 2+ loads. Single = trailer with 1 load.
           const shippers={};
-          allTimeWeeks.forEach(w=>{
+          allTimeWeeks.forEach((w,wIdx)=>{
+            // Live week = first `weeks.length` entries; the rest are archived
+            const isLive=wIdx<weeks.length;
             (w.groups||[]).forEach(g=>{
               const isCombined=(g.loads||[]).length>=2;
               (g.loads||[]).forEach(l=>{
@@ -6179,7 +6309,8 @@ ${accRows.length>0?`
                     totalRate:0,
                     pallets:[],
                     receiverStates:{},
-                    hasAddress:!!addr
+                    hasAddress:!!addr,
+                    members:[]  // {gid, lid, broker, pickup, rate, isLive} — used by no-addr buckets
                   };
                 }
                 const s=shippers[key];
@@ -6192,16 +6323,45 @@ ${accRows.length>0?`
                 const rState=(sr.r||"").split(",").map(x=>x.trim()).pop();
                 if(rState&&rState.length===2){s.receiverStates[rState]=(s.receiverStates[rState]||0)+1;}
                 if(!s.company&&l.shipperCo)s.company=l.shipperCo;
+                s.members.push({gid:g.id,lid:l.id,broker:l.broker||"",pickup:l.pickup||"",rate:rate,isLive,weekLabel:w.label||""});
               });
             });
           });
-          const list=Object.entries(shippers).sort((a,b)=>b[1].totalLoads-a[1].totalLoads);
-          if(!list.length)return(<div style={{padding:"40px 20px",textAlign:"center",color:"#94a3b8",fontSize:"13px"}}>No shipper data yet. Drop rate-cons onto loads to start tracking.</div>);
+          const fullList=Object.entries(shippers).sort((a,b)=>b[1].totalLoads-a[1].totalLoads);
+          if(!fullList.length)return(<div style={{padding:"40px 20px",textAlign:"center",color:"#94a3b8",fontSize:"13px"}}>No shipper data yet. Drop rate-cons onto loads to start tracking.</div>);
+          // Live filter — matches address, city, or company name (case-insensitive substring)
+          const searchTerm=shipperSearch.trim().toLowerCase();
+          const list=searchTerm
+            ? fullList.filter(([key,s])=>{
+                if(key.toLowerCase().includes(searchTerm))return true;
+                if(s.addr&&s.addr.toLowerCase().includes(searchTerm))return true;
+                if(s.city&&s.city.toLowerCase().includes(searchTerm))return true;
+                if(s.company&&s.company.toLowerCase().includes(searchTerm))return true;
+                return false;
+              })
+            : fullList;
           return(
             <div style={{padding:"20px"}}>
-              <div style={{fontSize:"12px",color:"#64748b",marginBottom:"16px"}}>
-                <strong>{list.length}</strong> unique shipper{list.length===1?"":"s"} across <strong>{list.reduce((s,[,v])=>s+v.totalLoads,0)}</strong> loads.
-                Combined loads earn revenue, single-stop loads do not.
+              {/* Search + summary line */}
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"12px",marginBottom:"16px",flexWrap:"wrap"}}>
+                <div style={{position:"relative",flex:"1 1 240px",maxWidth:"380px"}}>
+                  <input
+                    type="text"
+                    value={shipperSearch}
+                    onChange={e=>setShipperSearch(e.target.value)}
+                    placeholder="🔍 Search by address, city, or company..."
+                    style={{width:"100%",padding:"8px 32px 8px 12px",border:"1px solid #cbd5e1",borderRadius:"6px",fontSize:"12px",fontFamily:"inherit",outline:"none"}}
+                  />
+                  {shipperSearch&&<button onClick={()=>setShipperSearch("")}
+                    title="Clear search"
+                    style={{position:"absolute",right:"6px",top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:"14px",padding:"0 4px",lineHeight:1}}>×</button>}
+                </div>
+                <div style={{fontSize:"12px",color:"#64748b"}}>
+                  {searchTerm
+                    ? <><strong>{list.length}</strong> of <strong>{fullList.length}</strong> shipper{fullList.length===1?"":"s"} match</>
+                    : <><strong>{fullList.length}</strong> unique shipper{fullList.length===1?"":"s"} across <strong>{fullList.reduce((s,[,v])=>s+v.totalLoads,0)}</strong> loads</>
+                  }
+                </div>
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:"4px"}}>
                 {/* Column header for the collapsed rows */}
@@ -6212,6 +6372,7 @@ ${accRows.length>0?`
                   <span style={{textAlign:"center"}}>Combine %</span>
                   <span/>
                 </div>
+                {list.length===0&&(<div style={{padding:"30px",textAlign:"center",color:"#94a3b8",fontSize:"12px"}}>No shippers match "{shipperSearch}"</div>)}
                 {list.map(([key,s])=>{
                   const total=s.totalLoads;
                   const combinePct=total>0?Math.round(s.combined/total*100):0;
@@ -6250,6 +6411,30 @@ ${accRows.length>0?`
                       {/* EXPANDED DETAIL */}
                       {isExp&&(
                         <div style={{padding:"12px 14px 14px",borderTop:"1px solid #e2e8f0",background:"#fafbfc"}}>
+                          {/* No-address bucket: show member loads with fill buttons.
+                              Editing only allowed on live-week loads. */}
+                          {!s.hasAddress&&(
+                            <div style={{marginBottom:"12px",background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:"6px",padding:"10px 12px"}}>
+                              <div style={{fontSize:"11px",fontWeight:"700",color:"#92400e",marginBottom:"8px"}}>
+                                ⚠️ {s.members.length} load{s.members.length===1?"":"s"} in this group {s.members.length===1?"is":"are"} missing a shipper address.
+                              </div>
+                              <div style={{display:"flex",flexDirection:"column",gap:"4px",maxHeight:"200px",overflowY:"auto"}}>
+                                {s.members.map((m,mi)=>(
+                                  <div key={mi} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px",background:"#fff",border:"1px solid #fde68a",borderRadius:"4px",padding:"5px 8px",fontSize:"11px"}}>
+                                    <div style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                      <span style={{fontWeight:"600",color:"#0f1f3d"}}>{m.broker||"(no broker)"}</span>
+                                      {m.pickup&&<span style={{color:"#64748b",marginLeft:"6px"}}>· PU {m.pickup}</span>}
+                                      {!m.isLive&&<span style={{marginLeft:"6px",fontSize:"9px",color:"#94a3b8",fontWeight:"700"}}>(archived)</span>}
+                                    </div>
+                                    {m.isLive
+                                      ?<button onClick={e=>{e.stopPropagation();setAddrEntryFor({gid:m.gid,lid:m.lid});}}
+                                        style={{background:"#059669",color:"#fff",border:"none",borderRadius:"4px",padding:"3px 9px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>+ Add address</button>
+                                      :<span style={{fontSize:"9px",color:"#94a3b8",fontStyle:"italic",flexShrink:0}}>not editable</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                           {/* Pallet distribution */}
                           {pallets.length>0&&(
                             <div style={{marginBottom:"12px"}}>
