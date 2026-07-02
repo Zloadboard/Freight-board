@@ -136,6 +136,10 @@ function cityMiles(s){
 }
 const TIERS=[[10,200],[25,250],[50,300],[75,350],[100,400],[125,500],[150,550],[175,600],[200,650],[225,700]];
 function localCharge(m){if(m==null||m==="")return null;const v=parseFloat(m);if(isNaN(v)||v<0)return null;if(v===0)return 200;for(const[mx,c]of TIERS)if(v<=mx)return c;return 700;}
+// Local-only drivers — used by Dashboard, Payroll, and other stats to exclude
+// local drivers from OTR-focused calculations. Module-scoped so every consumer
+// sees the same source of truth.
+const LOCAL_DRV=new Set(["Linas Greiciunas","Theron Mack","John Johnson","Douglas Russo","Emilis Ibianskas","Egidijus Matulis","Oleh Lashkevych"]);
 function parsePickupDate(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return null;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);d.setHours(0,0,0,0);return d;}
 function parseTS(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return Infinity;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);if(tm){let h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}else{d.setHours(0,0,0,0);}return d.getTime();}
 function parseSR(t=""){const i=t.indexOf(" - ");return i<0?{s:t.trim(),r:""}:{s:t.slice(0,i).trim(),r:t.slice(i+3).trim()};}
@@ -1381,6 +1385,25 @@ function App(){
   const[expandedCompactGroup,setExpandedCompactGroup]=useState(null);
   // Insights page tabs: "shippers" | "brokers" | "receivers"
   const[insightsTab,setInsightsTab]=useState("shippers");
+  // PAYROLL — which week index in allTimeWeeks we're viewing (null = default to current)
+  const[payrollWeekIdx,setPayrollWeekIdx]=useState(null);
+  // Manual per-dispatcher overrides: {[weekId]: {[dispName]: {amount, note}}}
+  const[payrollOverrides,setPayrollOverrides]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_payroll_ov")||"{}");}catch{return{};}});
+  const savePayrollOverrides=(next)=>{setPayrollOverrides(next);try{localStorage.setItem("fcbv2_payroll_ov",JSON.stringify(next));}catch{}};
+  // Which dispatcher card is expanded (name string, or null)
+  const[expandedPayrollDisp,setExpandedPayrollDisp]=useState(null);
+  // Main Board imports — parsed HTML exports keyed by their week label (e.g. "06_29_2026-07_05_2026").
+  // Structure per week: {label, importedAt, dispatchers:[{name, drivers:[{name, truck, phone, gross}]}]}
+  // Persists to localStorage so the user only re-imports when new data comes in.
+  const[mainBoards,setMainBoards]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_mainboards")||"{}");}catch{return{};}});
+  const saveMainBoards=(next)=>{setMainBoards(next);try{localStorage.setItem("fcbv2_mainboards",JSON.stringify(next));}catch{}};
+  // Track which imported Main Board is currently selected (label key). Null = auto-pick most recent.
+  const[selectedMainBoardKey,setSelectedMainBoardKey]=useState(null);
+  // Zygis identification — matches the dispatcher whose name contains "zygis" (case-insensitive)
+  const zygisDispatcherName=useMemo(()=>{
+    const z=(dispatchers||[]).find(d=>String(d.name||"").toLowerCase().includes("zygis"));
+    return z?z.name:"Zygis";
+  },[dispatchers]);
   // Which shipper row is currently expanded in the directory (null = all collapsed)
   const[expandedShipper,setExpandedShipper]=useState(null);
   // Search filter for the Shipper Directory (lowercase substring match)
@@ -2211,6 +2234,232 @@ function App(){
   // performance?". Archiving a week must NEVER erase its contribution to history.
   // For editing/saving/active operations, keep using `weeks` (live only).
   const allTimeWeeks=React.useMemo(()=>[...weeks,...archivedWeeks],[weeks,archivedWeeks]);
+
+  // ─── MAIN BOARD PARSER ───────────────────────────────────────────────────
+  // Parses a Google Sheets HTML export of the weekly Main Board and extracts
+  // per-dispatcher, per-driver data. Structure of the sheet (constants that
+  // apply for the OTR sections we care about):
+  //
+  //   - One <table> containing all rows for the week
+  //   - Dispatcher sections are stacked vertically
+  //   - Each section is 8-11 drivers × 4 rows each (name+truck, phone, MILES, GROSS)
+  //   - Section ends with a summary row: "Dispatcher | $RPM | Gross: | $totalGross | /truck | ..."
+  //   - Local section starts around row 393 (after the last OTR section)
+  //   - We ONLY read OTR sections. Locals are ignored per user spec.
+  //
+  // We do NOT hardcode row numbers because they may vary. Instead we walk the
+  // rows and use structural signals: summary rows terminate a section; driver
+  // header rows have a numeric position index in col 1 (1-11).
+  const parseMainBoardHTML=(htmlText)=>{
+    const parser=new DOMParser();
+    const doc=parser.parseFromString(htmlText,"text/html");
+    const table=doc.querySelector("table");
+    if(!table)return{ok:false,error:"No <table> found in the HTML. Is this a Google Sheets export?"};
+    // Turn table into a 2D grid of trimmed cell text
+    const trs=Array.from(table.querySelectorAll("tr"));
+    const grid=trs.map(tr=>Array.from(tr.querySelectorAll("td,th")).map(td=>(td.textContent||"").trim()));
+    // Identify summary rows: contain "Gross:" AND "/truck". The cell BEFORE "$RPM" is the dispatcher name.
+    // Row format: [rowNum, dispName, "$RPM", "Gross:", "$totalGross", "/truck", ...]
+    const summaryIdxs=[];
+    grid.forEach((row,i)=>{
+      const rt=row.join(" ");
+      if(rt.includes("Gross:")&&rt.includes("/truck")){
+        // Skip the Zygis/Laura LOCALS summary — we don't process locals
+        if(rt.toLowerCase().includes("zygis/laura"))return;
+        // Skip the master totals row if any
+        summaryIdxs.push(i);
+      }
+    });
+    if(!summaryIdxs.length)return{ok:false,error:"No dispatcher summary rows found. Sheet layout may have changed."};
+    // Sections span from previous section end (or top) to just before current summary
+    const sections=[];
+    let prevEnd=0;
+    summaryIdxs.forEach(sumIdx=>{
+      const row=grid[sumIdx];
+      // Find dispatcher name — it's the first cell after the row-number that isn't blank
+      // and isn't a $ figure. Usually col 1 or 2.
+      let dispName="";
+      for(let c=1;c<row.length;c++){
+        const v=row[c];
+        if(!v)continue;
+        if(v.startsWith("$"))continue;
+        if(/^Gross:$|^\/truck$|^miles$/i.test(v))continue;
+        // Skip pure numbers
+        if(/^-?\d[\d,]*(\.\d+)?$/.test(v))continue;
+        dispName=v;
+        break;
+      }
+      if(!dispName){prevEnd=sumIdx+1;return;}
+      // Skip local section entirely — its summary is Zygis/Laura, which we already excluded above.
+      // But we also want to skip if we've already crossed into the local section area.
+      // Heuristic: locals have very different structure (single-column load rows). If most rows
+      // in the range look like "Broker & 12345" style, skip. Simpler: skip anything after row 380.
+      if(sumIdx>=500){prevEnd=sumIdx+1;return;}
+      sections.push({dispName,startRow:prevEnd,endRow:sumIdx-1,summaryRow:sumIdx});
+      prevEnd=sumIdx+1;
+    });
+    // For each section, walk 4-row driver blocks and pull name/truck/phone/gross
+    const dispatchersOut=[];
+    sections.forEach(sec=>{
+      const drivers=[];
+      let i=sec.startRow;
+      while(i<=sec.endRow-3){ // need at least 4 rows for a driver block
+        const r1=grid[i]||[];  // driver header: # | # | name+co | truck# | day1 pickup | ...
+        const r2=grid[i+1]||[]; // phone + deliveries
+        const r3=grid[i+2]||[]; // "MILES" + total + per-day
+        const r4=grid[i+3]||[]; // "GROSS" + total + per-day
+        // A driver block starts when col 1 is a small integer (driver slot 1-11) AND col 3 is MILES-like row below
+        const isDriverHeader=r1[1]&&/^\d{1,2}$/.test(r1[1])&&r3[1]==="MILES"&&r4[1]==="GROSS";
+        if(!isDriverHeader){i++;continue;}
+        // Extract driver info
+        const rawName=(r1[2]||"").replace(/\*+\s*Co[- ]?driver.*/i,"").replace(/\*+/g,"").trim();
+        const truck=(r1[3]||"").trim();
+        const phone=(r2[2]||"").trim();
+        // Gross = col 2 of GROSS row, format "$1,234" or "$1,234.56"
+        const grossStr=(r4[2]||"").replace(/[$,\s]/g,"");
+        const gross=parseFloat(grossStr);
+        // Skip empty driver slots (no name, no gross)
+        if(rawName&&isFinite(gross)&&gross>0){
+          drivers.push({name:rawName,truck,phone,gross:Math.round(gross)});
+        }
+        i+=4;
+      }
+      if(drivers.length>0){
+        dispatchersOut.push({name:sec.dispName,drivers});
+      }
+    });
+    if(!dispatchersOut.length)return{ok:false,error:"Parsed the file but found no drivers with gross > 0."};
+    // Try to detect the week label from filename or first row
+    // Detect the week's date range from the top of the sheet. The Main Board has
+    // date cells for Monday through Sunday in row 2 (or thereabouts). We collect
+    // ALL dates from the first 10 rows, sort chronologically, and take the first
+    // (Monday) and last (Sunday) — these form the canonical week key and label.
+    const parseSheetDate=(s)=>{
+      const m=s.match(/(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
+      if(!m)return null;
+      const mm=parseInt(m[1],10),dd=parseInt(m[2],10),yy=parseInt(m[3],10);
+      if(mm<1||mm>12||dd<1||dd>31)return null;
+      return new Date(yy,mm-1,dd);
+    };
+    const foundDates=new Set();
+    for(let r=0;r<Math.min(10,grid.length);r++){
+      for(const cell of (grid[r]||[])){
+        const d=parseSheetDate(cell);
+        if(d)foundDates.add(d.getTime());
+      }
+    }
+    const sortedDates=Array.from(foundDates).sort((a,b)=>a-b).map(t=>new Date(t));
+    let weekKey="",weekLabel="";
+    if(sortedDates.length>0){
+      const mon=sortedDates[0];
+      const sun=sortedDates.length>=2?sortedDates[sortedDates.length-1]:mon;
+      const fmt=d=>(d.getMonth()+1)+"-"+d.getDate()+"-"+d.getFullYear();
+      // weekKey = ISO-like format of Monday date, used to detect same-week uploads
+      // even when filenames differ (browser adds "(1)", user renames, etc.)
+      weekKey=mon.getFullYear()+"-"+String(mon.getMonth()+1).padStart(2,"0")+"-"+String(mon.getDate()).padStart(2,"0");
+      // weekLabel = human-friendly "6-29-2026 → 7-5-2026"
+      weekLabel=fmt(mon)+" → "+fmt(sun);
+    }
+    return{ok:true,weekKey,weekLabel,dispatchers:dispatchersOut};
+  };
+
+  // Bonus tier lookup: NET gross → dollar bonus. Rounds DOWN to nearest $1k.
+  // Caps at $600 for $20k+.
+  const bonusForGross=(netGross)=>{
+    if(netGross<8000)return{amount:0,tier:0};
+    const tier=Math.min(Math.floor(netGross/1000),20);
+    const table={8:50,9:75,10:100,11:150,12:200,13:250,14:300,15:350,16:400,17:450,18:500,19:550,20:600};
+    return{amount:table[tier]||0,tier:tier*1000};
+  };
+
+  // Payroll calculator. Main Board is source of truth for dispatchers/drivers/gross.
+  // Freight Board is used ONLY for the Zygis 10%-on-combined-trailers piece, since
+  // that requires knowing which trailers had 2+ loads.
+  const computePayroll=(mainBoardData,freightWeek)=>{
+    if(!mainBoardData||!mainBoardData.dispatchers||!mainBoardData.dispatchers.length){
+      return{dispatchers:[],combinedTrailers:[]};
+    }
+    // Pre-compute Zygis combined trailers from Freight Board (used only for Zygis's slice).
+    // MUST match the Dashboard's `extraAdded` formula exactly so the two numbers
+    // always reconcile: Dashboard extraAdded × 10% = Zygis's 10% payroll.
+    // Formula: every trailer with 2+ loads counts (no delivery-status filter),
+    // sort loads by rate desc, drop top, sum the rest, take 10%.
+    const combinedTrailers=[];
+    if(freightWeek&&(freightWeek.groups||[]).length){
+      (freightWeek.groups||[]).forEach(g=>{
+        const loads=g.loads||[];
+        if(loads.length<2)return;
+        combinedTrailers.push({
+          gid:g.id,
+          groupDriver:g.groupDriver||"",
+          loads:loads.map(l=>({id:l.id,rate:parseFloat(l.rate)||0,broker:l.broker||"",sr:l.sr||""}))
+        });
+      });
+    }
+    const results=[];
+    mainBoardData.dispatchers.forEach(disp=>{
+      const isZygis=String(disp.name).toLowerCase().includes("zygis");
+      const activeDrivers=disp.drivers.filter(d=>d.gross>0);
+      const driverCount=activeDrivers.length;
+      // Base compensation
+      let base=0,baseNote="";
+      if(isZygis){
+        base=200*driverCount;
+        baseNote=`$200 × ${driverCount} driver${driverCount===1?"":"s"}`;
+      } else {
+        base=1500;
+        baseNote="$1,500 flat (up to 8 drivers)";
+        if(driverCount>8){
+          const over=driverCount-8;
+          base+=over*200;
+          baseNote=`$1,500 base + $200 × ${over} driver${over===1?"":"s"} over 8`;
+        }
+      }
+      // 10% combined trailers — Zygis only
+      const ten={total:0,trailers:[]};
+      if(isZygis){
+        combinedTrailers.forEach(t=>{
+          const sorted=t.loads.slice().sort((a,b)=>b.rate-a.rate);
+          const dropped=sorted[0];
+          const contributing=sorted.slice(1);
+          const share=contributing.reduce((s,l)=>s+l.rate,0)*0.10;
+          ten.trailers.push({gid:t.gid,groupDriver:t.groupDriver,dropped,contributing,share:Math.round(share*100)/100});
+          ten.total+=share;
+        });
+        ten.total=Math.round(ten.total*100)/100;
+      }
+      // Per-driver bonuses — Main Board gross is already NET, use as-is
+      const driversWithBonuses=activeDrivers.map(d=>{
+        const b=bonusForGross(d.gross);
+        return{...d,bonus:b.amount,tier:b.tier};
+      }).sort((a,b)=>b.gross-a.gross);
+      const bonusTotal=driversWithBonuses.reduce((s,d)=>s+d.bonus,0);
+      const computed=base+ten.total+bonusTotal;
+      // Manual override — keyed by freight week id (or "noweek" if none)
+      const ovKey=freightWeek?.id||"noweek";
+      const ov=payrollOverrides[ovKey]?.[disp.name];
+      const total=ov&&ov.amount!==""&&ov.amount!=null?parseFloat(ov.amount):computed;
+      results.push({
+        name:disp.name,
+        isZygis,
+        driverCount,
+        drivers:driversWithBonuses,
+        base,baseNote,
+        combinedTenPercent:ten,
+        bonusTotal,
+        computed:Math.round(computed*100)/100,
+        override:ov||null,
+        total:Math.round(total*100)/100
+      });
+    });
+    // Sort: Zygis first, others by total desc
+    results.sort((a,b)=>{
+      if(a.isZygis&&!b.isZygis)return -1;
+      if(!a.isZygis&&b.isZygis)return 1;
+      return b.total-a.total;
+    });
+    return{dispatchers:results,combinedTrailers};
+  };
   const computed=useMemo(()=>(week?.groups||[]).map(calcGroup),[week?.groups]);
   const allLoads=computed.flatMap(g=>g.loads);
   const totGross=computed.reduce((s,g)=>s+g.gross,0);
@@ -3788,6 +4037,7 @@ ${accRows.length>0?`
             {isAdmin&&<button className={"hdr-menu-item"+(activeTab==="archive"?" active":"")} style={{color:activeTab==="archive"?"#4c1d95":"#374151",background:activeTab==="archive"?"#faf5ff":"transparent"}} onClick={()=>{setActiveTab("archive");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📦</span>Archive{archivedWeeks.length>0 ? <span style={{marginLeft:"auto",fontSize:"9px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 6px",borderRadius:"10px"}}>{archivedWeeks.length}</span> : null}</button>}
             {(isAdmin||isDispatcher)&&<button className={"hdr-menu-item"+(activeTab==="stats"?" active":"")} style={{color:activeTab==="stats"?"#b45309":"#374151",background:activeTab==="stats"?"#fffbeb":"transparent"}} onClick={()=>{setActiveTab("stats");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📊</span>Stats</button>}
             {isAdmin&&<button className={"hdr-menu-item"+(activeTab==="insights"?" active":"")} style={{color:activeTab==="insights"?"#0891b2":"#374151",background:activeTab==="insights"?"#ecfeff":"transparent"}} onClick={()=>{setActiveTab("insights");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🧠</span>Insights</button>}
+            {isAdmin&&<button className={"hdr-menu-item"+(activeTab==="payroll"?" active":"")} style={{color:activeTab==="payroll"?"#059669":"#374151",background:activeTab==="payroll"?"#f0fdf4":"transparent"}} onClick={()=>{setActiveTab("payroll");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>💰</span>Payroll</button>}
             {!isAdmin&&isDispatcher ? <button className={"hdr-menu-item"+(activeTab==="weeks"?" active":"")} style={{color:activeTab==="weeks"?"#2563eb":"#374151",background:activeTab==="weeks"?"#eff6ff":"transparent"}} onClick={()=>{setActiveTab("weeks");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📅</span>Weekly Boards</button> : null}
 
             <div className="hdr-menu-divider"/>
@@ -6617,6 +6867,324 @@ ${accRows.length>0?`
       </div>
     )}
 
+
+    {/* ═══ PAYROLL TAB ═══ */}
+    {activeTab==="payroll"&&isAdmin&&(
+      <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
+        {(()=>{
+          // Pick which Main Board import to use. Sort newest week first — prefers
+          // the parsed weekKey (ISO date "2026-06-29"); falls back to importedAt
+          // for entries created before we tracked weekKey.
+          const boardKeys=Object.keys(mainBoards).sort((a,b)=>{
+            const ka=mainBoards[a].weekKey||mainBoards[a].importedAt||a;
+            const kb=mainBoards[b].weekKey||mainBoards[b].importedAt||b;
+            return kb.localeCompare(ka); // desc
+          });
+          const activeBoardKey=selectedMainBoardKey||boardKeys[0]||null;
+          const activeBoard=activeBoardKey?mainBoards[activeBoardKey]:null;
+          // Match a Freight Board week for Zygis 10% math. Best-effort match by week label.
+          const freightWeekForBoard=activeBoard
+            ?(allTimeWeeks.find(w=>{
+              if(!w.label||!activeBoard.label)return false;
+              // Both contain date strings — try substring match
+              const wLabel=String(w.label).replace(/[_\s]/g,"-").toLowerCase();
+              const bLabel=String(activeBoard.label).replace(/[_\s]/g,"-").toLowerCase();
+              return wLabel.includes(bLabel.split("-").slice(0,3).join("-"))
+                  || bLabel.includes(wLabel.split("-").slice(0,3).join("-"));
+            })||weeks[0])
+            :weeks[0];
+          const payroll=activeBoard?computePayroll(activeBoard,freightWeekForBoard):{dispatchers:[],combinedTrailers:[]};
+          const grandTotal=payroll.dispatchers.reduce((s,d)=>s+d.total,0);
+          const zygisEntry=payroll.dispatchers.find(d=>d.isZygis);
+
+          // File-drop handler for Main Board HTML import
+          const handleMainBoardImport=async(files)=>{
+            for(const file of files){
+              if(!file.name.endsWith(".html")&&!file.name.endsWith(".htm")){
+                alert("Please upload a .html or .htm file (Google Sheets export).");
+                continue;
+              }
+              const text=await file.text();
+              const parsed=parseMainBoardHTML(text);
+              if(!parsed.ok){
+                alert("Failed to parse "+file.name+":\n"+parsed.error);
+                continue;
+              }
+              // Key = parsed weekKey (e.g. "2026-06-29" for Monday of that week).
+              // Falls back to filename if the parser couldn't find dates in the sheet.
+              // Label = human-friendly range like "6-29-2026 → 7-5-2026".
+              const key=parsed.weekKey||file.name.replace(/\.html?$/i,"")||"unlabeled-"+Date.now();
+              const label=parsed.weekLabel||file.name.replace(/\.html?$/i,"")||"unlabeled";
+              const existing=mainBoards[key];
+              const next={...mainBoards,[key]:{
+                label,
+                weekKey:key,
+                originalFilename:file.name,
+                importedAt:new Date().toISOString(),
+                previousImportAt:existing?existing.importedAt:null,
+                importCount:(existing?.importCount||0)+1,
+                dispatchers:parsed.dispatchers
+              }};
+              saveMainBoards(next);
+              setSelectedMainBoardKey(key);
+            }
+          };
+
+          return(<>
+            {/* Header */}
+            <div style={{marginBottom:"18px"}}>
+              <div style={{fontSize:"20px",fontWeight:"800",color:"#0f1f3d"}}>💰 Payroll</div>
+              <div style={{fontSize:"12px",color:"#64748b",marginTop:"3px"}}>
+                Source: Main Board weekly export. Zygis 10% pulled from Freight Board for the matched week.
+              </div>
+            </div>
+
+            {/* Import + Board selector */}
+            <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:"10px",marginBottom:"18px",padding:"12px",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"8px"}}>
+              <label style={{background:"#059669",color:"#fff",padding:"8px 14px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer",display:"inline-flex",alignItems:"center",gap:"6px"}}>
+                <input type="file" accept=".html,.htm" multiple style={{display:"none"}}
+                  onChange={e=>{if(e.target.files&&e.target.files.length){handleMainBoardImport(Array.from(e.target.files));e.target.value="";}}}/>
+                📥 Import Main Board (HTML)
+              </label>
+              {boardKeys.length>0&&(
+                <>
+                  <span style={{fontSize:"11px",color:"#64748b",fontWeight:"700"}}>Active week:</span>
+                  <select value={activeBoardKey||""} onChange={e=>setSelectedMainBoardKey(e.target.value)}
+                    style={{padding:"6px 10px",border:"1px solid #cbd5e1",borderRadius:"5px",fontSize:"12px",fontFamily:"inherit",background:"#fff",cursor:"pointer",flex:"0 1 340px"}}>
+                    {boardKeys.map(k=>(<option key={k} value={k}>{mainBoards[k].label}</option>))}
+                  </select>
+                  {activeBoard&&(
+                    <button onClick={()=>{
+                      if(!confirm("Remove this Main Board import?"))return;
+                      const next={...mainBoards};delete next[activeBoardKey];saveMainBoards(next);
+                      setSelectedMainBoardKey(null);
+                    }}
+                      style={{background:"#fee2e2",color:"#991b1b",border:"1px solid #fca5a5",borderRadius:"5px",padding:"5px 10px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>Remove</button>
+                  )}
+                </>
+              )}
+              {activeBoard&&(
+                <span style={{fontSize:"10px",color:"#94a3b8",marginLeft:"auto"}}>
+                  Imported {new Date(activeBoard.importedAt).toLocaleString()}
+                  {activeBoard.importCount>1&&<span> · <strong>refresh #{activeBoard.importCount}</strong></span>}
+                  {" · "}{activeBoard.dispatchers.length} dispatchers · {activeBoard.dispatchers.reduce((s,d)=>s+d.drivers.length,0)} drivers
+                </span>
+              )}
+            </div>
+
+            {/* No board loaded */}
+            {!activeBoard&&(
+              <div style={{padding:"60px 20px",textAlign:"center",background:"#f8fafc",border:"2px dashed #cbd5e1",borderRadius:"10px"}}>
+                <div style={{fontSize:"40px",marginBottom:"10px"}}>📊</div>
+                <div style={{fontSize:"14px",fontWeight:"700",color:"#0f1f3d",marginBottom:"6px"}}>No Main Board imported yet</div>
+                <div style={{fontSize:"12px",color:"#64748b",maxWidth:"420px",margin:"0 auto",lineHeight:"1.5"}}>
+                  From Google Sheets: File → Download → Web Page (.html). Then click the green "Import Main Board" button above.
+                </div>
+              </div>
+            )}
+
+            {/* Grand totals */}
+            {activeBoard&&(
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:"12px",marginBottom:"20px"}}>
+                {zygisEntry&&(
+                  <div style={{background:"linear-gradient(135deg,#059669,#047857)",color:"#fff",padding:"14px 16px",borderRadius:"8px",boxShadow:"0 2px 6px rgba(5,150,105,.25)"}}>
+                    <div style={{fontSize:"10px",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",opacity:.9}}>Your payroll</div>
+                    <div style={{fontSize:"26px",fontWeight:"800",marginTop:"2px"}}>${zygisEntry.total.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                    <div style={{fontSize:"10px",opacity:.85,marginTop:"2px"}}>{zygisEntry.driverCount} driver{zygisEntry.driverCount===1?"":"s"} · {zygisEntry.combinedTenPercent.trailers.length} combined trailer{zygisEntry.combinedTenPercent.trailers.length===1?"":"s"}</div>
+                  </div>
+                )}
+                <div style={{background:"#f8fafc",border:"1px solid #e2e8f0",padding:"14px 16px",borderRadius:"8px"}}>
+                  <div style={{fontSize:"10px",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",color:"#64748b"}}>All dispatchers</div>
+                  <div style={{fontSize:"26px",fontWeight:"800",color:"#0f1f3d",marginTop:"2px"}}>${grandTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                  <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>{payroll.dispatchers.length} dispatcher{payroll.dispatchers.length===1?"":"s"} · {payroll.dispatchers.reduce((s,d)=>s+d.driverCount,0)} driver{payroll.dispatchers.reduce((s,d)=>s+d.driverCount,0)===1?"":"s"}</div>
+                </div>
+                <div style={{background:"#f8fafc",border:"1px solid #e2e8f0",padding:"14px 16px",borderRadius:"8px"}}>
+                  <div style={{fontSize:"10px",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",color:"#64748b"}}>Bonus pool</div>
+                  <div style={{fontSize:"26px",fontWeight:"800",color:"#0f1f3d",marginTop:"2px"}}>${payroll.dispatchers.reduce((s,d)=>s+d.bonusTotal,0).toLocaleString()}</div>
+                  <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>drivers ≥$8k gross earn bonus</div>
+                </div>
+              </div>
+            )}
+
+            {/* Freight Board week match indicator (for Zygis 10%) */}
+            {activeBoard&&(
+              <div style={{marginBottom:"14px",padding:"8px 12px",background:freightWeekForBoard?"#f0fdf4":"#fef3c7",border:`1px solid ${freightWeekForBoard?"#bbf7d0":"#fcd34d"}`,borderRadius:"6px",fontSize:"11px",color:freightWeekForBoard?"#166534":"#92400e"}}>
+                <strong>Zygis 10% source:</strong>{" "}
+                {freightWeekForBoard
+                  ?<>Freight Board week <strong>{freightWeekForBoard.label||"(unlabeled)"}</strong> matched — {payroll.combinedTrailers.length} combined trailer{payroll.combinedTrailers.length===1?"":"s"} found</>
+                  :<>No matching Freight Board week found. Zygis 10% shown as $0 until a matching week exists in Freight Board.</>}
+              </div>
+            )}
+
+            {/* Per-dispatcher breakdowns */}
+            {activeBoard&&payroll.dispatchers.length===0&&(
+              <div style={{padding:"40px 20px",textAlign:"center",color:"#94a3b8",fontSize:"13px"}}>
+                Main Board parsed but no dispatchers found. Check the file structure.
+              </div>
+            )}
+            {activeBoard&&payroll.dispatchers.length>0&&(
+              <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
+                {payroll.dispatchers.map(disp=>{
+                  const isExp=expandedPayrollDisp===disp.name;
+                  return(
+                    <div key={disp.name} style={{background:"#fff",border:"1px solid #e2e8f0",borderLeft:disp.isZygis?"4px solid #059669":"4px solid #64748b",borderRadius:"8px",overflow:"hidden"}}>
+                      {/* Collapsed header */}
+                      <div onClick={()=>setExpandedPayrollDisp(isExp?null:disp.name)}
+                        style={{display:"grid",gridTemplateColumns:"minmax(0,1.4fr) 80px 100px 100px 110px 24px",gap:"12px",padding:"12px 16px",alignItems:"center",cursor:"pointer",background:isExp?"#f8fafc":"transparent"}}>
+                        <div style={{minWidth:0}}>
+                          <div style={{fontSize:"14px",fontWeight:"800",color:disp.isZygis?"#059669":"#0f1f3d"}}>
+                            {disp.name}
+                            {disp.isZygis&&<span style={{marginLeft:"6px",fontSize:"9px",background:"#dcfce7",color:"#15803d",padding:"1px 6px",borderRadius:"3px",fontWeight:"700",letterSpacing:".04em"}}>YOU</span>}
+                          </div>
+                          <div style={{fontSize:"11px",color:"#64748b",marginTop:"2px"}}>{disp.driverCount} driver{disp.driverCount===1?"":"s"}</div>
+                        </div>
+                        <div style={{textAlign:"center"}}>
+                          <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase"}}>Base</div>
+                          <div style={{fontSize:"12px",fontWeight:"700",color:"#0f1f3d"}}>${disp.base.toLocaleString()}</div>
+                        </div>
+                        <div style={{textAlign:"center"}}>
+                          <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase"}}>10% Comb.</div>
+                          <div style={{fontSize:"12px",fontWeight:"700",color:disp.combinedTenPercent.total>0?"#059669":"#cbd5e1"}}>{disp.combinedTenPercent.total>0?"$"+disp.combinedTenPercent.total.toLocaleString(undefined,{maximumFractionDigits:2}):"—"}</div>
+                        </div>
+                        <div style={{textAlign:"center"}}>
+                          <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase"}}>Bonuses</div>
+                          <div style={{fontSize:"12px",fontWeight:"700",color:disp.bonusTotal>0?"#059669":"#cbd5e1"}}>{disp.bonusTotal>0?"$"+disp.bonusTotal.toLocaleString():"—"}</div>
+                        </div>
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase"}}>Total</div>
+                          <div style={{fontSize:"18px",fontWeight:"800",color:disp.isZygis?"#059669":"#0f1f3d"}}>${disp.total.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                          {disp.override&&<div style={{fontSize:"9px",color:"#b45309",fontWeight:"700"}}>OVERRIDE</div>}
+                        </div>
+                        <div style={{textAlign:"center",fontSize:"14px",color:"#94a3b8",transform:isExp?"rotate(180deg)":"rotate(0deg)"}}>▾</div>
+                      </div>
+                      {/* Expanded */}
+                      {isExp&&(
+                        <div style={{padding:"14px 16px",borderTop:"1px solid #e2e8f0",background:"#fafbfc"}}>
+                          <div style={{fontSize:"11px",color:"#475569",marginBottom:"10px"}}>
+                            <strong>Base:</strong> {disp.baseNote} = <span style={{color:"#0f1f3d",fontWeight:"700"}}>${disp.base.toLocaleString()}</span>
+                          </div>
+                          {/* 10% combined (Zygis only) */}
+                          {disp.isZygis&&disp.combinedTenPercent.trailers.length>0&&(
+                            <div style={{marginBottom:"12px"}}>
+                              <div style={{fontSize:"11px",fontWeight:"700",color:"#059669",marginBottom:"6px"}}>10% on combined trailers (from Freight Board)</div>
+                              {(()=>{
+                                // Sanity check: sum of all "contributing" rates ×10% should equal disp.combinedTenPercent.total
+                                // and should also equal the Dashboard's Extra Added × 10%.
+                                const extraAdded=disp.combinedTenPercent.trailers.reduce((s,t)=>s+t.contributing.reduce((x,l)=>x+l.rate,0),0);
+                                return(
+                                  <div style={{background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:"6px",padding:"6px 10px",marginBottom:"6px",fontSize:"11px",color:"#166534"}}>
+                                    10% × <strong>${extraAdded.toLocaleString()}</strong> Extra Added = <strong>${disp.combinedTenPercent.total.toLocaleString(undefined,{maximumFractionDigits:2})}</strong>
+                                    <div style={{fontSize:"9px",color:"#166534",opacity:.75,marginTop:"2px"}}>Reconciles with your Dashboard's "Extra Added" figure — if they differ, the Freight Board week may not match.</div>
+                                  </div>
+                                );
+                              })()}
+                              <div style={{background:"#fff",border:"1px solid #d1fae5",borderRadius:"6px",padding:"8px 10px"}}>
+                                {disp.combinedTenPercent.trailers.map((t,ti)=>(
+                                  <div key={ti} style={{borderBottom:ti<disp.combinedTenPercent.trailers.length-1?"1px solid #f1f5f9":"none",padding:"4px 0",fontSize:"11px"}}>
+                                    <div style={{display:"flex",justifyContent:"space-between",gap:"8px"}}>
+                                      <span style={{color:"#475569"}}>
+                                        <strong>{t.groupDriver||"(no driver)"}</strong> — {t.contributing.length+1} loads
+                                      </span>
+                                      <span style={{fontWeight:"700",color:"#059669"}}>+${t.share.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
+                                    </div>
+                                    <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>
+                                      Dropped top: ${t.dropped.rate.toLocaleString()} · 10% × ({t.contributing.map(l=>"$"+l.rate.toLocaleString()).join(" + ")})
+                                    </div>
+                                  </div>
+                                ))}
+                                <div style={{marginTop:"6px",paddingTop:"6px",borderTop:"2px solid #d1fae5",fontSize:"12px",fontWeight:"800",color:"#059669",textAlign:"right"}}>
+                                  Subtotal: ${disp.combinedTenPercent.total.toLocaleString(undefined,{maximumFractionDigits:2})}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                          {/* Per-driver bonus table */}
+                          <div style={{marginBottom:"12px"}}>
+                            <div style={{fontSize:"11px",fontWeight:"700",color:"#475569",marginBottom:"6px"}}>Per-driver gross + bonus (from Main Board)</div>
+                            <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"6px",overflow:"hidden"}}>
+                              <div style={{display:"grid",gridTemplateColumns:"minmax(0,1.5fr) 60px 100px 100px",gap:"8px",padding:"6px 10px",background:"#f8fafc",fontSize:"9px",fontWeight:"700",color:"#94a3b8",textTransform:"uppercase",letterSpacing:".04em",borderBottom:"1px solid #e2e8f0"}}>
+                                <span>Driver</span>
+                                <span style={{textAlign:"center"}}>Truck</span>
+                                <span style={{textAlign:"right"}}>Gross (net)</span>
+                                <span style={{textAlign:"right"}}>Bonus</span>
+                              </div>
+                              {disp.drivers.map((d,di)=>(
+                                <div key={di} style={{display:"grid",gridTemplateColumns:"minmax(0,1.5fr) 60px 100px 100px",gap:"8px",padding:"6px 10px",fontSize:"11px",borderBottom:di<disp.drivers.length-1?"1px solid #f1f5f9":"none",alignItems:"center"}}>
+                                  <div style={{minWidth:0,overflow:"hidden"}}>
+                                    <div style={{fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.name}</div>
+                                  </div>
+                                  <div style={{textAlign:"center",color:"#64748b",fontWeight:"600"}}>{d.truck||"—"}</div>
+                                  <div style={{textAlign:"right",fontWeight:"700",color:"#0f1f3d"}}>${d.gross.toLocaleString()}</div>
+                                  <div style={{textAlign:"right",fontWeight:"700",color:d.bonus>0?"#059669":"#cbd5e1"}}>{d.bonus>0?"$"+d.bonus:"—"}</div>
+                                </div>
+                              ))}
+                              <div style={{padding:"6px 10px",background:"#f8fafc",fontSize:"11px",fontWeight:"800",color:"#0f1f3d",textAlign:"right",borderTop:"2px solid #e2e8f0"}}>
+                                Bonus subtotal: <span style={{color:"#059669"}}>${disp.bonusTotal.toLocaleString()}</span>
+                              </div>
+                            </div>
+                          </div>
+                          {/* Override */}
+                          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"12px",paddingTop:"12px",borderTop:"1px solid #e2e8f0",flexWrap:"wrap"}}>
+                            <div style={{fontSize:"12px",color:"#64748b"}}>
+                              Computed: <span style={{fontWeight:"700",color:"#0f1f3d"}}>${disp.computed.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
+                            </div>
+                            <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                              <span style={{fontSize:"10px",fontWeight:"700",color:"#64748b",textTransform:"uppercase"}}>Override:</span>
+                              <input type="number" placeholder="—"
+                                defaultValue={disp.override?disp.override.amount:""}
+                                onBlur={e=>{
+                                  const v=e.target.value.trim();
+                                  const ovKey=freightWeekForBoard?.id||"noweek";
+                                  const next={...payrollOverrides};
+                                  if(!next[ovKey])next[ovKey]={};
+                                  if(v===""){delete next[ovKey][disp.name];if(Object.keys(next[ovKey]).length===0)delete next[ovKey];}
+                                  else next[ovKey][disp.name]={amount:v,note:(disp.override&&disp.override.note)||""};
+                                  savePayrollOverrides(next);
+                                }}
+                                style={{width:"100px",padding:"4px 8px",border:"1px solid #cbd5e1",borderRadius:"4px",fontSize:"12px",fontFamily:"inherit"}}/>
+                              <input type="text" placeholder="Note (optional)"
+                                defaultValue={disp.override?disp.override.note:""}
+                                onBlur={e=>{
+                                  if(!disp.override&&!e.target.value.trim())return;
+                                  const ovKey=freightWeekForBoard?.id||"noweek";
+                                  const next={...payrollOverrides};
+                                  if(!next[ovKey])next[ovKey]={};
+                                  if(!next[ovKey][disp.name])next[ovKey][disp.name]={amount:"",note:""};
+                                  next[ovKey][disp.name].note=e.target.value.trim();
+                                  savePayrollOverrides(next);
+                                }}
+                                style={{width:"160px",padding:"4px 8px",border:"1px solid #cbd5e1",borderRadius:"4px",fontSize:"12px",fontFamily:"inherit"}}/>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Copy summary */}
+            {activeBoard&&payroll.dispatchers.length>0&&(
+              <div style={{marginTop:"20px",display:"flex",justifyContent:"flex-end"}}>
+                <button onClick={()=>{
+                  const lines=[`Payroll — ${activeBoard.label}`,""];
+                  payroll.dispatchers.forEach(d=>{
+                    lines.push(`${d.name}${d.isZygis?" (YOU)":""}: $${d.total.toLocaleString(undefined,{maximumFractionDigits:2})}`);
+                    lines.push(`  ${d.driverCount} drivers · base $${d.base} + 10% $${d.combinedTenPercent.total.toFixed(2)} + bonuses $${d.bonusTotal}`);
+                    if(d.override)lines.push(`  OVERRIDE${d.override.note?": "+d.override.note:""}`);
+                    lines.push("");
+                  });
+                  lines.push(`Total: $${grandTotal.toLocaleString(undefined,{maximumFractionDigits:2})}`);
+                  navigator.clipboard.writeText(lines.join("\n")).then(()=>alert("Payroll summary copied to clipboard"));
+                }} style={{background:"#059669",color:"#fff",border:"none",borderRadius:"6px",padding:"8px 16px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>📋 Copy summary</button>
+              </div>
+            )}
+          </>);
+        })()}
+      </div>
+    )}
+
     {/* DASHBOARD TAB */}
     {activeTab==="dashboard"&&(
       <div style={{padding:"0",minHeight:"calc(100vh - 120px)",background:"#f0f4f8"}}>
@@ -6627,7 +7195,6 @@ ${accRows.length>0?`
           const safePrevIdx=Math.max(0,Math.min(resolvedPrevIdx,weeks.length-1));
           const curWk=weeks[safeCurIdx]||{groups:[],localDeliveries:[],accessorials:[]};
           const prevWk=weeks[safePrevIdx]||{groups:[],localDeliveries:[],accessorials:[]};
-          const LOCAL_DRV=new Set(["Linas Greiciunas","Theron Mack","John Johnson","Douglas Russo","Emilis Ibianskas","Egidijus Matulis","Oleh Lashkevych"]);
           const calcWk=(w)=>{
             const grps=w.groups||[];
             const loads=grps.flatMap(g=>g.loads||[]);
