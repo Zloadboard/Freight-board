@@ -155,6 +155,32 @@ function weekEndDate(label){
   return isNaN(d.getTime())?null:d;
 }
 
+// Extract {start,end} dates from a week label. Handles "6-22-2026 -> 6-28-2026",
+// "6.30.2026 - 7.6.2026", "06_22_2026-06_28_2026" etc. Uses the first date as start,
+// the last date as end. If only one date is present, start===end.
+function weekDateRange(label){
+  if(!label)return null;
+  var ms=String(label).match(/(\d{1,2})[\/._\-](\d{1,2})[\/._\-](\d{2,4})/g);
+  if(!ms||!ms.length)return null;
+  var toD=function(s){var p=s.match(/(\d{1,2})[\/._\-](\d{1,2})[\/._\-](\d{2,4})/);if(!p)return null;var yr=+p[3];if(yr<100)yr+=2000;var d=new Date(yr,+p[1]-1,+p[2]);d.setHours(0,0,0,0);return isNaN(d.getTime())?null:d;};
+  var start=toD(ms[0]),end=toD(ms[ms.length-1]);
+  if(!start||!end)return null;
+  if(end<start){var t=start;start=end;end=t;}
+  return {start:start,end:end};
+}
+
+// Given a Main Board week label and a list of Freight Board weeks, return every
+// Freight week whose date range OVERLAPS the board week. Overlap = start1<=end2 && start2<=end1.
+function freightWeeksOverlapping(boardLabel, freightWeeks){
+  var br=weekDateRange(boardLabel);
+  if(!br)return [];
+  return (freightWeeks||[]).filter(function(w){
+    var fr=weekDateRange(w&&w.label);
+    if(!fr)return false;
+    return br.start<=fr.end && fr.start<=br.end;
+  });
+}
+
 // Suggest a label for the week AFTER the given one, in the user's "M.D.YYYY - M.D.YYYY" style.
 // Starts the day after the last date in lastLabel; falls back to the upcoming Mon-Mon from today.
 function suggestNextWeekLabel(lastLabel){
@@ -1387,6 +1413,8 @@ function App(){
   const[insightsTab,setInsightsTab]=useState("shippers");
   // PAYROLL — which week index in allTimeWeeks we're viewing (null = default to current)
   const[payrollWeekIdx,setPayrollWeekIdx]=useState(null);
+  // Manual Freight-week pick per Main Board key when no date overlap is found: {[boardKey]: freightWeekId}
+  const[manualFreightKey,setManualFreightKey]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_manualfreight")||"{}");}catch{return{};}});
   // Manual per-dispatcher overrides: {[weekId]: {[dispName]: {amount, note}}}
   const[payrollOverrides,setPayrollOverrides]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_payroll_ov")||"{}");}catch{return{};}});
   const savePayrollOverrides=(next)=>{setPayrollOverrides(next);try{localStorage.setItem("fcbv2_payroll_ov",JSON.stringify(next));}catch{}};
@@ -2398,7 +2426,7 @@ function App(){
     }
     const results=[];
     mainBoardData.dispatchers.forEach(disp=>{
-      const isZygis=String(disp.name).toLowerCase().includes("zygis");
+      const isZygis=/(^|\b)(zygis|ziggy)(\b|$)/i.test(String(disp.name||"").trim());
       const activeDrivers=disp.drivers.filter(d=>d.gross>0);
       const driverCount=activeDrivers.length;
       // Base compensation
@@ -6882,17 +6910,24 @@ ${accRows.length>0?`
           });
           const activeBoardKey=selectedMainBoardKey||boardKeys[0]||null;
           const activeBoard=activeBoardKey?mainBoards[activeBoardKey]:null;
-          // Match a Freight Board week for Zygis 10% math. Best-effort match by week label.
-          const freightWeekForBoard=activeBoard
-            ?(allTimeWeeks.find(w=>{
-              if(!w.label||!activeBoard.label)return false;
-              // Both contain date strings — try substring match
-              const wLabel=String(w.label).replace(/[_\s]/g,"-").toLowerCase();
-              const bLabel=String(activeBoard.label).replace(/[_\s]/g,"-").toLowerCase();
-              return wLabel.includes(bLabel.split("-").slice(0,3).join("-"))
-                  || bLabel.includes(wLabel.split("-").slice(0,3).join("-"));
-            })||weeks[0])
-            :weeks[0];
+          // Match a Freight Board week for Zygis 10% math — by DATE-RANGE OVERLAP (not label substring).
+          const overlapping=activeBoard?freightWeeksOverlapping(activeBoard.label,allTimeWeeks):[];
+          let freightWeekForBoard=null;
+          if(overlapping.length===1){
+            freightWeekForBoard=overlapping[0];
+          }else if(overlapping.length>1){
+            // Pick the one with the greatest overlap span with the board week.
+            const br=weekDateRange(activeBoard.label);
+            freightWeekForBoard=overlapping.slice().sort((a,b)=>{
+              const ra=weekDateRange(a.label),rb=weekDateRange(b.label);
+              const ov=r=>Math.max(0,Math.min(br.end,r.end)-Math.max(br.start,r.start));
+              return ov(rb)-ov(ra);
+            })[0];
+          }else if(activeBoard){
+            // No date overlap — honor a manual pick for this board, else leave null (shows $0 + picker).
+            const mk=manualFreightKey[activeBoardKey];
+            if(mk)freightWeekForBoard=allTimeWeeks.find(w=>w.id===mk)||null;
+          }
           const payroll=activeBoard?computePayroll(activeBoard,freightWeekForBoard):{dispatchers:[],combinedTrailers:[]};
           const grandTotal=payroll.dispatchers.reduce((s,d)=>s+d.total,0);
           const zygisEntry=payroll.dispatchers.find(d=>d.isZygis);
@@ -7012,7 +7047,11 @@ ${accRows.length>0?`
                 <strong>Zygis 10% source:</strong>{" "}
                 {freightWeekForBoard
                   ?<>Freight Board week <strong>{freightWeekForBoard.label||"(unlabeled)"}</strong> matched — {payroll.combinedTrailers.length} combined trailer{payroll.combinedTrailers.length===1?"":"s"} found</>
-                  :<>No matching Freight Board week found. Zygis 10% shown as $0 until a matching week exists in Freight Board.</>}
+                  :<>No Freight Board week overlaps these dates. Zygis 10% is $0 until you pick one:{" "}
+                    <select value={manualFreightKey[activeBoardKey]||""} onChange={e=>{const v=e.target.value;setManualFreightKey(prev=>{const n={...prev};if(v)n[activeBoardKey]=v;else delete n[activeBoardKey];localStorage.setItem("fcbv2_manualfreight",JSON.stringify(n));return n;});}} style={{fontSize:"11px",padding:"2px 6px",border:"1px solid #fcd34d",borderRadius:"4px",marginLeft:"4px"}}>
+                      <option value="">— pick Freight week —</option>
+                      {allTimeWeeks.map(w=><option key={w.id} value={w.id}>{w.label||"(unlabeled)"}</option>)}
+                    </select></>}
               </div>
             )}
 
