@@ -135,6 +135,8 @@
   }
   .clb-card:hover { box-shadow: 0 4px 14px rgba(15,23,42,.08); }
   .clb-card--delivered { opacity: .62; }
+  .clb-card--canceled  { opacity: .58; }
+  .clb-card--canceled .clb-card__lane { text-decoration: line-through; }
   .clb-card--unclaimed {
     background: #fef2f2;
     border-left: 3px solid #ef4444;
@@ -487,6 +489,29 @@
     color: #64748b; font-size: 14px;
   }
 
+  /* ---- Reconnecting banner: shown when the backend is unreachable but
+     we still have a cached snapshot to display read-only. ---- */
+  .clb-reconnect {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #f59e0b;
+    border-radius: 8px;
+    padding: 9px 14px;
+    margin: 10px 0;
+    font-size: 13px;
+    font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .clb-reconnect__dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #f59e0b;
+    animation: clb-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes clb-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: .3; }
+  }
+
   /* ---- Modal ---- */
   .clb-modal-bg {
     position: fixed; inset: 0;
@@ -708,7 +733,8 @@ const { useState, useEffect, useRef, useMemo, useCallback } = React;
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxDDf6EUF1VwZe_wn5qNUrS_2J_0EADhF_3bfAfn--3uvBLEASNiKNufe4HLETNelHa/exec";
 
 const STORAGE = {
-  session: "fcbc_session"
+  session: "fcbc_session",
+  cache:   "fcbc_cache"
 };
 
 // Admin passcode. Viewers need no code; admins enter this to unlock
@@ -729,7 +755,7 @@ const TRUCK_NUMBERS = ["13","15","29","029","407","408","414","422","432","444",
 // This is a read; we never write to the freight board from here.
 const FREIGHT_BOARD_URL = "https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec";
 
-const STATUSES = ["Need to Drop","OTR Pickup","Dropped at shipper","Ready at shipper","Yard","Enroute to Delivery","Delivered"];
+const STATUSES = ["Need to Drop","OTR Pickup","Dropped at shipper","Ready at shipper","Yard","Enroute to Delivery","Delivered","Canceled"];
 
 const STATUS_STYLES = {
   "Need to Drop":        { bg:"#fef9c3", color:"#854d0e", border:"#eab308" },
@@ -738,7 +764,8 @@ const STATUS_STYLES = {
   "Ready at shipper":    { bg:"#e0e7ff", color:"#3730a3", border:"#6366f1" },
   "Yard":                { bg:"#ffedd5", color:"#9a3412", border:"#fb923c" },
   "Enroute to Delivery": { bg:"#ccfbf1", color:"#115e59", border:"#14b8a6" },
-  "Delivered":           { bg:"#dcfce7", color:"#14532d", border:"#16a34a" }
+  "Delivered":           { bg:"#dcfce7", color:"#14532d", border:"#16a34a" },
+  "Canceled":            { bg:"#f1f5f9", color:"#475569", border:"#94a3b8" }
 };
 
 // Per-dispatcher claim colors. Case-insensitive name → CSS modifier class
@@ -785,6 +812,7 @@ function buildBuckets(today) {
   }
   out.push({ key: "future",    label: "Future",    color: "#475569", bg: "#f8fafc" });
   out.push({ key: "delivered", label: "Delivered", color: "#16a34a", bg: "#f0fdf4" });
+  out.push({ key: "canceled",  label: "Canceled",  color: "#64748b", bg: "#f1f5f9" });
   return out;
 }
 
@@ -815,6 +843,7 @@ function todayMidnight() {
 }
 
 function getBucket(load, today, tomorrow) {
+  if (load.status === "Canceled")  return "canceled";
   if (load.status === "Delivered") return "delivered";
 
   // Earliest pickup date is the urgency anchor (when the truck needs to be there).
@@ -1215,6 +1244,28 @@ function rjwFormatTime(s) {
   return h12 + ":" + String(mm).padStart(2, "0") + ap;
 }
 
+// Normalizes a time string to 4-digit military "HHMM". Handles both
+// the old RJW format ("1800", "0002") and the newer AM/PM format
+// ("06:00PM", "12:02AM"). Returns null if it can't parse.
+function rjwNormalizeTime(s) {
+  if (s == null) return null;
+  const str = String(s).trim();
+  // AM/PM: "06:00PM", "6:00 PM", "12:02AM"
+  let m = str.match(/^(\d{1,2}):(\d{2})\s*([AP])M$/i);
+  if (m) {
+    let h = parseInt(m[1], 10);
+    const mn = m[2];
+    const isPM = m[3].toUpperCase() === "P";
+    if (isPM && h < 12) h += 12;
+    if (!isPM && h === 12) h = 0;
+    return String(h).padStart(2, "0") + mn;
+  }
+  // Military 3-4 digit: "1800", "0002", "600"
+  m = str.match(/^(\d{3,4})$/);
+  if (m) return m[1].padStart(4, "0");
+  return null;
+}
+
 // Parse a single PU/SP/SO block from the LOAD DETAILS section.
 // Extracts city/state and the date window (start + end). The datetime
 // string is kept in the PDF's exact format: "MM/DD/YYYY HHMM - HHMM"
@@ -1224,12 +1275,14 @@ function parseRJWStopBlock(content) {
   const cityM = content.match(/\b([A-Z][A-Z .\-&]*?[A-Z])\s+([A-Z]{2})\s+(\d{5})\b/);
   if (!cityM) return null;
 
-  // Pull every "<MM/DD/YYYY> <HHMM>" pair in this block — windows have two.
-  const dtRe = /(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{3,4})\b/g;
+  // Pull every "<MM/DD/YYYY> <time>" pair in this block — windows have two.
+  // Time can be military ("1800", "0002") or AM/PM ("06:00PM", "12:02AM").
+  const dtRe = /(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2}\s*[AP]M|\d{3,4})\b/gi;
   const dts = [];
   let dm;
   while ((dm = dtRe.exec(content)) !== null) {
-    dts.push({ date: dm[1], time: dm[2].padStart(4, "0") });
+    const t = rjwNormalizeTime(dm[2]);
+    if (t) dts.push({ date: dm[1], time: t });
   }
 
   const stop = {
@@ -1282,19 +1335,25 @@ function parseRJW(rawText) {
     // City State pattern within the summary — bounded so we only match valid pairs
     // e.g. "Pickup City: LOCKPORT IL    Scheduled Pickup: ..."
     const puCity = summary.match(/Pickup\s+City:\s*([A-Z][A-Z .\-&]*?)\s+([A-Z]{2})(?=\s|$)/i);
-    const puDt   = summary.match(/Scheduled\s+Pickup:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{3,4})/i);
+    const puDt   = summary.match(/Scheduled\s+Pickup:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2}\s*[AP]M|\d{3,4})\b/i);
     if (puCity || puDt) {
       result.pickup = {};
       if (puCity) result.pickup.location = rjwCapitalizeCity(puCity[1]) + ", " + puCity[2];
-      if (puDt)   result.pickup.datetime = rjwFormatDate(puDt[1]) + " " + rjwFormatTime(puDt[2]);
+      if (puDt) {
+        const t = rjwNormalizeTime(puDt[2]);
+        if (t) result.pickup.datetime = rjwFormatDate(puDt[1]) + " " + rjwFormatTime(t);
+      }
     }
 
     const dCity = summary.match(/Delivery\s+City:\s*([A-Z][A-Z .\-&]*?)\s+([A-Z]{2})(?=\s|$)/i);
-    const dDt   = summary.match(/Scheduled\s+Delivery:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{3,4})/i);
+    const dDt   = summary.match(/Scheduled\s+Delivery:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2}\s*[AP]M|\d{3,4})\b/i);
     if (dCity || dDt) {
       result.delivery = {};
       if (dCity) result.delivery.location = rjwCapitalizeCity(dCity[1]) + ", " + dCity[2];
-      if (dDt)   result.delivery.datetime = rjwFormatDate(dDt[1]) + " " + rjwFormatTime(dDt[2]);
+      if (dDt) {
+        const t = rjwNormalizeTime(dDt[2]);
+        if (t) result.delivery.datetime = rjwFormatDate(dDt[1]) + " " + rjwFormatTime(t);
+      }
     }
 
     const payM = summary.match(/Total\s+Carrier\s+Pay:\s*\$?\s*([\d,]+(?:\.\d+)?)/i);
@@ -1566,16 +1625,71 @@ async function apiCall(payload) {
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(payload)
   });
-  const j = await res.json();
+  const text = await res.text();
+  // Apps Script sometimes returns a Google HTML error page instead of JSON
+  // (quota hit, service blip, lock timeout). Detect and surface as a
+  // clearly-transient error so callers can retry.
+  if (text.trim().startsWith("<")) {
+    const err = new Error("Backend temporarily unavailable (Google Apps Script returned an error page). Try again in a moment.");
+    err.transient = true;
+    throw err;
+  }
+  let j;
+  try {
+    j = JSON.parse(text);
+  } catch (parseErr) {
+    throw new Error("Backend returned invalid data: " + text.slice(0, 120));
+  }
   if (!j.ok) throw new Error(j.error || "Request failed");
   return j;
 }
 
 async function apiLoad() {
   const res = await fetch(APPS_SCRIPT_URL + "?action=load");
-  const j = await res.json();
+  const text = await res.text();
+  if (text.trim().startsWith("<")) {
+    const err = new Error("Backend temporarily unavailable");
+    err.transient = true;
+    throw err;
+  }
+  let j;
+  try { j = JSON.parse(text); } catch (e) {
+    throw new Error("Backend returned invalid data");
+  }
   if (!j.ok) throw new Error(j.error || "Load failed");
   return j.data || {};
+}
+
+// Retry wrapper. Apps Script occasionally returns an HTML error page
+// (quota hits, Google service blips, lock-timeout) — those clear on
+// their own within seconds, so we try a few times before giving up.
+async function apiLoadWithRetry(attempts = 3, delayMs = 1500) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await apiLoad();
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
+// Last-known-good snapshot kept in localStorage so the board can show
+// something (read-mostly) while the backend is unreachable.
+function saveCacheToLocal(data) {
+  try {
+    localStorage.setItem(STORAGE.cache, JSON.stringify({ data, at: Date.now() }));
+  } catch (e) { /* quota — ignore */ }
+}
+function readCacheFromLocal() {
+  try {
+    const raw = localStorage.getItem(STORAGE.cache);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return (parsed && parsed.data) ? parsed : null;
+  } catch (e) { return null; }
 }
 
 async function apiSave(data) {
@@ -1584,13 +1698,28 @@ async function apiSave(data) {
 
 async function apiUpload(file, kind) {
   const base64 = await fileToBase64(file);
-  const j = await apiCall({
+  const payload = {
     action:   kind, // "uploadPhoto" or "uploadRateCon"
     data:     base64,
     mimeType: file.type || "application/octet-stream",
     filename: file.name
-  });
-  return j.file;
+  };
+  // Retry transient failures (Google returning HTML error page). Waits
+  // are staggered: immediate, then 2s, then 4s.
+  const delays = [0, 2000, 4000];
+  let lastErr;
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await new Promise(r => setTimeout(r, delays[i]));
+    try {
+      const j = await apiCall(payload);
+      return j.file;
+    } catch (e) {
+      lastErr = e;
+      // Only retry on transient errors; a validation error should fail fast.
+      if (!e.transient) break;
+    }
+  }
+  throw lastErr;
 }
 
 // ============================================================
@@ -1996,11 +2125,12 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
   const claimerKey  = (load.claimedBy || "").trim().toLowerCase();
   const claimVariant = load.claimedBy
     ? (CLAIMER_COLORS[claimerKey] ? " clb-card--claim-" + CLAIMER_COLORS[claimerKey] : " clb-card--claimed")
-    : (load.status !== "Delivered" ? " clb-card--unclaimed" : "");
+    : (load.status !== "Delivered" && load.status !== "Canceled" ? " clb-card--unclaimed" : "");
 
   return (
     <div className={"clb-card" +
                     (load.status === "Delivered" ? " clb-card--delivered" : "") +
+                    (load.status === "Canceled"  ? " clb-card--canceled"  : "") +
                     (load.waitingUpdate ? " clb-card--waiting" : "") +
                     claimVariant}
          style={{ "--bucket-color": bucketColor }}>
@@ -2375,6 +2505,7 @@ function App() {
   const [expandedIds, setExpandedIds] = useState(() => new Set());
   const [search,      setSearch]      = useState("");
   const [loadError,   setLoadError]   = useState("");
+  const [reconnecting,setReconnecting]= useState(false);
 
   const allDrivers = useMemo(() => {
     const set = new Set(DRIVERS);
@@ -2413,25 +2544,41 @@ function App() {
   }, [loadNumIndex]);
 
   // ---- Initial load ----
+  // Try the backend up to 3 times. If all attempts fail but we have a
+  // cached snapshot from a previous session, fall through to that so the
+  // board is still usable (with a "Reconnecting…" banner up top).
   useEffect(() => {
     let dead = false;
-    apiLoad()
+    const restoreSession = () => {
+      try {
+        const raw = localStorage.getItem(STORAGE.session);
+        if (raw) {
+          const s = JSON.parse(raw);
+          if (s && (s.role === "viewer" || s.role === "admin") && s.name) {
+            setSession(s);
+          }
+        }
+      } catch (e) {}
+    };
+    apiLoadWithRetry(3, 1500)
       .then(d => {
         if (dead) return;
-        setData(normalizeData(d));
-        // Restore a previous Viewer/Admin session for this device
-        try {
-          const raw = localStorage.getItem(STORAGE.session);
-          if (raw) {
-            const s = JSON.parse(raw);
-            if (s && (s.role === "viewer" || s.role === "admin") && s.name) {
-              setSession(s);
-            }
-          }
-        } catch (e) {}
+        const normalized = normalizeData(d);
+        setData(normalized);
+        saveCacheToLocal(normalized);
+        setReconnecting(false);
+        restoreSession();
       })
       .catch(e => {
-        if (!dead) setLoadError("Could not reach backend: " + e.message);
+        if (dead) return;
+        const cached = readCacheFromLocal();
+        if (cached && cached.data) {
+          setData(normalizeData(cached.data));
+          setReconnecting(true);
+          restoreSession();
+        } else {
+          setLoadError("Could not reach backend: " + e.message);
+        }
       });
     return () => { dead = true; };
   }, []);
@@ -2439,6 +2586,8 @@ function App() {
   // ---- Polling: refresh from server every N seconds ----
   // Merges server data with local instead of replacing it wholesale, so a
   // poll never reverts a local edit that hasn't finished saving yet.
+  // A failed poll flips the reconnecting banner on; the next successful
+  // poll clears it.
   useEffect(() => {
     if (!data || !session) return;
     const timer = setInterval(async () => {
@@ -2451,10 +2600,19 @@ function App() {
         if (JSON.stringify(merged) !== JSON.stringify(dataRef.current)) {
           setData(merged);
         }
-      } catch (e) { /* swallow — periodic poll */ }
+        setReconnecting(false);
+      } catch (e) {
+        setReconnecting(true);
+      }
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [session, saveStatus]);
+
+  // ---- Cache last-known-good data to localStorage whenever it changes ----
+  // So if Apps Script is unreachable next session, we can show this snapshot.
+  useEffect(() => {
+    if (data) saveCacheToLocal(data);
+  }, [data]);
 
   // ---- Debounced save ----
   const saveTimerRef = useRef(null);
@@ -2555,15 +2713,16 @@ function App() {
 
     const cur = dataRef.current;
     const curWeek = getCurrentWeek(cur);
-    const carry = curWeek && curWeek.loads.some(l => l.status !== "Delivered")
-      ? window.confirm("Carry forward any non-Delivered loads from the current week into the new week?")
+    const isClosed = l => l.status === "Delivered" || l.status === "Canceled";
+    const carry = curWeek && curWeek.loads.some(l => !isClosed(l))
+      ? window.confirm("Carry forward any open (non-Delivered, non-Canceled) loads from the current week into the new week?")
       : false;
 
     let updatedWeeks = cur.weeks.slice();
     let newWeekLoads = [];
     if (carry && curWeek) {
-      const incomplete = curWeek.loads.filter(l => l.status !== "Delivered");
-      const completed  = curWeek.loads.filter(l => l.status === "Delivered");
+      const incomplete = curWeek.loads.filter(l => !isClosed(l));
+      const completed  = curWeek.loads.filter(l =>  isClosed(l));
       // Strip ids so duplicates don't collide between weeks
       newWeekLoads = incomplete.map(l => ({ ...l, id: uid(), createdAt: Date.now(), updatedAt: Date.now() }));
       updatedWeeks = updatedWeeks.map(w => w.id !== curWeek.id ? w : { ...w, loads: completed });
@@ -2805,6 +2964,12 @@ function App() {
         storageSize={storageSize}
         online={online}
       />
+      {reconnecting && (
+        <div className="clb-reconnect">
+          <span className="clb-reconnect__dot"></span>
+          Reconnecting to backend… showing last known data. Your changes will save once the connection is back.
+        </div>
+      )}
       <SummaryBar data={data} today={today} tomorrow={tomorrow} buckets={buckets} />
 
       {(() => {
