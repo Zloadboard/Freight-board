@@ -1625,14 +1625,37 @@ async function apiCall(payload) {
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(payload)
   });
-  const j = await res.json();
+  const text = await res.text();
+  // Apps Script sometimes returns a Google HTML error page instead of JSON
+  // (quota hit, service blip, lock timeout). Detect and surface as a
+  // clearly-transient error so callers can retry.
+  if (text.trim().startsWith("<")) {
+    const err = new Error("Backend temporarily unavailable (Google Apps Script returned an error page). Try again in a moment.");
+    err.transient = true;
+    throw err;
+  }
+  let j;
+  try {
+    j = JSON.parse(text);
+  } catch (parseErr) {
+    throw new Error("Backend returned invalid data: " + text.slice(0, 120));
+  }
   if (!j.ok) throw new Error(j.error || "Request failed");
   return j;
 }
 
 async function apiLoad() {
   const res = await fetch(APPS_SCRIPT_URL + "?action=load");
-  const j = await res.json();
+  const text = await res.text();
+  if (text.trim().startsWith("<")) {
+    const err = new Error("Backend temporarily unavailable");
+    err.transient = true;
+    throw err;
+  }
+  let j;
+  try { j = JSON.parse(text); } catch (e) {
+    throw new Error("Backend returned invalid data");
+  }
   if (!j.ok) throw new Error(j.error || "Load failed");
   return j.data || {};
 }
@@ -1675,13 +1698,28 @@ async function apiSave(data) {
 
 async function apiUpload(file, kind) {
   const base64 = await fileToBase64(file);
-  const j = await apiCall({
+  const payload = {
     action:   kind, // "uploadPhoto" or "uploadRateCon"
     data:     base64,
     mimeType: file.type || "application/octet-stream",
     filename: file.name
-  });
-  return j.file;
+  };
+  // Retry transient failures (Google returning HTML error page). Waits
+  // are staggered: immediate, then 2s, then 4s.
+  const delays = [0, 2000, 4000];
+  let lastErr;
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await new Promise(r => setTimeout(r, delays[i]));
+    try {
+      const j = await apiCall(payload);
+      return j.file;
+    } catch (e) {
+      lastErr = e;
+      // Only retry on transient errors; a validation error should fail fast.
+      if (!e.transient) break;
+    }
+  }
+  throw lastErr;
 }
 
 // ============================================================
