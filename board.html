@@ -6846,7 +6846,11 @@ ${accRows.length>0?`
               });
             });
           });
-          const fullList=Object.entries(shippers).sort((a,b)=>b[1].totalLoads-a[1].totalLoads);
+          const fullList=Object.entries(shippers).sort((a,b)=>{
+            // Shippers WITHOUT an address sink to the bottom of the list
+            if(a[1].hasAddress!==b[1].hasAddress)return a[1].hasAddress?-1:1;
+            return b[1].totalLoads-a[1].totalLoads;
+          });
           if(!fullList.length)return(<div style={{padding:"40px 20px",textAlign:"center",color:"#94a3b8",fontSize:"13px"}}>No shipper data yet. Drop rate-cons onto loads to start tracking.</div>);
           // Live filter — matches address, city, or company name (case-insensitive substring)
           const searchTerm=shipperSearch.trim().toLowerCase();
@@ -6892,12 +6896,16 @@ ${accRows.length>0?`
                   <span/>
                 </div>
                 {list.length===0&&(<div style={{padding:"30px",textAlign:"center",color:"#94a3b8",fontSize:"12px"}}>No shippers match "{shipperSearch}"</div>)}
-                {list.map(([key,s])=>{
+                {list.map(([key,s],idx)=>{
                   const total=s.totalLoads;
                   const combinePct=total>0?Math.round(s.combined/total*100):0;
                   const avgRate=total>0?Math.round(s.totalRate/total):0;
                   const isExp=expandedShipper===key;
                   const pallets=s.pallets.slice().sort((a,b)=>a-b);
+                  // Divider where the "missing address" section begins (only when
+                  // there are addressed shippers above it)
+                  const prev=idx>0?list[idx-1][1]:null;
+                  const showNoAddrDivider=!s.hasAddress&&prev&&prev.hasAddress;
                   const palletMin=pallets[0]||0;
                   const palletMax=pallets[pallets.length-1]||0;
                   const palletAvg=pallets.length>0?Math.round(pallets.reduce((a,b)=>a+b,0)/pallets.length):0;
@@ -6913,7 +6921,15 @@ ${accRows.length>0?`
                   // Combine % color: green if mostly combined, red if mostly single, amber in middle
                   const pctColor=combinePct>=60?"#059669":combinePct>=30?"#b45309":"#b91c1c";
                   return(
-                    <div key={key} style={{background:"#fff",border:"1px solid #e2e8f0",borderLeft:s.hasAddress?"3px solid #059669":"3px solid #f59e0b",borderRadius:"6px",overflow:"hidden",boxShadow:isExp?"0 2px 6px rgba(0,0,0,.08)":"0 1px 2px rgba(0,0,0,.03)"}}>
+                    <Fragment key={key}>
+                    {showNoAddrDivider&&(
+                      <div style={{display:"flex",alignItems:"center",gap:"8px",padding:"10px 4px 4px"}}>
+                        <div style={{flex:1,borderTop:"1px dashed #fbbf24"}}/>
+                        <span style={{fontSize:"9px",fontWeight:"700",color:"#b45309",textTransform:"uppercase",letterSpacing:".06em",whiteSpace:"nowrap"}}>⚠️ Missing address</span>
+                        <div style={{flex:1,borderTop:"1px dashed #fbbf24"}}/>
+                      </div>
+                    )}
+                    <div style={{background:"#fff",border:"1px solid #e2e8f0",borderLeft:s.hasAddress?"3px solid #059669":"3px solid #f59e0b",borderRadius:"6px",overflow:"hidden",boxShadow:isExp?"0 2px 6px rgba(0,0,0,.08)":"0 1px 2px rgba(0,0,0,.03)"}}>
                       {/* COLLAPSED ROW — click anywhere to toggle */}
                       <div onClick={()=>setExpandedShipper(isExp?null:key)} style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) 70px 70px 80px 24px",gap:"12px",padding:"9px 12px",alignItems:"center",cursor:"pointer",background:isExp?"#f8fafc":"transparent",transition:"background .1s"}}>
                         <div style={{minWidth:0,overflow:"hidden"}}>
@@ -6984,6 +7000,7 @@ ${accRows.length>0?`
                         </div>
                       )}
                     </div>
+                    </Fragment>
                   );
                 })}
               </div>
