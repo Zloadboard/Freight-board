@@ -339,12 +339,44 @@ function _posExtractAnchored(items,anchorRe,stopRe,xMode){
   }
   return lines.length?_posLinesToStop(lines):null;
 }
+// Arrive-style: left-aligned "Pickup Address" / "Delivery Address" column
+// header with the address block directly beneath it at the same left edge.
+// Right bound = the next header on the same row (e.g. "Appointment");
+// bottom bound = Driver Instructions / Notes / Comments rows.
+function _posExtractLabeledColumn(items,headerRe){
+  let hdr=null;
+  for(const i of items){if(headerRe.test(i.str.trim())){hdr=i;break;}}
+  if(!hdr)return null;
+  const pageItems=items.filter(i=>i.page===hdr.page);
+  const sameRow=pageItems.filter(i=>Math.abs(i.y-hdr.y)<6&&i.x>hdr.x+10);
+  let rightX=hdr.x+180;
+  for(const s of sameRow)if(s.x<rightX)rightX=s.x;
+  rightX-=8;
+  const below=pageItems.filter(i=>i.y<hdr.y-2&&i.y>hdr.y-130&&i.x>=hdr.x-8&&i.x<rightX);
+  const lines=[];
+  for(const r of _posRows(below)){
+    const t=_posRowText(r);
+    if(/^(Driver\s*Instructions|Pickup\s*(Notes|Comments)|Delivery\s*(Notes|Comments)|Appt\.?\s*Type|Appointment)/i.test(t))break;
+    lines.push(t);
+    if(lines.length>=6)break;
+  }
+  return lines.length?_posLinesToStop(lines):null;
+}
 function extractStopsPositional(items){
   if(!items||!items.length)return null;
   // 1) Columnar "Name and Address" table (RXO and lookalikes)
   const col=_posExtractColumnar(items);
   if(col)return col;
-  // 2) "Stop N - Pick Up" / "Stop N - Delivery" sections (MoLo and lookalikes)
+  // 2) "Pickup Address" / "Delivery Address" column headers (Arrive and lookalikes)
+  const arShip=_posExtractLabeledColumn(items,/^Pickup\s*Address$/i);
+  const arRecv=_posExtractLabeledColumn(items,/^Delivery\s*Address$/i);
+  if(arShip||arRecv){
+    const out={};
+    if(arShip&&arShip.co){out.shipperCo=arShip.co;if(arShip.addr)out.shipperAddr=arShip.addr;}
+    if(arRecv&&arRecv.co){out.receiverCo=arRecv.co;if(arRecv.addr)out.receiverAddr=arRecv.addr;}
+    if(out.shipperCo||out.receiverCo)return out;
+  }
+  // 3) "Stop N - Pick Up" / "Stop N - Delivery" sections (MoLo and lookalikes)
   const moShip=_posExtractAnchored(items,/^Stop\s*\d+\s*-\s*Pick\s*Up/i,/^(Date\/?\s*Time|Scheduling|Loading\s*Type)/i,"left");
   const moRecv=_posExtractAnchored(items,/^Stop\s*\d+\s*-\s*Delivery/i,/^(Date\/?\s*Time|Scheduling|Loading\s*Type)/i,"left");
   if(moShip||moRecv){
@@ -353,7 +385,7 @@ function extractStopsPositional(items){
     if(moRecv&&moRecv.co){out.receiverCo=moRecv.co;if(moRecv.addr)out.receiverAddr=moRecv.addr;}
     if(out.shipperCo||out.receiverCo)return out;
   }
-  // 3) "Shipper N" / "Consignee N" sections (Krage and lookalikes)
+  // 4) "Shipper N" / "Consignee N" sections (Krage and lookalikes)
   const krShip=_posExtractAnchored(items,/^Shipper\s*\d+\b/i,/^(Contact|Phone|Fax|Notes|Time|Type|Quantity|Weight)\s*:/i,"near");
   const krRecv=_posExtractAnchored(items,/^Consignee\s*\d+\b/i,/^(Contact|Phone|Fax|Notes|Time|Type|Quantity|Weight)\s*:/i,"near");
   if(krShip||krRecv){
