@@ -200,12 +200,14 @@ async function extractPdfText(file){
   const buf=await file.arrayBuffer();
   const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;
   const out=[];
+  const items=[];// positioned text chunks for coordinate-based extraction
   for(let p=1;p<=pdf.numPages;p++){
     const page=await pdf.getPage(p);
     const content=await page.getTextContent();
     let lines=[],curY=null,curLine=[];
     for(const it of content.items){
       const y=it.transform?it.transform[5]:0;
+      if(it.str&&it.str.trim())items.push({str:it.str,x:it.transform?it.transform[4]:0,y:y,w:it.width||0,page:p});
       if(curY===null||Math.abs(y-curY)>2){
         if(curLine.length)lines.push(curLine.join(" "));
         curLine=[it.str];curY=y;
@@ -214,7 +216,134 @@ async function extractPdfText(file){
     if(curLine.length)lines.push(curLine.join(" "));
     out.push(lines.join("\n"));
   }
-  return out.join("\n");
+  return {text:out.join("\n"),items:items};
+}
+
+// ============================================================================
+//  POSITIONAL shipper/receiver extraction — uses PDF text chunk X/Y coordinates
+//  to reconstruct table columns and stop sections properly, instead of guessing
+//  at spacing or maintaining keyword lists. Layout-detected (not broker-name-
+//  detected) so a new broker reusing a known layout is handled automatically:
+//    • Columnar table with a "Name and Address" header  → RXO-style
+//    • "Stop N - Pick Up" / "Stop N - Delivery" anchors → MoLo-style
+//    • "Shipper N" / "Consignee N" anchors              → Krage-style
+//  Returns {shipperCo,shipperAddr,receiverCo,receiverAddr} (fields present only
+//  when found) or null when no known layout matched — caller falls back to the
+//  per-broker text parsers.
+// ============================================================================
+function _posRows(items,yTol){
+  yTol=yTol||3;
+  const sorted=items.slice().sort((a,b)=>(b.y-a.y)||(a.x-b.x));
+  const rows=[];
+  for(const it of sorted){
+    const last=rows[rows.length-1];
+    if(last&&Math.abs(last.y-it.y)<=yTol)last.items.push(it);
+    else rows.push({y:it.y,items:[it]});
+  }
+  for(const r of rows)r.items.sort((a,b)=>a.x-b.x);
+  return rows;
+}
+function _posRowText(r){return r.items.map(i=>i.str).join(" ").replace(/\s+/g," ").trim();}
+// Raw block lines → {co,addr}. Street wrap lines join with a SPACE; the
+// city/state/zip line is appended after a comma. Name may wrap across lines
+// until the first line that starts with a digit (street number).
+function _posLinesToStop(lines){
+  lines=lines.map(l=>l.replace(/,+\s*$/,"").trim()).filter(Boolean);
+  if(!lines.length)return null;
+  const cityRe=/,\s*[A-Z]{2}[.,]?\s*(USA[,\s]*)?\d{5}(-\d{4})?\s*$/;
+  let cityIdx=-1;
+  for(let i=lines.length-1;i>=0;i--){if(cityRe.test(lines[i])){cityIdx=i;break;}}
+  let streetIdx=-1;
+  for(let i=1;i<lines.length;i++){if(/^\d/.test(lines[i])){streetIdx=i;break;}}
+  if(streetIdx===-1)streetIdx=1;
+  const end=cityIdx===-1?lines.length:cityIdx;
+  const co=lines.slice(0,streetIdx).join(" ");
+  const street=lines.slice(streetIdx,end).join(" ");
+  const city=cityIdx!==-1?lines[cityIdx]:"";
+  const addr=[street,city].filter(Boolean).join(", ");
+  return{co:co,addr:addr};
+}
+// RXO-style columnar stop table. Each chunk is assigned to the column whose
+// header CENTER is nearest (the table is center-aligned per column), with a
+// distance cap so wide paragraph/notes lines never leak in. Column centers
+// come from the page that has the header row and apply to continuation pages.
+function _posExtractColumnar(items){
+  let hdr=null;
+  for(const i of items){if(/name\s+and\s+address/i.test(i.str)){hdr=i;break;}}
+  if(!hdr)return null;
+  const headerRow=items.filter(i=>i.page===hdr.page&&Math.abs(i.y-hdr.y)<12&&i.x>15);
+  const centers=headerRow.map(h=>({addr:/name\s+and\s+address/i.test(h.str),c:h.x+h.w/2}));
+  const addrCenter=hdr.x+hdr.w/2;
+  const typeCells=items.filter(i=>/^(PU|SO|SD)$/.test(i.str.trim())&&i.x<60&&(i.page>hdr.page||(i.page===hdr.page&&i.y<hdr.y)));
+  if(!typeCells.length)return null;
+  typeCells.sort((a,b)=>(a.page-b.page)||(b.y-a.y));// document order
+  const blockFor=(cell)=>{
+    const idx=typeCells.indexOf(cell);
+    const next=typeCells[idx+1];
+    const yLo=(next&&next.page===cell.page)?next.y+2:Math.max(0,cell.y-140);
+    const block=items.filter(i=>{
+      if(i.page!==cell.page||i.y>cell.y+4||i.y<=yLo)return false;
+      const c=i.x+i.w/2;
+      if(Math.abs(c-addrCenter)>60)return false;// cap — excludes commodity + notes
+      let best=null,bd=1e9;
+      for(const h of centers){const d=Math.abs(c-h.c);if(d<bd){bd=d;best=h;}}
+      return!!(best&&best.addr);
+    });
+    const lines=_posRows(block).map(_posRowText).filter(Boolean);
+    return lines.length?_posLinesToStop(lines):null;
+  };
+  const pu=typeCells.find(c=>c.str.trim()==="PU");
+  let so=null;
+  for(let i=typeCells.length-1;i>=0;i--){if(/^(SO|SD)$/.test(typeCells[i].str.trim())){so=typeCells[i];break;}}
+  const out={};
+  if(pu){const s=blockFor(pu);if(s&&s.co){out.shipperCo=s.co;if(s.addr)out.shipperAddr=s.addr;}}
+  if(so){const r=blockFor(so);if(r&&r.co){out.receiverCo=r.co;if(r.addr)out.receiverAddr=r.addr;}}
+  return(out.shipperCo||out.receiverCo)?out:null;
+}
+// MoLo/Krage-style anchored section: address block is the narrow left column
+// directly under the anchor line, terminated by the first label row.
+function _posExtractAnchored(items,anchorRe,stopRe,xMode){
+  let anchor=null;
+  for(const i of items){if(anchorRe.test(i.str.trim())){anchor=i;break;}}
+  if(!anchor)return null;
+  const below=items.filter(i=>{
+    if(i.page!==anchor.page||i.y>=anchor.y-2||i.y<anchor.y-160)return false;
+    if(i.w>260)return false;// never swallow paragraph lines
+    return xMode==="near"?Math.abs(i.x-anchor.x)<15:i.x<200;
+  });
+  const lines=[];
+  for(const r of _posRows(below)){
+    const t=_posRowText(r);
+    if(stopRe.test(t))break;
+    lines.push(t);
+    if(lines.length>=6)break;
+  }
+  return lines.length?_posLinesToStop(lines):null;
+}
+function extractStopsPositional(items){
+  if(!items||!items.length)return null;
+  // 1) Columnar "Name and Address" table (RXO and lookalikes)
+  const col=_posExtractColumnar(items);
+  if(col)return col;
+  // 2) "Stop N - Pick Up" / "Stop N - Delivery" sections (MoLo and lookalikes)
+  const moShip=_posExtractAnchored(items,/^Stop\s*\d+\s*-\s*Pick\s*Up/i,/^(Date\/?\s*Time|Scheduling|Loading\s*Type)/i,"left");
+  const moRecv=_posExtractAnchored(items,/^Stop\s*\d+\s*-\s*Delivery/i,/^(Date\/?\s*Time|Scheduling|Loading\s*Type)/i,"left");
+  if(moShip||moRecv){
+    const out={};
+    if(moShip&&moShip.co){out.shipperCo=moShip.co;if(moShip.addr)out.shipperAddr=moShip.addr;}
+    if(moRecv&&moRecv.co){out.receiverCo=moRecv.co;if(moRecv.addr)out.receiverAddr=moRecv.addr;}
+    if(out.shipperCo||out.receiverCo)return out;
+  }
+  // 3) "Shipper N" / "Consignee N" sections (Krage and lookalikes)
+  const krShip=_posExtractAnchored(items,/^Shipper\s*\d+\b/i,/^(Contact|Phone|Fax|Notes|Time|Type|Quantity|Weight)\s*:/i,"near");
+  const krRecv=_posExtractAnchored(items,/^Consignee\s*\d+\b/i,/^(Contact|Phone|Fax|Notes|Time|Type|Quantity|Weight)\s*:/i,"near");
+  if(krShip||krRecv){
+    const out={};
+    if(krShip&&krShip.co){out.shipperCo=krShip.co;if(krShip.addr)out.shipperAddr=krShip.addr;}
+    if(krRecv&&krRecv.co){out.receiverCo=krRecv.co;if(krRecv.addr)out.receiverAddr=krRecv.addr;}
+    if(out.shipperCo||out.receiverCo)return out;
+  }
+  return null;
 }
 
 const RC_CITY_STATE=/\b([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,3}),\s*([A-Z]{2})\b(?!\w)/;
@@ -387,6 +516,12 @@ function _parseEcho(text){
       const co=got[0]||"";
       let addr=got[1]||"";
       addr=addr.replace(/,\s*c\/o\s.*$/i,"").trim();
+      // Append the city/state/zip line so the full address is saved
+      // ("17005 W RYERSON RD, NEW BERLIN WI 53151" not just the street).
+      // Clean each line individually so tail junk on one line can't chop the other.
+      let city=(got[2]||"").trim();
+      city=city.split(/\s{2,}/)[0].replace(/[\s,;]+$/,"").trim();
+      if(city&&/[A-Z]{2}\s+\d{5}/.test(city))addr=addr?(addr+", "+city):city;
       return {co:co,addr:addr};
     }
     return null;
@@ -845,6 +980,7 @@ function _parseGeneric(rawText){
   const lines=rawText.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   const flat=rawText.replace(/\s+/g," ");
   if(/RJW\s*Logistics/i.test(flat)) result.broker="RJW Logistics";
+  else if(/Krage\s*Logistics/i.test(flat)) result.broker="Krage";
   else if(/\bCoyote\b/i.test(flat)) result.broker="Coyote";
   else if(/Total\s*Quality\s*Logistics|\bTQL\b/i.test(flat)) result.broker="TQL";
   const loadPats=[
@@ -1933,8 +2069,18 @@ function App(){
     // ---- 1. Try LOCAL PDF.js + regex parser first (free, no API) ----
     if(/pdf$/i.test(file.type)||/\.pdf$/i.test(file.name||"")){
       try{
-        const text=await extractPdfText(file);
+        const{text,items}=await extractPdfText(file);
         const parsed=parseRateCon(text);
+        // Positional (coordinate-based) extraction wins for shipper/receiver
+        // when a known layout is recognized — it reconstructs table columns
+        // exactly, so no column-tail junk regardless of spacing.
+        const pos=extractStopsPositional(items);
+        if(pos){
+          if(pos.shipperCo)parsed.shipperCo=pos.shipperCo;
+          if(pos.shipperAddr)parsed.shipperAddr=pos.shipperAddr;
+          if(pos.receiverCo)parsed.receiverCo=pos.receiverCo;
+          if(pos.receiverAddr)parsed.receiverAddr=pos.receiverAddr;
+        }
         const candidate=rateConToLoadFields(parsed);
         // Use the local result only if we got SOMETHING meaningful out of it.
         const meaningful=(candidate.sr&&candidate.sr.length>3)||candidate.broker||candidate.rate||candidate.pickup;
