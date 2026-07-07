@@ -23,8 +23,6 @@ button:hover{opacity:0.85;}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .spinning{animation:spin 1s linear infinite;display:inline-block;}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-@keyframes tpPulse{0%,100%{box-shadow:0 6px 20px rgba(0,0,0,.3)}50%{box-shadow:0 6px 20px rgba(220,38,38,.65),0 0 0 6px rgba(220,38,38,.18)}}
-@keyframes tpSlideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}
 .fade-in{animation:fadeIn 0.3s ease forwards;}
 .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#071526 0%,#0f2848 55%,#071e40 100%);padding:20px;}
 .login-card{background:#fff;border-radius:18px;padding:40px 36px;max-width:420px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,0.5);}
@@ -106,17 +104,6 @@ const DISPATCHERS_KEY="fcbv2_dispatchers";
 const HUB="Romeoville, IL";
 
 const LOAD_STATUSES=["Need to pickup","Dispatched","Dock","Yard","Delivered"];
-// Crossdock statuses + colors. Order here = order in the dropdown.
-// c = text color, bg = badge background, bd = card left-border / accent.
-const XDROP_STATUS_META={
-  "Need driver":        { c:"#854d0e", bg:"#fef08a", bd:"#eab308" },  // yellow
-  "At yard":            { c:"#475569", bg:"#f1f5f9", bd:"#94a3b8" },  // slate
-  "Waiting appt":       { c:"#b91c1c", bg:"#fecaca", bd:"#ef4444" },  // red
-  "Need to reschedule": { c:"#0c4a6e", bg:"#a5f3fc", bd:"#00c2ff" },  // bright electric blue
-  "Driver assigned":    { c:"#9a3412", bg:"#fed7aa", bd:"#f97316" },  // orange
-  "Dispatched":         { c:"#4338ca", bg:"#e0e7ff", bd:"#6366f1" },  // indigo
-  "Delivered":          { c:"#15803d", bg:"#bbf7d0", bd:"#16a34a" }   // green
-};
 const TRAILER_NUMBERS=["53113","5384","5378","5366","5381","53121","53104","5389","5315","5357","5379","53109","5344","5332","53100","5342","5392","5390","5369","53108","5337","5391","5348","53102","5307","5325","5327","53118","5329","5388","53122","5335","5368","5333","5314","53117","53112","5321","5351","5395","5355","5304","5345","53115","5396","5363","5386","5353","53106","5356","5370","5393","53114","5317","5310","5338","53124","53123","53116","5399","5362","5347","5371","5319","53103","53101","5324","5322","5352","5331","5346","5330","53107","5365","5376","5385","53120","5340","5343","53111","5334","5349","5375","5394","5358","5397","53","5350","5359","5305","5373","5374","53110","5361","5367","5364","5383","53119","5354","5312","53105","5323","5398","5387","5306","5336","5303","5326","5380","5313","53125","5372","5382"].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
 const TRUCK_NUMBERS=["13","15","29","029","407","408","414","422","432","444","445","446","447","449","452","454","455","456","457","458","459","460","461","462","463","464","466","467","468","469","470","471","472","473","474","475","476","477","478","479","480","481","482","483","484","485","486","487","488","489","490","491","492","493","494","495","496","497","498","499","500","501","502","503","504","505","506","507","508","509","510","511","512","514","515","516","517","518","519","520","521","522","523","524"].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
 const DRIVERS=["Linas Greiciunas","John Johnson","Douglas Russo","Ringo Brown","Theron Mack","Samwel Masamo","Dennis Onsomu","Moussa Sow","Twizere Brown","Kennedy Nyangena","Emilis Ibianskas","Egidijus Matulis","Edward Kirui","Teresia Mungai","Wycliff Osumo","Martin Kariuki","Leonard Zigirinshuti","Denis Ntore","Edwens Sykvestre","Alex Oyaro","Elhadji Sene","Seth Munyangeri","Erlandas Mastavicius","Jean Ndutiye","Oleh Lashkevych","Willy Rukundo","Paul Ngotho","Jackson Nshimiye","Sefu Mutabazi","Faustin Nkuriyingoma","Jusin Maniraguha","Jamil Hussaini","Badrudin Siraji","Fakhre Alam","Hassan Mupenzi","Simolien Etienne","Joshua Onditi","Bassirou Diouf","Elkanah Machuka","Palvinson Phizema","Claude Michael","Dominic Nyangau","Zach Barker","Evans Nyangechi","Khoda Nabizada","Nkurikiye Damascene","Taban Tor","Austen Powers","Ahmed Omar","Benard Nyamanya","Michael Mutua","Allan Zebron","Papy Gakona","Vincent Okero","Luc Mpangaje","Sumaile Abedi","Fred Nyangau","Ananias Lisimwege","Tiberius Mose","Elhadji Diagne","Gassendy Alcemora","Dominic Muchiri","Victor Machoka","Betwel Onchabo","Rudatinya Ganza","Daniel Mwangi","Mayom Akeeg","Gideon Githinji","Sterling Yves","Haron Ombui","Jeff Mecha","Baldwine Telfort"].sort();
@@ -166,32 +153,6 @@ function weekEndDate(label){
   var yr=+p[3];if(yr<100)yr+=2000;
   var d=new Date(yr,+p[1]-1,+p[2]);d.setHours(0,0,0,0);
   return isNaN(d.getTime())?null:d;
-}
-
-// Extract {start,end} dates from a week label. Handles "6-22-2026 -> 6-28-2026",
-// "6.30.2026 - 7.6.2026", "06_22_2026-06_28_2026" etc. Uses the first date as start,
-// the last date as end. If only one date is present, start===end.
-function weekDateRange(label){
-  if(!label)return null;
-  var ms=String(label).match(/(\d{1,2})[\/._\-](\d{1,2})[\/._\-](\d{2,4})/g);
-  if(!ms||!ms.length)return null;
-  var toD=function(s){var p=s.match(/(\d{1,2})[\/._\-](\d{1,2})[\/._\-](\d{2,4})/);if(!p)return null;var yr=+p[3];if(yr<100)yr+=2000;var d=new Date(yr,+p[1]-1,+p[2]);d.setHours(0,0,0,0);return isNaN(d.getTime())?null:d;};
-  var start=toD(ms[0]),end=toD(ms[ms.length-1]);
-  if(!start||!end)return null;
-  if(end<start){var t=start;start=end;end=t;}
-  return {start:start,end:end};
-}
-
-// Given a Main Board week label and a list of Freight Board weeks, return every
-// Freight week whose date range OVERLAPS the board week. Overlap = start1<=end2 && start2<=end1.
-function freightWeeksOverlapping(boardLabel, freightWeeks){
-  var br=weekDateRange(boardLabel);
-  if(!br)return [];
-  return (freightWeeks||[]).filter(function(w){
-    var fr=weekDateRange(w&&w.label);
-    if(!fr)return false;
-    return br.start<=fr.end && fr.start<=br.end;
-  });
 }
 
 // Suggest a label for the week AFTER the given one, in the user's "M.D.YYYY - M.D.YYYY" style.
@@ -1426,8 +1387,6 @@ function App(){
   const[insightsTab,setInsightsTab]=useState("shippers");
   // PAYROLL — which week index in allTimeWeeks we're viewing (null = default to current)
   const[payrollWeekIdx,setPayrollWeekIdx]=useState(null);
-  // Manual Freight-week pick per Main Board key when no date overlap is found: {[boardKey]: freightWeekId}
-  const[manualFreightKey,setManualFreightKey]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_manualfreight")||"{}");}catch{return{};}});
   // Manual per-dispatcher overrides: {[weekId]: {[dispName]: {amount, note}}}
   const[payrollOverrides,setPayrollOverrides]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_payroll_ov")||"{}");}catch{return{};}});
   const savePayrollOverrides=(next)=>{setPayrollOverrides(next);try{localStorage.setItem("fcbv2_payroll_ov",JSON.stringify(next));}catch{}};
@@ -1647,19 +1606,6 @@ function App(){
   const [photoModal,setPhotoModal]=useState(null);
   const [loadDetailId,setLoadDetailId]=useState(null);  // {loadId, weekId} for slide-in detail panel
   const [photoViewer,setPhotoViewer]=useState(null);
-  // ── MY TASKS & NOTES (deskpad) ──
-  // Per-user personal tasks + sticky notes. Shape: {byUser:{"<name>":{tasks:[],notes:""}}}
-  // Synced through the same Sheets blob as everything else; localStorage as offline fallback.
-  const [deskpad,setDeskpad]=useState(()=>{try{const d=JSON.parse(localStorage.getItem("fcbv2_deskpad")||"null");return(d&&d.byUser)?d:{byUser:{}};}catch(e){return{byUser:{}};}});
-  const [showTaskPanel,setShowTaskPanel]=useState(false);
-  const [tpText,setTpText]=useState("");           // new-task text
-  const [tpDue,setTpDue]=useState("");             // new-task due datetime
-  const [tpLoad,setTpLoad]=useState("");           // new-task linked load key
-  const [tpNotesOpen,setTpNotesOpen]=useState(false);  // notes section expanded?
-  const [tpSweep,setTpSweep]=useState(false);      // end-of-day sweep expanded?
-  const [tpShowDone,setTpShowDone]=useState(false);// show completed tasks?
-  const [nowTick,setNowTick]=useState(Date.now()); // re-render every 30s so overdue badges stay live
-  useEffect(()=>{const t=setInterval(()=>setNowTick(Date.now()),30000);return()=>clearInterval(t);},[]);
   const apiKeyRef=useRef(apiKey);
   useEffect(()=>{apiKeyRef.current=apiKey;},[apiKey]);
   const isAdmin=appMode==="admin";
@@ -1795,7 +1741,7 @@ function App(){
         if(local.weeks)local.weeks=stripTripPrice(local.weeks);
         // F1: remember when server data was last seen
         lastLoadedServerTs.current=sheetsSavedAt;
-        if(useLocalData){if(local.customDrivers)setCustomDrivers(local.customDrivers);if(local.customTrucks)setCustomTrucks(local.customTrucks);if(local.customTrailers)setCustomTrailers(local.customTrailers);if(local.dispatchers)setDispatchers(local.dispatchers);if(local.deskpad&&local.deskpad.byUser)setDeskpad(local.deskpad);const storedPhotosL=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");const localWithPhotos=(local.weeks||[]).map(function(wk){
+        if(useLocalData){if(local.customDrivers)setCustomDrivers(local.customDrivers);if(local.customTrucks)setCustomTrucks(local.customTrucks);if(local.customTrailers)setCustomTrailers(local.customTrailers);if(local.dispatchers)setDispatchers(local.dispatchers);const storedPhotosL=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");const localWithPhotos=(local.weeks||[]).map(function(wk){
             return {...wk,groups:(wk.groups||[]).map(function(g){
               return {...g,loads:(g.loads||[]).map(function(l){
                 const sheetsPhotos=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&p.data;});
@@ -1886,8 +1832,6 @@ function App(){
           if(data.adminPin&&!localStorage.getItem(ADMIN_PIN_KEY)){localStorage.setItem(ADMIN_PIN_KEY,data.adminPin);}
           if(data.viewerPin&&!localStorage.getItem(VIEWER_PIN_KEY)){localStorage.setItem(VIEWER_PIN_KEY,data.viewerPin);}
           if(data.truckAssignments&&Object.keys(data.truckAssignments).length>0){setTruckAssignments(data.truckAssignments);}
-          // Deskpad (tasks & notes): Sheets is authoritative once it carries one
-          if(data.deskpad&&data.deskpad.byUser){setDeskpad(data.deskpad);try{localStorage.setItem("fcbv2_deskpad",JSON.stringify(data.deskpad));}catch(ex){}}
         } else {
           try{
             const local=JSON.parse(localStorage.getItem("fcbv2_localdata")||"{}");
@@ -2077,18 +2021,34 @@ function App(){
     }
 
     // ---- 4. Create the load with the extracted fields + upload mark ----
-    const newLoad=mkLoad({...fields,rateConUploading:true});
+    // Before creating, try to LEARN the address from existing loads:
+    // if same city + same broker was seen before with a unique address, auto-apply.
+    let effectiveFields={...fields};
+    let autoFilled=false;
+    if(!effectiveFields.shipperAddr||String(effectiveFields.shipperAddr).trim()===""){
+      const{s:sCity}=parseSR(effectiveFields.sr||"");
+      const known=lookupKnownShipperAddr(sCity,effectiveFields.broker);
+      if(known){
+        effectiveFields.shipperAddr=known;
+        autoFilled=true;
+      }
+    }
+    const newLoad=mkLoad({...effectiveFields,rateConUploading:true});
     setWeeksAndSave(p=>p.map((w,i)=>i!==activeWeek?w:{...w,groups:w.groups.map(g=>g.id!==groupId?g:{...g,loads:[...g.loads,newLoad]})}));
     setRcLoading(p=>({...p,[groupId]:false}));
 
-    // ---- 4b. If the parser missed the shipper address, fire a toast so the user
-    // can fix it without hunting for the load. The toast clicks open the manual
-    // entry popup pointed at the same load.
-    if(!fields.shipperAddr||String(fields.shipperAddr).trim()===""){
-      const sCity=(()=>{const{s}=parseSR(fields.sr||"");return s||"this load";})();
+    // ---- 4b. Notify user of address handling ----
+    if(autoFilled){
+      // Silent confirmation via a green toast — user knows we filled from memory
+      const{s:sCity}=parseSR(effectiveFields.sr||"");
+      const tId="addrfill-"+newLoad.id;
+      setToasts(t=>[...t,{id:tId,kind:"addr-fill",gid:groupId,lid:newLoad.id,msg:"Address auto-filled for "+(sCity||"this load")+" from previous loads."}]);
+      setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==tId)),6000);
+    } else if(!effectiveFields.shipperAddr||String(effectiveFields.shipperAddr).trim()===""){
+      // Still missing and we don't know it — fire the standard warning toast
+      const sCity=(()=>{const{s}=parseSR(effectiveFields.sr||"");return s||"this load";})();
       const tId="addrmiss-"+newLoad.id;
       setToasts(t=>[...t,{id:tId,kind:"addr-miss",gid:groupId,lid:newLoad.id,msg:"Couldn't read shipper address for "+sCity+". Click to enter manually."}]);
-      // Auto-dismiss after 12s if not clicked
       setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==tId)),12000);
     }
 
@@ -2143,7 +2103,7 @@ function App(){
   // Keep a ref with latest state so saveToSheets never has stale closure
   const latestState=useRef({});
   const weeksSnapshot=useRef([]); // tracks weeks for undo capture
-  useEffect(()=>{latestState.current={weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks,deskpad};weeksSnapshot.current=weeks;},[weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks,deskpad]);
+  useEffect(()=>{latestState.current={weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks};weeksSnapshot.current=weeks;},[weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks]);
 
   // ── Live tracking — fetch from Apps Script every 60 seconds ──────────────
   useEffect(()=>{
@@ -2234,8 +2194,6 @@ function App(){
     const ta=isArr?(ls.truckAssignments||{}):(data.truckAssignments!==undefined?data.truckAssignments:(ls.truckAssignments||{}));
     // archive syncs too — never silently lost, and consistent across devices
     const arch=isArr?(ls.archivedWeeks||[]):(data.archive!==undefined?data.archive:(ls.archivedWeeks||[]));
-    // deskpad (tasks & notes) rides along in the same blob
-    const dp=isArr?(ls.deskpad||{byUser:{}}):(data.deskpad!==undefined?data.deskpad:(ls.deskpad||{byUser:{}}));
     clearTimeout(saveTimer.current);setSaveStatus("saving");
     // F1: Quick check — has server been updated since we last loaded?
     // We check by re-loading savedAt only (fast, no-cors so we can't read response directly)
@@ -2260,13 +2218,12 @@ function App(){
           })};
         });
         try{localStorage.setItem("fcbv2_photos",JSON.stringify(photoStore));}catch(e){}
-        localStorage.setItem(LS_KEY,JSON.stringify({weeks:wNoPhotos,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,deskpad:dp,savedAt:Date.now()}));
-        localStorage.setItem("fcbv2_deskpad",JSON.stringify(dp));
+        localStorage.setItem(LS_KEY,JSON.stringify({weeks:wNoPhotos,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,savedAt:Date.now()}));
         localStorage.setItem("fcbv2_truckassign",JSON.stringify(ta));
       }catch(e){}
       // Sheets save — no-cors fetch always throws TypeError on redirect but data still saves
       try{
-        await sheetsSave({weeks:w,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,deskpad:dp,dispatcherEmails:(ls.dispatcherEmails&&ls.dispatcherEmails.length?ls.dispatcherEmails:(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch(e){return[];}})()),
+        await sheetsSave({weeks:w,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,dispatcherEmails:(ls.dispatcherEmails&&ls.dispatcherEmails.length?ls.dispatcherEmails:(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch(e){return[];}})()),
         adminPin:localStorage.getItem(ADMIN_PIN_KEY)||"",viewerPin:localStorage.getItem(VIEWER_PIN_KEY)||""});
         setSaveStatus("saved");setTimeout(()=>setSaveStatus("idle"),3000);
       }catch(err){
@@ -2285,13 +2242,6 @@ function App(){
       saveToSheets(next);
       return next;
     });
-  },[saveToSheets]);
-
-  // Save deskpad (tasks & notes): update state, cache locally, sync to Sheets
-  const saveDeskpad=useCallback((next)=>{
-    setDeskpad(next);
-    try{localStorage.setItem("fcbv2_deskpad",JSON.stringify(next));}catch(e){}
-    saveToSheets({deskpad:next});
   },[saveToSheets]);
 
   const week=weeks[Math.min(activeWeek,weeks.length-1)];
@@ -2464,7 +2414,7 @@ function App(){
     }
     const results=[];
     mainBoardData.dispatchers.forEach(disp=>{
-      const isZygis=/(^|\b)(zygis|ziggy)(\b|$)/i.test(String(disp.name||"").trim());
+      const isZygis=String(disp.name).toLowerCase().includes("zygis");
       const activeDrivers=disp.drivers.filter(d=>d.gross>0);
       const driverCount=activeDrivers.length;
       // Base compensation
@@ -3031,53 +2981,86 @@ ${accRows.length>0?`
   // 'important' trailers outrank 'reschedule' trailers.
   // Backward compat: legacy boolean `needsReschedule:true` on a load OR group
   // is interpreted as flag='reschedule' until the user touches it.
-  // Save a manually-entered shipper address to one load, then offer to apply it
-  // to other loads in the same shipper city that ALSO have no address. This is
-  // the one-time-tedium workaround: enter the address once, fill 8 other loads
-  // automatically. The "same city" check uses the load's parsed pickup city — the
-  // most stable signal we have for matching shippers.
-  //
-  // Scope: live weeks only (not archived). Archived weeks are historical record;
-  // editing them invites confusion. If the user genuinely wants the address on
-  // archived loads, they'd need to unarchive first.
-  const saveManualShipperAddr=(gid,lid,address)=>{
-    const trimmed=String(address||"").trim();
-    if(!trimmed){setAddrEntryFor(null);return;}
-    // Identify the shipper city of THIS load so we can find siblings
-    const targetGroup=week.groups.find(g=>g.id===gid);
-    const targetLoad=targetGroup&&targetGroup.loads.find(l=>l.id===lid);
-    if(!targetLoad){setAddrEntryFor(null);return;}
+  // Find a load by gid+lid across ALL live weeks. Returns {week, group, load, weekIdx}
+  // or null. Used by the manual-address modal + save handler; the modal lists loads
+  // from any week (via Insights buckets), so restricting to `week.groups` was the
+  // bug that made "Add Address" silently no-op on cross-week loads.
+  const findLoadAcrossLiveWeeks=(gid,lid)=>{
+    for(let wi=0;wi<weeks.length;wi++){
+      const w=weeks[wi];
+      const g=(w.groups||[]).find(g=>g.id===gid);
+      if(!g)continue;
+      const l=(g.loads||[]).find(l=>l.id===lid);
+      if(l)return{week:w,group:g,load:l,weekIdx:wi};
+    }
+    return null;
+  };
+
+  // Compute address candidates for a target load: OTHER loads in any live week
+  // that share the target's shipper city and don't have an address yet.
+  // Returns [{gid, lid, weekLabel, broker, pickup, rate, sameBroker}]
+  const computeAddrSiblings=(targetLoad,targetGid,targetLid)=>{
     const{s:sCity}=parseSR(targetLoad.sr||"");
     const normCity=(sCity||"").trim().toLowerCase();
-    // Count siblings: loads in any LIVE week with the same shipper city, missing address
-    let siblingCount=0;
+    if(!normCity)return[];
+    const targetBroker=(targetLoad.broker||"").trim();
+    const out=[];
     weeks.forEach(w=>(w.groups||[]).forEach(g=>(g.loads||[]).forEach(l=>{
-      if(g.id===gid&&l.id===lid)return; // skip the load we're editing
-      if(l.shipperAddr&&String(l.shipperAddr).trim())return; // already has address
+      if(g.id===targetGid&&l.id===targetLid)return;
+      if(l.shipperAddr&&String(l.shipperAddr).trim())return;
       const{s:lsCity}=parseSR(l.sr||"");
-      if(!lsCity||!normCity)return;
-      if(lsCity.trim().toLowerCase()===normCity)siblingCount++;
+      if(!lsCity)return;
+      if(lsCity.trim().toLowerCase()!==normCity)return;
+      out.push({
+        gid:g.id,lid:l.id,
+        weekLabel:w.label||"",
+        broker:l.broker||"",
+        pickup:l.pickup||"",
+        rate:parseFloat(l.rate)||0,
+        sameBroker:targetBroker&&(l.broker||"").trim()===targetBroker
+      });
     })));
-    // Save to the target load first
-    const applyToTarget=ws=>ws.map(w=>({...w,groups:(w.groups||[]).map(g=>g.id!==gid?g:{...g,loads:(g.loads||[]).map(l=>l.id!==lid?l:{...l,shipperAddr:trimmed})})}));
-    // Helper to ALSO apply to all matching siblings in live weeks
-    const applyToAll=ws=>ws.map(w=>({...w,groups:(w.groups||[]).map(g=>({...g,loads:(g.loads||[]).map(l=>{
-      if(l.id===lid&&g.id===gid)return{...l,shipperAddr:trimmed};
-      if(l.shipperAddr&&String(l.shipperAddr).trim())return l;
-      const{s:lsCity}=parseSR(l.sr||"");
-      if(!lsCity||!normCity)return l;
-      if(lsCity.trim().toLowerCase()===normCity)return{...l,shipperAddr:trimmed};
+    return out;
+  };
+
+  // Save address to a set of {gid, lid} targets across all live weeks.
+  // Called from the manual entry modal after user picks which siblings to include.
+  const saveManualShipperAddr=(gid,lid,address,alsoApplyTo=[])=>{
+    const trimmed=String(address||"").trim();
+    if(!trimmed){setAddrEntryFor(null);return;}
+    const targetKey=gid+":"+lid;
+    // Build a Set of "gid:lid" keys we want to update
+    const keys=new Set([targetKey,...alsoApplyTo.map(t=>t.gid+":"+t.lid)]);
+    setWeeksAndSave(ws=>ws.map(w=>({...w,groups:(w.groups||[]).map(g=>({...g,loads:(g.loads||[]).map(l=>{
+      const k=g.id+":"+l.id;
+      if(keys.has(k))return{...l,shipperAddr:trimmed};
       return l;
-    })}))}));
-    if(siblingCount>0){
-      const yes=confirm("Apply this address to "+siblingCount+" other "+sCity+" load"+(siblingCount===1?"":"s")+" that "+(siblingCount===1?"is":"are")+" also missing an address?\n\nClick OK to apply broadly, Cancel to save only this one.");
-      setWeeksAndSave(yes?applyToAll:applyToTarget);
-    } else {
-      setWeeksAndSave(applyToTarget);
-    }
-    // Close popup, dismiss any addr-miss toast for this load
+    })}))})));
     setAddrEntryFor(null);
     setToasts(t=>t.filter(x=>!(x.kind==="addr-miss"&&x.gid===gid&&x.lid===lid)));
+  };
+
+  // Auto-fill lookup: given a new load with no shipperAddr, find if we ALREADY know
+  // this shipper from other loads (same city + same broker + has address). If exactly
+  // one unique address exists, return it. Multiple = ambiguous, return null.
+  const lookupKnownShipperAddr=(city,broker)=>{
+    const nc=(city||"").trim().toLowerCase();
+    const nb=(broker||"").trim().toLowerCase();
+    if(!nc||!nb)return null;
+    const addrCounts=new Map();
+    allTimeWeeks.forEach(w=>(w.groups||[]).forEach(g=>(g.loads||[]).forEach(l=>{
+      const a=(l.shipperAddr||"").trim();
+      if(!a)return;
+      const{s:lsCity}=parseSR(l.sr||"");
+      if(!lsCity||lsCity.trim().toLowerCase()!==nc)return;
+      if((l.broker||"").trim().toLowerCase()!==nb)return;
+      addrCounts.set(a,(addrCounts.get(a)||0)+1);
+    })));
+    if(addrCounts.size===1){
+      // Exactly one unique address for this city+broker
+      return Array.from(addrCounts.keys())[0];
+    }
+    return null; // ambiguous or unknown
   };
 
   const setLoadFlag=(gid,lid,flag)=>{
@@ -3414,35 +3397,50 @@ ${accRows.length>0?`
     {/* ── TOAST NOTIFICATIONS — bottom-right stack. Click to act, × to dismiss ── */}
     {toasts.length>0&&(
       <div style={{position:"fixed",bottom:"20px",right:"20px",zIndex:9998,display:"flex",flexDirection:"column",gap:"8px",maxWidth:"360px"}}>
-        {toasts.map(t=>(
-          <div key={t.id} onClick={()=>{
-            if(t.kind==="addr-miss"){setAddrEntryFor({gid:t.gid,lid:t.lid});}
-            setToasts(prev=>prev.filter(x=>x.id!==t.id));
-          }}
-            style={{background:"#fff",border:"1px solid #fcd34d",borderLeft:"4px solid #f59e0b",borderRadius:"8px",padding:"10px 12px",boxShadow:"0 4px 12px rgba(0,0,0,.15)",cursor:"pointer",display:"flex",alignItems:"flex-start",gap:"10px"}}>
-            <span style={{fontSize:"18px",lineHeight:1,flexShrink:0}}>⚠️</span>
-            <div style={{flex:1,fontSize:"12px",color:"#451a03",lineHeight:"1.4"}}>{t.msg}</div>
-            <button onClick={e=>{e.stopPropagation();setToasts(prev=>prev.filter(x=>x.id!==t.id));}}
-              style={{background:"none",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:"14px",padding:"0 2px",lineHeight:1,flexShrink:0}}>×</button>
-          </div>
-        ))}
+        {toasts.map(t=>{
+          const isFill=t.kind==="addr-fill";
+          const border=isFill?"#86efac":"#fcd34d";
+          const accent=isFill?"#059669":"#f59e0b";
+          const textColor=isFill?"#14532d":"#451a03";
+          const icon=isFill?"✓":"⚠️";
+          return(
+            <div key={t.id} onClick={()=>{
+              if(t.kind==="addr-miss"){setAddrEntryFor({gid:t.gid,lid:t.lid});}
+              setToasts(prev=>prev.filter(x=>x.id!==t.id));
+            }}
+              style={{background:"#fff",border:"1px solid "+border,borderLeft:"4px solid "+accent,borderRadius:"8px",padding:"10px 12px",boxShadow:"0 4px 12px rgba(0,0,0,.15)",cursor:t.kind==="addr-miss"?"pointer":"default",display:"flex",alignItems:"flex-start",gap:"10px"}}>
+              <span style={{fontSize:"18px",lineHeight:1,flexShrink:0,color:accent}}>{icon}</span>
+              <div style={{flex:1,fontSize:"12px",color:textColor,lineHeight:"1.4"}}>{t.msg}</div>
+              <button onClick={e=>{e.stopPropagation();setToasts(prev=>prev.filter(x=>x.id!==t.id));}}
+                style={{background:"none",border:"none",color:"#94a3b8",cursor:"pointer",fontSize:"14px",padding:"0 2px",lineHeight:1,flexShrink:0}}>×</button>
+            </div>
+          );
+        })}
       </div>
     )}
 
     {/* ── MANUAL ADDRESS ENTRY MODAL ── */}
     {addrEntryFor&&(()=>{
-      const g=week.groups.find(g=>g.id===addrEntryFor.gid);
-      const l=g&&g.loads.find(l=>l.id===addrEntryFor.lid);
-      if(!l){setAddrEntryFor(null);return null;}
+      // Search across ALL live weeks — NOT just current — because Insights buckets
+      // can reference loads from any week. Prior version was broken here.
+      const found=findLoadAcrossLiveWeeks(addrEntryFor.gid,addrEntryFor.lid);
+      if(!found){setAddrEntryFor(null);return null;}
+      const l=found.load;
       const{s:sCity}=parseSR(l.sr||"");
+      const siblings=computeAddrSiblings(l,addrEntryFor.gid,addrEntryFor.lid);
+      // Track which siblings are selected. Default: same-broker siblings pre-checked.
+      // Initial state derived from siblings; user can toggle any.
+      const initialSelected=addrEntryFor.selected||siblings.filter(s=>s.sameBroker).map(s=>s.gid+":"+s.lid);
+      const selectedKeys=new Set(initialSelected);
+      const selectionCount=selectedKeys.size;
       return(
         <div onClick={()=>setAddrEntryFor(null)}
           style={{position:"fixed",inset:0,background:"rgba(15,31,61,.45)",zIndex:9997,display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}}>
           <div onClick={e=>e.stopPropagation()}
-            style={{background:"#fff",borderRadius:"10px",boxShadow:"0 12px 36px rgba(0,0,0,.3)",padding:"18px 20px",maxWidth:"440px",width:"100%"}}>
+            style={{background:"#fff",borderRadius:"10px",boxShadow:"0 12px 36px rgba(0,0,0,.3)",padding:"18px 20px",maxWidth:"560px",width:"100%",maxHeight:"85vh",display:"flex",flexDirection:"column"}}>
             <div style={{fontSize:"14px",fontWeight:"800",color:"#0f1f3d",marginBottom:"4px"}}>Enter shipper address</div>
             <div style={{fontSize:"11px",color:"#64748b",marginBottom:"12px",lineHeight:"1.4"}}>
-              <strong>{sCity||"(unknown city)"}</strong>{l.broker?<> · {l.broker}</>:null}
+              <strong>{sCity||"(unknown city)"}</strong>{l.broker?<> · {l.broker}</>:null} · {found.week.label||"current week"}
             </div>
             <input
               autoFocus
@@ -3450,16 +3448,75 @@ ${accRows.length>0?`
               defaultValue={l.shipperAddr||""}
               placeholder="e.g. 1208 N SCHMIDT RD"
               onKeyDown={e=>{
-                if(e.key==="Enter"){saveManualShipperAddr(addrEntryFor.gid,addrEntryFor.lid,e.currentTarget.value);}
+                if(e.key==="Enter"){
+                  const selected=siblings.filter(s=>selectedKeys.has(s.gid+":"+s.lid));
+                  saveManualShipperAddr(addrEntryFor.gid,addrEntryFor.lid,e.currentTarget.value,selected);
+                }
                 else if(e.key==="Escape"){setAddrEntryFor(null);}
               }}
               id="manualAddrInput"
-              style={{width:"100%",padding:"10px 12px",border:"2px solid #cbd5e1",borderRadius:"6px",fontSize:"14px",fontFamily:"inherit",outline:"none",marginBottom:"12px"}}
+              style={{width:"100%",padding:"10px 12px",border:"2px solid #cbd5e1",borderRadius:"6px",fontSize:"14px",fontFamily:"inherit",outline:"none",marginBottom:"14px"}}
             />
-            <div style={{display:"flex",justifyContent:"flex-end",gap:"8px"}}>
-              <button onClick={()=>setAddrEntryFor(null)} style={{background:"#f1f5f9",color:"#475569",border:"1px solid #cbd5e1",borderRadius:"6px",padding:"7px 14px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Cancel</button>
-              <button onClick={()=>{const v=document.getElementById("manualAddrInput")?.value||"";saveManualShipperAddr(addrEntryFor.gid,addrEntryFor.lid,v);}}
-                style={{background:"#059669",color:"#fff",border:"none",borderRadius:"6px",padding:"7px 14px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Save</button>
+
+            {/* Sibling multi-select */}
+            {siblings.length>0&&(
+              <>
+                <div style={{fontSize:"11px",fontWeight:"700",color:"#475569",marginBottom:"6px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px",flexWrap:"wrap"}}>
+                  <span>Also apply to other {sCity} loads (same-broker pre-checked):</span>
+                  <span style={{display:"flex",gap:"4px",flexShrink:0}}>
+                    <button onClick={()=>{
+                      const same=siblings.filter(s=>s.sameBroker).map(s=>s.gid+":"+s.lid);
+                      setAddrEntryFor({...addrEntryFor,selected:same});
+                    }} style={{background:"#e0e7ff",color:"#3730a3",border:"none",borderRadius:"3px",padding:"2px 6px",fontSize:"9px",fontWeight:"700",cursor:"pointer"}}>Same broker</button>
+                    <button onClick={()=>setAddrEntryFor({...addrEntryFor,selected:siblings.map(s=>s.gid+":"+s.lid)})}
+                      style={{background:"#dcfce7",color:"#15803d",border:"none",borderRadius:"3px",padding:"2px 6px",fontSize:"9px",fontWeight:"700",cursor:"pointer"}}>All</button>
+                    <button onClick={()=>setAddrEntryFor({...addrEntryFor,selected:[]})}
+                      style={{background:"#f1f5f9",color:"#475569",border:"none",borderRadius:"3px",padding:"2px 6px",fontSize:"9px",fontWeight:"700",cursor:"pointer"}}>Clear</button>
+                  </span>
+                </div>
+                <div style={{flex:1,overflowY:"auto",border:"1px solid #e2e8f0",borderRadius:"6px",background:"#fafbfc",padding:"4px",marginBottom:"12px",minHeight:"60px",maxHeight:"280px"}}>
+                  {siblings.map((s,si)=>{
+                    const key=s.gid+":"+s.lid;
+                    const checked=selectedKeys.has(key);
+                    return(
+                      <label key={si} style={{display:"flex",alignItems:"center",gap:"8px",padding:"6px 8px",background:checked?"#f0f9ff":"#fff",border:"1px solid "+(checked?"#bfdbfe":"#e2e8f0"),borderRadius:"4px",marginBottom:"3px",cursor:"pointer",fontSize:"11px"}}>
+                        <input type="checkbox" checked={checked} onChange={()=>{
+                          const next=new Set(selectedKeys);
+                          if(next.has(key))next.delete(key);else next.add(key);
+                          setAddrEntryFor({...addrEntryFor,selected:Array.from(next)});
+                        }} style={{cursor:"pointer",flexShrink:0}}/>
+                        <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
+                          <div style={{fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                            {s.broker||"(no broker)"}
+                            {s.sameBroker&&<span style={{marginLeft:"6px",fontSize:"9px",background:"#dbeafe",color:"#1e40af",padding:"1px 5px",borderRadius:"3px",fontWeight:"700"}}>same broker</span>}
+                          </div>
+                          <div style={{fontSize:"10px",color:"#64748b",marginTop:"1px"}}>
+                            {s.weekLabel&&<span>{s.weekLabel} · </span>}
+                            {s.pickup&&<span>PU {s.pickup}</span>}
+                            {s.rate>0&&<span> · ${s.rate.toLocaleString()}</span>}
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"8px",flexWrap:"wrap"}}>
+              <div style={{fontSize:"11px",color:"#64748b"}}>
+                {siblings.length===0?"No other loads to apply to":`Will save to ${selectionCount+1} load${selectionCount===0?"":"s"} total`}
+              </div>
+              <div style={{display:"flex",gap:"8px"}}>
+                <button onClick={()=>setAddrEntryFor(null)} style={{background:"#f1f5f9",color:"#475569",border:"1px solid #cbd5e1",borderRadius:"6px",padding:"7px 14px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Cancel</button>
+                <button onClick={()=>{
+                  const v=document.getElementById("manualAddrInput")?.value||"";
+                  const selected=siblings.filter(s=>selectedKeys.has(s.gid+":"+s.lid));
+                  saveManualShipperAddr(addrEntryFor.gid,addrEntryFor.lid,v,selected);
+                }} style={{background:"#059669",color:"#fff",border:"none",borderRadius:"6px",padding:"7px 14px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>
+                  Save to {selectionCount+1} load{selectionCount===0?"":"s"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -3843,7 +3900,7 @@ ${accRows.length>0?`
       <div style={{display:"flex",justifyContent:"flex-end",marginTop:"14px"}}><button onClick={()=>setShowDistModal(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Close</button></div>
     </div></div>)}
 
-    {showRecover&&(<div className="modal-bg" onClick={()=>setShowRecover(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontWeight:"700",fontSize:"16px",color:"#dc2626",marginBottom:"8px"}}>🔧 Recover Data</div><div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px"}}>Export your current data as a backup, or import from a previous backup file.</div><div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"14px"}}><button onClick={()=>{const blob=new Blob([JSON.stringify({weeks,archive:archivedWeeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,deskpad,savedAt:Date.now()},null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`freight-full-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();}} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:"6px",padding:"7px 14px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>⬇ Export All Data</button><label style={{background:"#059669",color:"#fff",borderRadius:"6px",padding:"7px 14px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>⬆ Import Backup<input type="file" accept=".json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{try{
+    {showRecover&&(<div className="modal-bg" onClick={()=>setShowRecover(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontWeight:"700",fontSize:"16px",color:"#dc2626",marginBottom:"8px"}}>🔧 Recover Data</div><div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px"}}>Export your current data as a backup, or import from a previous backup file.</div><div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"14px"}}><button onClick={()=>{const blob=new Blob([JSON.stringify({weeks,archive:archivedWeeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,savedAt:Date.now()},null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`freight-full-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();}} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:"6px",padding:"7px 14px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>⬇ Export All Data</button><label style={{background:"#059669",color:"#fff",borderRadius:"6px",padding:"7px 14px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>⬆ Import Backup<input type="file" accept=".json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{try{
   const d=JSON.parse(ev.target.result);
   const w=d.weeks||d;
   if(!Array.isArray(w)){alert("Invalid file — no weeks found.");return;}
@@ -3864,7 +3921,6 @@ ${accRows.length>0?`
     try{const ta=JSON.parse(localStorage.getItem("fcbv2_truckassign")||"{}");setTruckAssignments(ta);}catch(e2){}
   }
   if(d.archive){setArchivedWeeks(d.archive);localStorage.setItem("fcbv2_archive",JSON.stringify(d.archive));saveToSheets({weeks:w,archive:d.archive});}
-  if(d.deskpad&&d.deskpad.byUser){setDeskpad(d.deskpad);try{localStorage.setItem("fcbv2_deskpad",JSON.stringify(d.deskpad));}catch(e){}saveToSheets({deskpad:d.deskpad});}
   alert("✅ Imported successfully!");
   setShowRecover(false);
 }catch(err){alert("Could not read file: "+err.message);}};r.readAsText(f);e.target.value="";}} /></label></div>{archivedWeeks.length>0&&<div style={{marginBottom:"12px"}}><div style={{fontSize:"11px",fontWeight:"700",color:"#374151",marginBottom:"8px"}}>📦 Archived Weeks ({archivedWeeks.length})</div>{archivedWeeks.map((w,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:"8px",padding:"6px 10px",background:"#f8fafc",borderRadius:"6px",marginBottom:"4px",border:"1px solid #e2e8f0"}}><span style={{fontSize:"11px",fontWeight:"600",flex:1}}>{w.label}</span><span style={{fontSize:"10px",color:"#94a3b8"}}>{w.archivedAt}</span><button onClick={()=>{if(!confirm("Restore?"))return;restoreArchivedWeek(i);setShowRecover(false);}} style={{background:"#eff6ff",color:"#2563eb",border:"1px solid #bfdbfe",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",cursor:"pointer"}}>Restore</button><button onClick={()=>{if(!confirm("Delete permanently?"))return;deleteArchivedWeek(i);}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",cursor:"pointer"}}>Delete</button></div>))}</div>}<div style={{display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setShowRecover(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Close</button></div></div></div>)}
@@ -4043,178 +4099,6 @@ ${accRows.length>0?`
 
     {/* SEARCH BAR */}
     {showSearch&&(<div style={{position:"fixed",top:"60px",left:"50%",transform:"translateX(-50%)",zIndex:2000,background:"#fff",borderRadius:"12px",boxShadow:"0 8px 40px rgba(0,0,0,0.25)",border:"1px solid #e2e8f0",padding:"12px 16px",width:"min(600px,95vw)"}}><div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:searchResults.length>0?"10px":"0"}}><span style={{fontSize:"14px"}}>🔍</span><input ref={searchRef} value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&searchResults.length>0)setSearchIdx(i=>(i+1)%searchResults.length);if(e.key==="Escape"){setShowSearch(false);setSearchQuery("");}}} placeholder="Search routes, drivers, dates, status... (Ctrl+F)" style={{flex:1,border:"none",outline:"none",fontSize:"14px",color:"#1a2e50",fontFamily:"inherit"}}/>{searchQuery&&<span style={{fontSize:"11px",color:"#94a3b8",whiteSpace:"nowrap",fontWeight:"600"}}>{searchResults.length} result{searchResults.length!==1?"s":""}</span>}{searchResults.length>1&&<div style={{display:"flex",gap:"4px"}}><button onClick={()=>setSearchIdx(i=>(i-1+searchResults.length)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↑</button><button onClick={()=>setSearchIdx(i=>(i+1)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↓</button></div>}<button onClick={()=>{setShowSearch(false);setSearchQuery("");}} style={{background:"#fee2e2",border:"none",borderRadius:"6px",padding:"4px 10px",cursor:"pointer",fontSize:"11px",color:"#dc2626",fontWeight:"700"}}>✕ Close</button></div>{searchResults.length>0&&(<div style={{maxHeight:"320px",overflowY:"auto",borderTop:"1px solid #f1f5f9",paddingTop:"8px"}}>{searchResults.map((r,i)=>(<div key={i} onClick={()=>{const wId=weeks[r.weekIdx]?.id;setSearchIdx(i);setShowSearch(false);setSearchQuery("");if(wId&&r.loadId)setLoadDetailId({loadId:r.loadId,weekId:wId});goToLoad(wId,r.loadId);}} style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 10px",borderRadius:"8px",cursor:"pointer",background:i===searchIdx?"#eff6ff":"transparent",border:i===searchIdx?"1px solid #bfdbfe":"1px solid transparent",marginBottom:"3px"}}><div style={{flex:1,minWidth:0}}><div style={{fontSize:"12px",fontWeight:"700",color:"#1a2e50",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r.sr||"—"}</div><div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"2px"}}>{r.broker&&isAdmin&&(<span style={{fontSize:"10px",color:"#2563eb",fontWeight:"600"}}>{r.broker}</span>)}{r.pickup&&<span style={{fontSize:"10px",color:"#64748b"}}>🛫 {r.pickup}</span>}{r.driver&&<span style={{fontSize:"10px",color:"#059669",fontWeight:"600"}}>🧑 {r.driver}</span>}{r.status&&<span style={{fontSize:"10px",color:"#7c3aed",fontWeight:"600"}}>{r.status}</span>}</div></div><div style={{textAlign:"right",flexShrink:0}}><div style={{fontSize:"10px",fontWeight:"700",color:"#1a2e50",background:"#dbeafe",padding:"1px 7px",borderRadius:"8px"}}>{r.weekLabel}</div><div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>{r.delivery}</div></div></div>))}</div>)}{searchQuery&&searchResults.length===0&&(<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"12px 0"}}>No results found across {weeks.length} week{weeks.length!==1?"s":""}</div>)}<div style={{fontSize:"10px",color:"#cbd5e1",marginTop:searchResults.length>0?"8px":"0",textAlign:"center"}}>Press Enter to cycle · Esc to close · Click a result to jump to it</div></div>)}
-
-    {/* ════ MY TASKS & NOTES — personal deskpad (per user), synced via Sheets ════ */}
-    {(isAdmin||isDispatcher)&&(()=>{
-      const userKey=isDispatcher&&currentDispatcher?currentDispatcher.name:"Admin";
-      const pad=(deskpad.byUser||{})[userKey]||{tasks:[],notes:""};
-      const savePad=(next)=>saveDeskpad({...deskpad,byUser:{...(deskpad.byUser||{}),[userKey]:next}});
-      const now=new Date(nowTick);
-      const allTasks=pad.tasks||[];
-      const openTasks=allTasks.filter(t=>!t.done);
-      const doneTasks=allTasks.filter(t=>t.done);
-      const isOverdue=t=>!!t.due&&!t.done&&new Date(t.due)<now;
-      const isDueToday=t=>{if(!t.due||t.done)return false;const d=new Date(t.due);return d.toDateString()===now.toDateString()&&d>=now;};
-      const overdueCount=openTasks.filter(isOverdue).length;
-      // Overdue first, then by due time (no-due last), then oldest created first
-      const sortedOpen=[...openTasks].sort((a,b)=>{
-        const ao=isOverdue(a)?0:1,bo=isOverdue(b)?0:1;if(ao!==bo)return ao-bo;
-        const ad=a.due?new Date(a.due).getTime():Infinity,bd=b.due?new Date(b.due).getTime():Infinity;
-        if(ad!==bd)return ad-bd;return(a.createdAt||0)-(b.createdAt||0);
-      });
-      // Loads across all active weeks, for the "link to load" dropdown
-      const loadOpts=[];
-      weeks.forEach(w=>{(w.groups||[]).forEach(g=>{(g.loads||[]).forEach(l=>{
-        const route=((l.sr||"").trim())||[l.pickup,l.delivery].filter(x=>(x||"").trim()).join(" → ");
-        if(!route&&!(l.loadNum||"").trim())return; // skip empty placeholder rows
-        loadOpts.push({key:w.id+"|"+l.id,weekId:w.id,loadId:l.id,label:(w.label||"Week")+": "+(route||"load")+((l.loadNum||"").trim()?" · #"+l.loadNum:"")});
-      });});});
-      const addTask=()=>{
-        const txt=tpText.trim();if(!txt)return;
-        const link=loadOpts.find(o=>o.key===tpLoad);
-        const t={id:uid(),text:txt,due:tpDue||"",done:false,createdAt:Date.now()};
-        if(link){t.weekId=link.weekId;t.loadId=link.loadId;t.loadLabel=link.label;}
-        savePad({...pad,tasks:[...allTasks,t]});
-        setTpText("");setTpDue("");setTpLoad("");
-      };
-      const setTask=(id,fields)=>savePad({...pad,tasks:allTasks.map(t=>t.id===id?{...t,...fields}:t)});
-      const delTask=(id)=>savePad({...pad,tasks:allTasks.filter(t=>t.id!==id)});
-      const clearDone=()=>savePad({...pad,tasks:allTasks.filter(t=>!t.done)});
-      const fmtDue=(t)=>{if(!t.due)return null;const d=new Date(t.due);const tm=d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});return d.toDateString()===now.toDateString()?("Today "+tm):(d.toLocaleDateString("en-US",{month:"numeric",day:"numeric"})+" "+tm);};
-      // ── End-of-day sweep: everything still open across all active weeks ──
-      const sweep={loads:[],xdock:[],local:[],acc:[]};
-      weeks.forEach(w=>{
-        (w.groups||[]).forEach(g=>{(g.loads||[]).forEach(l=>{
-          const route=((l.sr||"").trim())||[l.pickup,l.delivery].filter(x=>(x||"").trim()).join(" → ");
-          if(!route&&!(l.loadNum||"").trim())return;
-          if((l.status||"")!=="Delivered")sweep.loads.push({wk:w.label,txt:(route||"load")+((l.loadNum||"").trim()?" · #"+l.loadNum:""),st:l.status||"No status"});
-        });});
-        (w.crossdockDrops||[]).forEach(r=>{if((r.status||"")!=="Delivered")sweep.xdock.push({wk:w.label,txt:((r.location||"").trim()||"(no location)")+((r.loadNum||"").trim()?" · #"+r.loadNum:""),st:r.status||"No status"});});
-        (w.localDeliveries||[]).forEach(r=>{if((r.status||"")!=="Delivered")sweep.local.push({wk:w.label,txt:((r.destination||"").trim()||"(no destination)")+((r.loadNum||"").trim()?" · #"+r.loadNum:""),st:r.status||"No status"});});
-        (w.accessorials||[]).forEach(r=>{if(!["Paid","Approved"].includes(r.status||""))sweep.acc.push({wk:w.label,txt:(r.type||"Accessorial")+((r.loadNum||"").trim()?" · #"+r.loadNum:"")+(r.amount?" · $"+r.amount:""),st:r.status||"No status"});});
-      });
-      const sweepBoardTotal=sweep.loads.length+sweep.xdock.length+sweep.local.length+sweep.acc.length;
-      const sweepSection=(title,icon,items,color)=>items.length===0?null:(
-        <div key={title} style={{marginBottom:"10px"}}>
-          <div style={{fontSize:"10px",fontWeight:"800",color:color,letterSpacing:".05em",textTransform:"uppercase",marginBottom:"4px"}}>{icon} {title} — {items.length}</div>
-          {items.map((it,i)=>(
-            <div key={i} style={{display:"flex",alignItems:"center",gap:"6px",padding:"4px 8px",background:"#fff",border:"1px solid #e2e8f0",borderLeft:"3px solid "+color,borderRadius:"5px",marginBottom:"3px"}}>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:"11px",fontWeight:"600",color:"#1a2e50",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{it.txt}</div>
-                <div style={{fontSize:"9px",color:"#94a3b8"}}>{it.wk}</div>
-              </div>
-              <span style={{fontSize:"9px",fontWeight:"700",color:color,whiteSpace:"nowrap"}}>{it.st}</span>
-            </div>
-          ))}
-        </div>
-      );
-      const taskRow=(t)=>{
-        const od=isOverdue(t),td=isDueToday(t);
-        return(
-          <div key={t.id} style={{display:"flex",alignItems:"flex-start",gap:"8px",padding:"8px 10px",background:t.done?"#f8fafc":od?"#fef2f2":"#fff",border:"1px solid "+(od?"#fca5a5":td?"#fcd34d":"#e2e8f0"),borderLeft:"4px solid "+(t.done?"#cbd5e1":od?"#dc2626":td?"#f59e0b":"#2563eb"),borderRadius:"7px",marginBottom:"6px"}}>
-            <input type="checkbox" checked={!!t.done} onChange={e=>setTask(t.id,{done:e.target.checked,doneAt:e.target.checked?Date.now():null})} style={{marginTop:"2px",cursor:"pointer",width:"15px",height:"15px",flexShrink:0}}/>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:"12px",fontWeight:"600",color:t.done?"#94a3b8":"#1a2e50",textDecoration:t.done?"line-through":"none",wordBreak:"break-word"}}>{t.text}</div>
-              <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"3px",alignItems:"center"}}>
-                {t.due&&<span style={{fontSize:"10px",fontWeight:"700",color:t.done?"#94a3b8":od?"#dc2626":td?"#b45309":"#64748b"}}>{od?"⚠️ OVERDUE · ":"⏰ "}{fmtDue(t)}</span>}
-                {t.loadLabel&&(
-                  <span onClick={()=>{if(t.weekId&&t.loadId){setShowTaskPanel(false);setLoadDetailId({loadId:t.loadId,weekId:t.weekId});goToLoad(t.weekId,t.loadId);}}} title="Jump to this load on the board" style={{fontSize:"10px",fontWeight:"600",color:"#2563eb",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:"4px",padding:"1px 6px",cursor:"pointer",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"220px"}}>🔗 {t.loadLabel}</span>
-                )}
-              </div>
-            </div>
-            <button onClick={()=>{if(confirm("Delete this task?"))delTask(t.id);}} title="Delete task" style={{background:"transparent",border:"none",color:"#cbd5e1",fontSize:"13px",cursor:"pointer",padding:"0 2px",flexShrink:0}}>✕</button>
-          </div>
-        );
-      };
-      return(<React.Fragment>
-        {/* Floating button — bottom-right, red + pulsing when something is overdue */}
-        {!showTaskPanel&&(
-          <button onClick={()=>setShowTaskPanel(true)} title="My Tasks & Notes" style={{position:"fixed",bottom:"22px",right:"22px",zIndex:2500,background:overdueCount>0?"#dc2626":"#0f1f3d",color:"#fff",border:"none",borderRadius:"30px",padding:"12px 18px",fontSize:"13px",fontWeight:"800",cursor:"pointer",boxShadow:"0 6px 20px rgba(0,0,0,.3)",display:"flex",alignItems:"center",gap:"8px",fontFamily:"inherit",animation:overdueCount>0?"tpPulse 1.6s infinite":"none"}}>
-            ✅ Tasks
-            {openTasks.length>0&&<span style={{background:"rgba(255,255,255,.25)",borderRadius:"12px",padding:"1px 9px",fontSize:"11px",fontWeight:"800"}}>{overdueCount>0?overdueCount+" overdue":openTasks.length}</span>}
-          </button>
-        )}
-        {/* Slide-over panel */}
-        {showTaskPanel&&(
-          <div style={{position:"fixed",top:0,right:0,bottom:0,width:"min(410px,100vw)",zIndex:2600,background:"#f8fafc",boxShadow:"-8px 0 32px rgba(15,31,61,.25)",display:"flex",flexDirection:"column",borderLeft:"1px solid #e2e8f0",animation:"tpSlideIn .18s ease"}}>
-            {/* Header */}
-            <div style={{background:"#0f1f3d",padding:"12px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
-              <div>
-                <div style={{fontSize:"14px",fontWeight:"800",color:"#fff"}}>✅ My Tasks & Notes</div>
-                <div style={{fontSize:"10px",color:"rgba(255,255,255,.55)"}}>{userKey} · {openTasks.length} open{overdueCount>0?" · "+overdueCount+" overdue":""}</div>
-              </div>
-              <button onClick={()=>setShowTaskPanel(false)} style={{background:"rgba(255,255,255,.15)",border:"none",color:"#fff",borderRadius:"6px",padding:"5px 11px",fontSize:"14px",cursor:"pointer",lineHeight:1}}>✕</button>
-            </div>
-            {/* Body */}
-            <div style={{flex:1,overflowY:"auto",padding:"12px"}}>
-              {/* Add task — the whole point: capture it in 5 seconds, get back to work */}
-              <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"9px",padding:"10px",marginBottom:"12px"}}>
-                <input type="text" value={tpText} onChange={e=>setTpText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addTask();}} placeholder="New task... (Enter to add)" style={{width:"100%",border:"1px solid #cbd5e1",borderRadius:"6px",padding:"7px 10px",fontSize:"12px",outline:"none",fontFamily:"inherit",boxSizing:"border-box",marginBottom:"6px"}}/>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px",marginBottom:"6px"}}>
-                  <div>
-                    <label style={{display:"block",fontSize:"9px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"2px"}}>⏰ Due (optional)</label>
-                    <input type="datetime-local" value={tpDue} onChange={e=>setTpDue(e.target.value)} style={{width:"100%",border:"1px solid #cbd5e1",borderRadius:"6px",padding:"5px 7px",fontSize:"11px",outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}/>
-                  </div>
-                  <div>
-                    <label style={{display:"block",fontSize:"9px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"2px"}}>🔗 Link to load (optional)</label>
-                    <select value={tpLoad} onChange={e=>setTpLoad(e.target.value)} style={{width:"100%",border:"1px solid #cbd5e1",borderRadius:"6px",padding:"5px 7px",fontSize:"11px",outline:"none",fontFamily:"inherit",boxSizing:"border-box",cursor:"pointer",background:"#fff"}}>
-                      <option value="">— No load —</option>
-                      {loadOpts.map(o=><option key={o.key} value={o.key}>{o.label}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <button onClick={addTask} disabled={!tpText.trim()} style={{width:"100%",background:tpText.trim()?"#2563eb":"#cbd5e1",color:"#fff",border:"none",borderRadius:"6px",padding:"7px",fontSize:"12px",fontWeight:"800",cursor:tpText.trim()?"pointer":"default",fontFamily:"inherit"}}>+ Add Task</button>
-              </div>
-              {/* Open tasks */}
-              {sortedOpen.length===0&&(
-                <div style={{textAlign:"center",padding:"18px 10px",color:"#94a3b8",fontSize:"12px",border:"2px dashed #e2e8f0",borderRadius:"9px",marginBottom:"12px"}}>No open tasks. 🎉<br/><span style={{fontSize:"10px"}}>Phone rings, someone asks for something — log it here first.</span></div>
-              )}
-              {sortedOpen.map(taskRow)}
-              {/* Completed */}
-              {doneTasks.length>0&&(
-                <div style={{marginTop:"10px",marginBottom:"12px"}}>
-                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"6px"}}>
-                    <button onClick={()=>setTpShowDone(v=>!v)} style={{background:"transparent",border:"none",color:"#64748b",fontSize:"11px",fontWeight:"700",cursor:"pointer",padding:0,fontFamily:"inherit"}}>{tpShowDone?"▾":"▸"} Completed ({doneTasks.length})</button>
-                    <button onClick={()=>{if(confirm("Clear all completed tasks?"))clearDone();}} style={{background:"transparent",border:"1px solid #e2e8f0",color:"#94a3b8",fontSize:"10px",borderRadius:"5px",padding:"2px 8px",cursor:"pointer",fontFamily:"inherit"}}>Clear</button>
-                  </div>
-                  {tpShowDone&&doneTasks.map(taskRow)}
-                </div>
-              )}
-              {/* ── NOTES — press to extend ── */}
-              <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:"9px",marginBottom:"12px",overflow:"hidden"}}>
-                <button onClick={()=>setTpNotesOpen(v=>!v)} style={{width:"100%",background:"transparent",border:"none",padding:"10px 12px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",fontFamily:"inherit"}}>
-                  <span style={{fontSize:"12px",fontWeight:"800",color:"#92400e"}}>📝 My Notes{(pad.notes||"").trim()&&!tpNotesOpen?" · "+((pad.notes||"").trim().split("\n")[0].slice(0,32))+((pad.notes||"").trim().length>32?"…":""):""}</span>
-                  <span style={{fontSize:"12px",color:"#b45309"}}>{tpNotesOpen?"▾":"▸"}</span>
-                </button>
-                {tpNotesOpen&&(
-                  <div style={{padding:"0 12px 12px"}}>
-                    <textarea value={pad.notes||""} onChange={e=>savePad({...pad,notes:e.target.value})} placeholder={"Anything not tied to a load — phone numbers, gate codes, things to remember...\nSaves automatically."} rows={8} style={{width:"100%",border:"1px solid #fde68a",borderRadius:"6px",padding:"8px 10px",fontSize:"12px",outline:"none",fontFamily:"inherit",boxSizing:"border-box",resize:"vertical",minHeight:"120px",background:"#fff",lineHeight:1.5}}/>
-                  </div>
-                )}
-              </div>
-              {/* ── END-OF-DAY SWEEP ── */}
-              <div style={{background:"#f5f3ff",border:"1px solid #ddd6fe",borderRadius:"9px",overflow:"hidden",marginBottom:"8px"}}>
-                <button onClick={()=>setTpSweep(v=>!v)} style={{width:"100%",background:"transparent",border:"none",padding:"10px 12px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",fontFamily:"inherit"}}>
-                  <span style={{fontSize:"12px",fontWeight:"800",color:"#5b21b6"}}>🌙 End-of-Day Sweep</span>
-                  <span style={{fontSize:"10px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",borderRadius:"10px",padding:"2px 9px"}}>{openTasks.length+sweepBoardTotal} open</span>
-                </button>
-                {tpSweep&&(
-                  <div style={{padding:"0 12px 12px"}}>
-                    <div style={{fontSize:"10px",color:"#7c3aed",marginBottom:"10px"}}>Everything still unfinished across all active weeks. Run this before you leave — nothing slips to tomorrow silently.</div>
-                    {openTasks.length+sweepBoardTotal===0&&<div style={{textAlign:"center",padding:"14px",color:"#059669",fontSize:"12px",fontWeight:"700"}}>✅ All clear. Go home!</div>}
-                    {openTasks.length>0&&sweepSection("My open tasks","✅",sortedOpen.map(t=>({wk:t.loadLabel||"Personal",txt:t.text,st:isOverdue(t)?"OVERDUE":t.due?fmtDue(t):"No due"})),"#dc2626")}
-                    {sweepSection("OTR loads not delivered","🚛",sweep.loads,"#2563eb")}
-                    {sweepSection("Crossdock open","📦",sweep.xdock,"#7c3aed")}
-                    {sweepSection("Local open","📍",sweep.local,"#059669")}
-                    {sweepSection("Accessorials pending","💰",sweep.acc,"#b45309")}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </React.Fragment>);
-    })()}
 
     {/* SAVE INDICATOR */}
     {saveStatus!=="idle"&&(<div className={`save-indicator ${saveStatus==="saving"?"save-saving":saveStatus==="saved"?"save-ok":"save-error"}`}>{saveStatus==="saving"&&<><span className="spinning">↻</span> Saving to Sheets...</>}{saveStatus==="saved"&&<>✓ Saved to Google Sheets</>}{saveStatus==="error"&&<>⚠ Save failed — retrying</>}</div>)}
@@ -4578,26 +4462,21 @@ ${accRows.length>0?`
 
                 {/* ───── CROSSDOCK ───── */}
                 {activeSideTab==="xdrop"&&(()=>{
-                  // Display order: 📌 pinned first, Delivered sinks to the bottom,
-                  // everything else keeps its insertion order (Array.sort is stable).
-                  const rows=[...(week.crossdockDrops||[])].sort((a,b)=>{
-                    const ap=a.pinned?0:1,bp=b.pinned?0:1;if(ap!==bp)return ap-bp;
-                    const ad=a.status==="Delivered"?1:0,bd=b.status==="Delivered"?1:0;return ad-bd;
-                  });
+                  const rows=week.crossdockDrops||[];
                   if(!rows.length)return(<div style={{textAlign:"center",padding:"30px 10px",color:"#94a3b8",fontSize:"12px"}}>No crossdock entries this week.<br/><span style={{fontSize:"10px"}}>Click + Add to create one.</span></div>);
                   return rows.map(r=>{
                     const flagged=xdropNeedsAttention(r);
-                    const meta=XDROP_STATUS_META[r.status]||{c:"#64748b",bg:"#fff",bd:"#a855f7"};
                     return(
-                      <div key={r.id} style={{background:"#fff",border:`1px solid ${flagged?"#f59e0b":"#e2e8f0"}`,borderLeft:`5px solid ${flagged?"#f59e0b":meta.bd}`,borderRadius:"7px",padding:"10px 12px",marginBottom:"10px",boxShadow:r.pinned?"0 0 0 2px #fbbf24, 0 1px 2px rgba(0,0,0,.04)":"0 1px 2px rgba(0,0,0,.04)",opacity:r.status==="Delivered"?.72:1}}>
-                        {/* Row 1 — pin + crossdock location headline + alert + status */}
+                      <div key={r.id} style={{background:"#fff",border:`1px solid ${flagged?"#f59e0b":"#e2e8f0"}`,borderLeft:`4px solid ${flagged?"#f59e0b":"#a855f7"}`,borderRadius:"7px",padding:"10px 12px",marginBottom:"10px",boxShadow:"0 1px 2px rgba(0,0,0,.04)"}}>
+                        {/* Row 1 — crossdock location headline + alert + status */}
                         <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"8px"}}>
-                          <button onClick={()=>updRow("crossdockDrops",r.id,"pinned",!r.pinned)} title={r.pinned?"Unpin — send back to normal order":"Pin this load to the top"} style={{background:r.pinned?"#fef3c7":"transparent",border:`1px solid ${r.pinned?"#f59e0b":"#e2e8f0"}`,borderRadius:"5px",padding:"2px 6px",fontSize:"12px",cursor:"pointer",flexShrink:0,opacity:r.pinned?1:.55}}>📌</button>
                           {flagged&&<span title="Needs attention — missing required field" style={{fontSize:"13px",cursor:"help"}}>⚠️</span>}
                           <input type="text" value={r.location||""} onChange={e=>updRow("crossdockDrops",r.id,"location",e.target.value)} placeholder="Crossdock location (where load is sitting)..." style={{...inpStyle,fontWeight:"700",fontSize:"13px",flex:1,border:"none",borderBottom:"1px solid #e2e8f0",borderRadius:"0",padding:"3px 0"}}/>
-                          <select value={r.status||""} onChange={e=>updRow("crossdockDrops",r.id,"status",e.target.value)} style={{border:`1px solid ${r.status?meta.bd:"#cbd5e1"}`,borderRadius:"4px",padding:"3px 6px",fontSize:"10px",fontWeight:"700",background:r.status?meta.bg:"#fff",cursor:"pointer",color:meta.c}}>
+                          <select value={r.status||""} onChange={e=>updRow("crossdockDrops",r.id,"status",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:"4px",padding:"3px 6px",fontSize:"10px",fontWeight:"700",background:"#fff",cursor:"pointer",color:r.status==="Delivered"?"#15803d":"#64748b"}}>
                             <option value="">— Status —</option>
-                            {Object.keys(XDROP_STATUS_META).map(s=><option key={s} value={s}>{s}</option>)}
+                            <option value="At yard">At yard</option>
+                            <option value="Dispatched">Dispatched</option>
+                            <option value="Delivered">Delivered</option>
                           </select>
                         </div>
                         {/* Row 2 — delivery location (the OTHER address) */}
@@ -7126,24 +7005,17 @@ ${accRows.length>0?`
           });
           const activeBoardKey=selectedMainBoardKey||boardKeys[0]||null;
           const activeBoard=activeBoardKey?mainBoards[activeBoardKey]:null;
-          // Match a Freight Board week for Zygis 10% math — by DATE-RANGE OVERLAP (not label substring).
-          const overlapping=activeBoard?freightWeeksOverlapping(activeBoard.label,allTimeWeeks):[];
-          let freightWeekForBoard=null;
-          if(overlapping.length===1){
-            freightWeekForBoard=overlapping[0];
-          }else if(overlapping.length>1){
-            // Pick the one with the greatest overlap span with the board week.
-            const br=weekDateRange(activeBoard.label);
-            freightWeekForBoard=overlapping.slice().sort((a,b)=>{
-              const ra=weekDateRange(a.label),rb=weekDateRange(b.label);
-              const ov=r=>Math.max(0,Math.min(br.end,r.end)-Math.max(br.start,r.start));
-              return ov(rb)-ov(ra);
-            })[0];
-          }else if(activeBoard){
-            // No date overlap — honor a manual pick for this board, else leave null (shows $0 + picker).
-            const mk=manualFreightKey[activeBoardKey];
-            if(mk)freightWeekForBoard=allTimeWeeks.find(w=>w.id===mk)||null;
-          }
+          // Match a Freight Board week for Zygis 10% math. Best-effort match by week label.
+          const freightWeekForBoard=activeBoard
+            ?(allTimeWeeks.find(w=>{
+              if(!w.label||!activeBoard.label)return false;
+              // Both contain date strings — try substring match
+              const wLabel=String(w.label).replace(/[_\s]/g,"-").toLowerCase();
+              const bLabel=String(activeBoard.label).replace(/[_\s]/g,"-").toLowerCase();
+              return wLabel.includes(bLabel.split("-").slice(0,3).join("-"))
+                  || bLabel.includes(wLabel.split("-").slice(0,3).join("-"));
+            })||weeks[0])
+            :weeks[0];
           const payroll=activeBoard?computePayroll(activeBoard,freightWeekForBoard):{dispatchers:[],combinedTrailers:[]};
           const grandTotal=payroll.dispatchers.reduce((s,d)=>s+d.total,0);
           const zygisEntry=payroll.dispatchers.find(d=>d.isZygis);
@@ -7263,11 +7135,7 @@ ${accRows.length>0?`
                 <strong>Zygis 10% source:</strong>{" "}
                 {freightWeekForBoard
                   ?<>Freight Board week <strong>{freightWeekForBoard.label||"(unlabeled)"}</strong> matched — {payroll.combinedTrailers.length} combined trailer{payroll.combinedTrailers.length===1?"":"s"} found</>
-                  :<>No Freight Board week overlaps these dates. Zygis 10% is $0 until you pick one:{" "}
-                    <select value={manualFreightKey[activeBoardKey]||""} onChange={e=>{const v=e.target.value;setManualFreightKey(prev=>{const n={...prev};if(v)n[activeBoardKey]=v;else delete n[activeBoardKey];localStorage.setItem("fcbv2_manualfreight",JSON.stringify(n));return n;});}} style={{fontSize:"11px",padding:"2px 6px",border:"1px solid #fcd34d",borderRadius:"4px",marginLeft:"4px"}}>
-                      <option value="">— pick Freight week —</option>
-                      {allTimeWeeks.map(w=><option key={w.id} value={w.id}>{w.label||"(unlabeled)"}</option>)}
-                    </select></>}
+                  :<>No matching Freight Board week found. Zygis 10% shown as $0 until a matching week exists in Freight Board.</>}
               </div>
             )}
 
