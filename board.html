@@ -3127,17 +3127,24 @@ ${accRows.length>0?`
   // 'important' trailers outrank 'reschedule' trailers.
   // Backward compat: legacy boolean `needsReschedule:true` on a load OR group
   // is interpreted as flag='reschedule' until the user touches it.
-  // Find a load by gid+lid across ALL live weeks. Returns {week, group, load, weekIdx}
-  // or null. Used by the manual-address modal + save handler; the modal lists loads
-  // from any week (via Insights buckets), so restricting to `week.groups` was the
-  // bug that made "Add Address" silently no-op on cross-week loads.
+  // Find a load by gid+lid across ALL weeks — live AND archived. Returns
+  // {week, group, load, weekIdx, isArchived} or null. Used by the manual-address
+  // modal + save handler; the modal lists loads from any week (via Insights
+  // buckets), including archived ones so historical loads can get addresses too.
   const findLoadAcrossLiveWeeks=(gid,lid)=>{
     for(let wi=0;wi<weeks.length;wi++){
       const w=weeks[wi];
       const g=(w.groups||[]).find(g=>g.id===gid);
       if(!g)continue;
       const l=(g.loads||[]).find(l=>l.id===lid);
-      if(l)return{week:w,group:g,load:l,weekIdx:wi};
+      if(l)return{week:w,group:g,load:l,weekIdx:wi,isArchived:false};
+    }
+    for(let ai=0;ai<archivedWeeks.length;ai++){
+      const w=archivedWeeks[ai];
+      const g=(w.groups||[]).find(g=>g.id===gid);
+      if(!g)continue;
+      const l=(g.loads||[]).find(l=>l.id===lid);
+      if(l)return{week:w,group:g,load:l,weekIdx:-1,isArchived:true};
     }
     return null;
   };
@@ -3151,7 +3158,7 @@ ${accRows.length>0?`
     if(!normCity)return[];
     const targetBroker=(targetLoad.broker||"").trim();
     const out=[];
-    weeks.forEach(w=>(w.groups||[]).forEach(g=>(g.loads||[]).forEach(l=>{
+    const scan=(wArr,isLiveArr)=>wArr.forEach(w=>(w.groups||[]).forEach(g=>(g.loads||[]).forEach(l=>{
       if(g.id===targetGid&&l.id===targetLid)return;
       if(l.shipperAddr&&String(l.shipperAddr).trim())return;
       const{s:lsCity}=parseSR(l.sr||"");
@@ -3163,25 +3170,39 @@ ${accRows.length>0?`
         broker:l.broker||"",
         pickup:l.pickup||"",
         rate:parseFloat(l.rate)||0,
-        sameBroker:targetBroker&&(l.broker||"").trim()===targetBroker
+        sameBroker:targetBroker&&(l.broker||"").trim()===targetBroker,
+        archived:!isLiveArr
       });
     })));
+    scan(weeks,true);
+    scan(archivedWeeks,false);
     return out;
   };
 
-  // Save address to a set of {gid, lid} targets across all live weeks.
-  // Called from the manual entry modal after user picks which siblings to include.
+  // Save address to a set of {gid, lid} targets across ALL weeks — live and
+  // archived. Called from the manual entry modal after user picks siblings.
   const saveManualShipperAddr=(gid,lid,address,alsoApplyTo=[])=>{
     const trimmed=String(address||"").trim();
     if(!trimmed){setAddrEntryFor(null);return;}
     const targetKey=gid+":"+lid;
     // Build a Set of "gid:lid" keys we want to update
     const keys=new Set([targetKey,...alsoApplyTo.map(t=>t.gid+":"+t.lid)]);
-    setWeeksAndSave(ws=>ws.map(w=>({...w,groups:(w.groups||[]).map(g=>({...g,loads:(g.loads||[]).map(l=>{
+    const hasKey=(wArr)=>wArr.some(w=>(w.groups||[]).some(g=>(g.loads||[]).some(l=>keys.has(g.id+":"+l.id))));
+    const applyKeys=(wArr)=>wArr.map(w=>({...w,groups:(w.groups||[]).map(g=>({...g,loads:(g.loads||[]).map(l=>{
       const k=g.id+":"+l.id;
       if(keys.has(k))return{...l,shipperAddr:trimmed};
       return l;
-    })}))})));
+    })}))}));
+    // Live weeks — only touch when a target actually lives there (avoids a
+    // pointless undo snapshot + Sheets save for archive-only edits)
+    if(hasKey(weeks))setWeeksAndSave(ws=>applyKeys(ws));
+    // Archived weeks — same key set applies since gid/lid are preserved on archive
+    if(hasKey(archivedWeeks)){
+      const newArchive=applyKeys(archivedWeeks);
+      setArchivedWeeks(newArchive);
+      localStorage.setItem("fcbv2_archive",JSON.stringify(newArchive));
+      saveToSheets({archive:newArchive});
+    }
     setAddrEntryFor(null);
     setToasts(t=>t.filter(x=>!(x.kind==="addr-miss"&&x.gid===gid&&x.lid===lid)));
   };
@@ -3587,6 +3608,7 @@ ${accRows.length>0?`
             <div style={{fontSize:"14px",fontWeight:"800",color:"#0f1f3d",marginBottom:"4px"}}>Enter shipper address</div>
             <div style={{fontSize:"11px",color:"#64748b",marginBottom:"12px",lineHeight:"1.4"}}>
               <strong>{sCity||"(unknown city)"}</strong>{l.broker?<> · {l.broker}</>:null} · {found.week.label||"current week"}
+              {found.isArchived&&<span style={{marginLeft:"6px",fontSize:"9px",background:"#ede9fe",color:"#5b21b6",padding:"1px 6px",borderRadius:"3px",fontWeight:"700"}}>ARCHIVED</span>}
             </div>
             <input
               autoFocus
@@ -3635,6 +3657,7 @@ ${accRows.length>0?`
                           <div style={{fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                             {s.broker||"(no broker)"}
                             {s.sameBroker&&<span style={{marginLeft:"6px",fontSize:"9px",background:"#dbeafe",color:"#1e40af",padding:"1px 5px",borderRadius:"3px",fontWeight:"700"}}>same broker</span>}
+                            {s.archived&&<span style={{marginLeft:"6px",fontSize:"9px",background:"#ede9fe",color:"#5b21b6",padding:"1px 5px",borderRadius:"3px",fontWeight:"700"}}>archived</span>}
                           </div>
                           <div style={{fontSize:"10px",color:"#64748b",marginTop:"1px"}}>
                             {s.weekLabel&&<span>{s.weekLabel} · </span>}
@@ -6961,10 +6984,8 @@ ${accRows.length>0?`
                                       {m.pickup&&<span style={{color:"#64748b",marginLeft:"6px"}}>· PU {m.pickup}</span>}
                                       {!m.isLive&&<span style={{marginLeft:"6px",fontSize:"9px",color:"#94a3b8",fontWeight:"700"}}>(archived)</span>}
                                     </div>
-                                    {m.isLive
-                                      ?<button onClick={e=>{e.stopPropagation();setAddrEntryFor({gid:m.gid,lid:m.lid});}}
-                                        style={{background:"#059669",color:"#fff",border:"none",borderRadius:"4px",padding:"3px 9px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>+ Add address</button>
-                                      :<span style={{fontSize:"9px",color:"#94a3b8",fontStyle:"italic",flexShrink:0}}>not editable</span>}
+                                    <button onClick={e=>{e.stopPropagation();setAddrEntryFor({gid:m.gid,lid:m.lid});}}
+                                      style={{background:m.isLive?"#059669":"#7c3aed",color:"#fff",border:"none",borderRadius:"4px",padding:"3px 9px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>+ Add address</button>
                                   </div>
                                 ))}
                               </div>
