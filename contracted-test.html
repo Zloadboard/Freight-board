@@ -2930,6 +2930,11 @@ function App() {
 
   const logout = () => {
     try { localStorage.removeItem(STORAGE.session); } catch (e) {}
+    // Also clear the cached board passcode so the next person on this
+    // browser has to enter it again — that way "log out" really does lock
+    // the board back down for whoever picks up the device.
+    try { localStorage.removeItem(STORAGE.access); } catch (e) {}
+    setAccess("");
     setSession(null);
   };
 
