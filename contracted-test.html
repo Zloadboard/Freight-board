@@ -742,7 +742,8 @@ const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxDDf6EUF1VwZe_
 
 const STORAGE = {
   session: "fcbc_session",
-  cache:   "fcbc_cache"
+  cache:   "fcbc_cache",
+  access:  "fcbc_access"    // Board-access passcode this device last entered
 };
 
 // Admin passcode. Viewers need no code; admins enter this to unlock
@@ -978,6 +979,7 @@ function normalizeData(raw) {
     weeks:            Array.isArray(d.weeks) ? d.weeks.slice() : [],
     currentWeekId:    d.currentWeekId || "",
     adminPin:         d.adminPin || "",
+    accessPasscode:   d.accessPasscode || "",
     customDrivers:    Array.isArray(d.customDrivers) ? d.customDrivers : [],
     customTrucks:     Array.isArray(d.customTrucks)  ? d.customTrucks  : [],
     truckAssignments: (d.truckAssignments && typeof d.truckAssignments === "object") ? d.truckAssignments : {},
@@ -1063,6 +1065,7 @@ function mergeClientData(serverRaw, localRaw) {
 
   const out = {
     adminPin:         cfg.adminPin || "",
+    accessPasscode:   cfg.accessPasscode || "",
     customDrivers:    cfg.customDrivers || [],
     customTrucks:     cfg.customTrucks || [],
     truckAssignments: cfg.truckAssignments || {},
@@ -1738,6 +1741,93 @@ function LoadingScreen({ msg }) {
   return <div className="clb-loading">{msg || "Loading…"}</div>;
 }
 
+function UnlockScreen({ expected, onUnlock }) {
+  const [pw,  setPw]  = useState("");
+  const [err, setErr] = useState("");
+  const submit = () => {
+    if (pw === expected) { onUnlock(pw); return; }
+    setErr("Incorrect passcode");
+    setPw("");
+  };
+  return (
+    <div className="clb-auth">
+      <div className="clb-auth__card">
+        <h2 className="clb-auth__title">🔒 Locked</h2>
+        <p className="clb-auth__sub">Enter the board passcode to continue.</p>
+        <input className="clb-auth__input" type="password" placeholder="Board passcode"
+               value={pw} autoFocus
+               onChange={e => { setPw(e.target.value); setErr(""); }}
+               onKeyDown={e => e.key === "Enter" && submit()} />
+        <button className="clb-auth__btn" onClick={submit}>Unlock</button>
+        {err && <div className="clb-auth__err">{err}</div>}
+      </div>
+    </div>
+  );
+}
+
+function ChangePasscodeModal({ current, onSave, onClose }) {
+  const [newP,  setNewP]  = useState("");
+  const [conf,  setConf]  = useState("");
+  const [err,   setErr]   = useState("");
+  const [busy,  setBusy]  = useState(false);
+  const hasCurrent = !!current;
+
+  const save = async (val) => {
+    setBusy(true);
+    try { await onSave(val); onClose(); }
+    catch (e) { setErr("Save failed: " + (e.message || e)); setBusy(false); }
+  };
+  const submit = () => {
+    if (newP !== conf) { setErr("Passcodes don't match"); return; }
+    if (newP.length < 3) { setErr("Use at least 3 characters"); return; }
+    save(newP);
+  };
+  const remove = () => {
+    if (!window.confirm("Remove the passcode? The board will be open to anyone who has the link.")) return;
+    save("");
+  };
+
+  return (
+    <div className="clb-modal-bg" onClick={onClose}>
+      <div className="clb-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 400 }}>
+        <h3 style={{ margin: "0 0 12px", fontSize: 18 }}>
+          🔒 {hasCurrent ? "Change" : "Set"} board passcode
+        </h3>
+        <p style={{ margin: "0 0 14px", fontSize: 13, color: "#475569", lineHeight: 1.4 }}>
+          Everyone opening the board will need to enter this. When you change it,
+          anyone using the old passcode gets locked out on their next refresh.
+        </p>
+        <input className="clb-auth__input" type="password" placeholder="New passcode"
+               value={newP} autoFocus
+               onChange={e => { setNewP(e.target.value); setErr(""); }} />
+        <input className="clb-auth__input" type="password" placeholder="Confirm new passcode"
+               value={conf}
+               onChange={e => { setConf(e.target.value); setErr(""); }}
+               onKeyDown={e => e.key === "Enter" && submit()} />
+        {err && <div className="clb-auth__err" style={{ marginTop: 8 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <button className="clb-auth__btn" style={{ flex: 1 }} onClick={submit} disabled={busy}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+          <button className="clb-auth__btn clb-auth__btn--ghost" style={{ flex: 1 }}
+                  onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+        </div>
+        {hasCurrent && (
+          <button
+            onClick={remove}
+            disabled={busy}
+            style={{ marginTop: 10, width: "100%", background: "none", border: "none",
+                     color: "#dc2626", fontSize: 12, cursor: "pointer", padding: 6 }}>
+            Remove passcode (open board to anyone with the link)
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function RoleLogin({ onLogin }) {
   const [mode,  setMode]  = useState("choose");   // choose | viewer | admin
   const [name,  setName]  = useState("");
@@ -2345,7 +2435,7 @@ function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, al
 // COMPONENTS — HEADER
 // ============================================================
 
-function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onImportFromFreight, onSwitchWeek, onNewWeek, onEditWeek, onArchiveWeek, onDeleteWeek, storageSize, online }) {
+function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onImportFromFreight, onSwitchWeek, onNewWeek, onEditWeek, onArchiveWeek, onDeleteWeek, onChangePasscode, hasAccessPasscode, storageSize, online }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const saveLbl =
     saveStatus === "saving" ? "Saving…" :
@@ -2450,6 +2540,15 @@ function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddL
                 🗑 Delete current week
               </button>
             )}
+            {session && session.role === "admin" && (
+              <React.Fragment>
+                <div style={{ height:1, background:"#f1f5f9", margin:"4px 0" }} />
+                <button onClick={() => { setMenuOpen(false); onChangePasscode(); }}
+                        style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13 }}>
+                  🔒 {hasAccessPasscode ? "Change" : "Set"} board passcode
+                </button>
+              </React.Fragment>
+            )}
             <div style={{ height:1, background:"#f1f5f9", margin:"4px 0" }} />
             <button onClick={() => { setMenuOpen(false); onImportFromFreight(); }}
                     style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13 }}>
@@ -2514,6 +2613,10 @@ function App() {
   const [search,      setSearch]      = useState("");
   const [loadError,   setLoadError]   = useState("");
   const [reconnecting,setReconnecting]= useState(false);
+  const [access,      setAccess]      = useState(() => {
+    try { return localStorage.getItem(STORAGE.access) || ""; } catch (e) { return ""; }
+  });
+  const [showPasscodeModal, setShowPasscodeModal] = useState(false);
 
   const allDrivers = useMemo(() => {
     const set = new Set(DRIVERS);
@@ -2959,7 +3062,39 @@ function App() {
     );
   }
   if (!data) return <LoadingScreen msg="Loading board…" />;
+
+  // Board-access gate. If an admin has set `data.accessPasscode`, everyone
+  // must type it once per device before seeing the board. Changing the
+  // passcode kicks out anyone still holding the old one on their next poll.
+  const boardPasscode = (data && data.accessPasscode) || "";
+  const isLocked = !!boardPasscode && access !== boardPasscode;
+  if (isLocked) {
+    return (
+      <UnlockScreen
+        expected={boardPasscode}
+        onUnlock={(pw) => {
+          try { localStorage.setItem(STORAGE.access, pw); } catch (e) {}
+          setAccess(pw);
+        }}
+      />
+    );
+  }
+
   if (!session) return <RoleLogin onLogin={handleLogin} />;
+
+  const changeBoardPasscode = async (newPw) => {
+    const next = { ...dataRef.current, accessPasscode: newPw, updatedAt: Date.now() };
+    setData(next);
+    try { localStorage.setItem(STORAGE.access, newPw); } catch (e) {}
+    setAccess(newPw);
+    setSaveStatus("saving");
+    const resp = await apiSave(next);
+    if (resp && resp.data) {
+      setData(mergeClientData(resp.data, next));
+    }
+    setSaveStatus("saved");
+    setLastSync(Date.now());
+  };
 
   return (
     <div className="clb-app">
@@ -2978,6 +3113,8 @@ function App() {
         onEditWeek={editCurrentWeek}
         onArchiveWeek={archiveCurrentWeek}
         onDeleteWeek={deleteCurrentWeek}
+        onChangePasscode={() => setShowPasscodeModal(true)}
+        hasAccessPasscode={!!boardPasscode}
         storageSize={storageSize}
         online={online}
       />
@@ -3015,6 +3152,13 @@ function App() {
           onDelete={onLoadDelete}
         />
       ))}
+      {showPasscodeModal && (
+        <ChangePasscodeModal
+          current={boardPasscode}
+          onSave={changeBoardPasscode}
+          onClose={() => setShowPasscodeModal(false)}
+        />
+      )}
     </div>
   );
 }
