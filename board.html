@@ -200,14 +200,12 @@ async function extractPdfText(file){
   const buf=await file.arrayBuffer();
   const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;
   const out=[];
-  const items=[];// positioned text chunks for coordinate-based extraction
   for(let p=1;p<=pdf.numPages;p++){
     const page=await pdf.getPage(p);
     const content=await page.getTextContent();
     let lines=[],curY=null,curLine=[];
     for(const it of content.items){
       const y=it.transform?it.transform[5]:0;
-      if(it.str&&it.str.trim())items.push({str:it.str,x:it.transform?it.transform[4]:0,y:y,w:it.width||0,page:p});
       if(curY===null||Math.abs(y-curY)>2){
         if(curLine.length)lines.push(curLine.join(" "));
         curLine=[it.str];curY=y;
@@ -216,134 +214,7 @@ async function extractPdfText(file){
     if(curLine.length)lines.push(curLine.join(" "));
     out.push(lines.join("\n"));
   }
-  return {text:out.join("\n"),items:items};
-}
-
-// ============================================================================
-//  POSITIONAL shipper/receiver extraction — uses PDF text chunk X/Y coordinates
-//  to reconstruct table columns and stop sections properly, instead of guessing
-//  at spacing or maintaining keyword lists. Layout-detected (not broker-name-
-//  detected) so a new broker reusing a known layout is handled automatically:
-//    • Columnar table with a "Name and Address" header  → RXO-style
-//    • "Stop N - Pick Up" / "Stop N - Delivery" anchors → MoLo-style
-//    • "Shipper N" / "Consignee N" anchors              → Krage-style
-//  Returns {shipperCo,shipperAddr,receiverCo,receiverAddr} (fields present only
-//  when found) or null when no known layout matched — caller falls back to the
-//  per-broker text parsers.
-// ============================================================================
-function _posRows(items,yTol){
-  yTol=yTol||3;
-  const sorted=items.slice().sort((a,b)=>(b.y-a.y)||(a.x-b.x));
-  const rows=[];
-  for(const it of sorted){
-    const last=rows[rows.length-1];
-    if(last&&Math.abs(last.y-it.y)<=yTol)last.items.push(it);
-    else rows.push({y:it.y,items:[it]});
-  }
-  for(const r of rows)r.items.sort((a,b)=>a.x-b.x);
-  return rows;
-}
-function _posRowText(r){return r.items.map(i=>i.str).join(" ").replace(/\s+/g," ").trim();}
-// Raw block lines → {co,addr}. Street wrap lines join with a SPACE; the
-// city/state/zip line is appended after a comma. Name may wrap across lines
-// until the first line that starts with a digit (street number).
-function _posLinesToStop(lines){
-  lines=lines.map(l=>l.replace(/,+\s*$/,"").trim()).filter(Boolean);
-  if(!lines.length)return null;
-  const cityRe=/,\s*[A-Z]{2}[.,]?\s*(USA[,\s]*)?\d{5}(-\d{4})?\s*$/;
-  let cityIdx=-1;
-  for(let i=lines.length-1;i>=0;i--){if(cityRe.test(lines[i])){cityIdx=i;break;}}
-  let streetIdx=-1;
-  for(let i=1;i<lines.length;i++){if(/^\d/.test(lines[i])){streetIdx=i;break;}}
-  if(streetIdx===-1)streetIdx=1;
-  const end=cityIdx===-1?lines.length:cityIdx;
-  const co=lines.slice(0,streetIdx).join(" ");
-  const street=lines.slice(streetIdx,end).join(" ");
-  const city=cityIdx!==-1?lines[cityIdx]:"";
-  const addr=[street,city].filter(Boolean).join(", ");
-  return{co:co,addr:addr};
-}
-// RXO-style columnar stop table. Each chunk is assigned to the column whose
-// header CENTER is nearest (the table is center-aligned per column), with a
-// distance cap so wide paragraph/notes lines never leak in. Column centers
-// come from the page that has the header row and apply to continuation pages.
-function _posExtractColumnar(items){
-  let hdr=null;
-  for(const i of items){if(/name\s+and\s+address/i.test(i.str)){hdr=i;break;}}
-  if(!hdr)return null;
-  const headerRow=items.filter(i=>i.page===hdr.page&&Math.abs(i.y-hdr.y)<12&&i.x>15);
-  const centers=headerRow.map(h=>({addr:/name\s+and\s+address/i.test(h.str),c:h.x+h.w/2}));
-  const addrCenter=hdr.x+hdr.w/2;
-  const typeCells=items.filter(i=>/^(PU|SO|SD)$/.test(i.str.trim())&&i.x<60&&(i.page>hdr.page||(i.page===hdr.page&&i.y<hdr.y)));
-  if(!typeCells.length)return null;
-  typeCells.sort((a,b)=>(a.page-b.page)||(b.y-a.y));// document order
-  const blockFor=(cell)=>{
-    const idx=typeCells.indexOf(cell);
-    const next=typeCells[idx+1];
-    const yLo=(next&&next.page===cell.page)?next.y+2:Math.max(0,cell.y-140);
-    const block=items.filter(i=>{
-      if(i.page!==cell.page||i.y>cell.y+4||i.y<=yLo)return false;
-      const c=i.x+i.w/2;
-      if(Math.abs(c-addrCenter)>60)return false;// cap — excludes commodity + notes
-      let best=null,bd=1e9;
-      for(const h of centers){const d=Math.abs(c-h.c);if(d<bd){bd=d;best=h;}}
-      return!!(best&&best.addr);
-    });
-    const lines=_posRows(block).map(_posRowText).filter(Boolean);
-    return lines.length?_posLinesToStop(lines):null;
-  };
-  const pu=typeCells.find(c=>c.str.trim()==="PU");
-  let so=null;
-  for(let i=typeCells.length-1;i>=0;i--){if(/^(SO|SD)$/.test(typeCells[i].str.trim())){so=typeCells[i];break;}}
-  const out={};
-  if(pu){const s=blockFor(pu);if(s&&s.co){out.shipperCo=s.co;if(s.addr)out.shipperAddr=s.addr;}}
-  if(so){const r=blockFor(so);if(r&&r.co){out.receiverCo=r.co;if(r.addr)out.receiverAddr=r.addr;}}
-  return(out.shipperCo||out.receiverCo)?out:null;
-}
-// MoLo/Krage-style anchored section: address block is the narrow left column
-// directly under the anchor line, terminated by the first label row.
-function _posExtractAnchored(items,anchorRe,stopRe,xMode){
-  let anchor=null;
-  for(const i of items){if(anchorRe.test(i.str.trim())){anchor=i;break;}}
-  if(!anchor)return null;
-  const below=items.filter(i=>{
-    if(i.page!==anchor.page||i.y>=anchor.y-2||i.y<anchor.y-160)return false;
-    if(i.w>260)return false;// never swallow paragraph lines
-    return xMode==="near"?Math.abs(i.x-anchor.x)<15:i.x<200;
-  });
-  const lines=[];
-  for(const r of _posRows(below)){
-    const t=_posRowText(r);
-    if(stopRe.test(t))break;
-    lines.push(t);
-    if(lines.length>=6)break;
-  }
-  return lines.length?_posLinesToStop(lines):null;
-}
-function extractStopsPositional(items){
-  if(!items||!items.length)return null;
-  // 1) Columnar "Name and Address" table (RXO and lookalikes)
-  const col=_posExtractColumnar(items);
-  if(col)return col;
-  // 2) "Stop N - Pick Up" / "Stop N - Delivery" sections (MoLo and lookalikes)
-  const moShip=_posExtractAnchored(items,/^Stop\s*\d+\s*-\s*Pick\s*Up/i,/^(Date\/?\s*Time|Scheduling|Loading\s*Type)/i,"left");
-  const moRecv=_posExtractAnchored(items,/^Stop\s*\d+\s*-\s*Delivery/i,/^(Date\/?\s*Time|Scheduling|Loading\s*Type)/i,"left");
-  if(moShip||moRecv){
-    const out={};
-    if(moShip&&moShip.co){out.shipperCo=moShip.co;if(moShip.addr)out.shipperAddr=moShip.addr;}
-    if(moRecv&&moRecv.co){out.receiverCo=moRecv.co;if(moRecv.addr)out.receiverAddr=moRecv.addr;}
-    if(out.shipperCo||out.receiverCo)return out;
-  }
-  // 3) "Shipper N" / "Consignee N" sections (Krage and lookalikes)
-  const krShip=_posExtractAnchored(items,/^Shipper\s*\d+\b/i,/^(Contact|Phone|Fax|Notes|Time|Type|Quantity|Weight)\s*:/i,"near");
-  const krRecv=_posExtractAnchored(items,/^Consignee\s*\d+\b/i,/^(Contact|Phone|Fax|Notes|Time|Type|Quantity|Weight)\s*:/i,"near");
-  if(krShip||krRecv){
-    const out={};
-    if(krShip&&krShip.co){out.shipperCo=krShip.co;if(krShip.addr)out.shipperAddr=krShip.addr;}
-    if(krRecv&&krRecv.co){out.receiverCo=krRecv.co;if(krRecv.addr)out.receiverAddr=krRecv.addr;}
-    if(out.shipperCo||out.receiverCo)return out;
-  }
-  return null;
+  return out.join("\n");
 }
 
 const RC_CITY_STATE=/\b([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,3}),\s*([A-Z]{2})\b(?!\w)/;
@@ -514,14 +385,14 @@ function _parseEcho(text){
         got.push(t);
       }
       const co=got[0]||"";
-      let addr=got[1]||"";
-      addr=addr.replace(/,\s*c\/o\s.*$/i,"").trim();
-      // Append the city/state/zip line so the full address is saved
-      // ("17005 W RYERSON RD, NEW BERLIN WI 53151" not just the street).
-      // Clean each line individually so tail junk on one line can't chop the other.
-      let city=(got[2]||"").trim();
-      city=city.split(/\s{2,}/)[0].replace(/[\s,;]+$/,"").trim();
-      if(city&&/[A-Z]{2}\s+\d{5}/.test(city))addr=addr?(addr+", "+city):city;
+      // Clean each line individually with _rcFirstCell (strip PDF column tails),
+      // then build the full address as "street, city state zip". This gives
+      // Insights a complete, unique identity per shipper — a "500 Main St"
+      // in Ohio and a "500 Main St" in Michigan no longer collide.
+      let street=_rcFirstCell(got[1]||"");
+      street=street.replace(/,\s*c\/o\s.*$/i,"").trim();
+      const cityLine=_rcFirstCell(got[2]||"");
+      const addr=cityLine?street+", "+cityLine:street;
       return {co:co,addr:addr};
     }
     return null;
@@ -980,7 +851,6 @@ function _parseGeneric(rawText){
   const lines=rawText.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   const flat=rawText.replace(/\s+/g," ");
   if(/RJW\s*Logistics/i.test(flat)) result.broker="RJW Logistics";
-  else if(/Krage\s*Logistics/i.test(flat)) result.broker="Krage";
   else if(/\bCoyote\b/i.test(flat)) result.broker="Coyote";
   else if(/Total\s*Quality\s*Logistics|\bTQL\b/i.test(flat)) result.broker="TQL";
   const loadPats=[
@@ -1013,12 +883,24 @@ function _parseGeneric(rawText){
 // Helper used by all broker parsers: PDF text extraction preserves table column
 // alignment with multi-space gaps. We pick "the first column" by splitting on
 // 2+ spaces and keeping only the first cell. Also strips trailing junk.
+// Strip "second column" data that PDF.js concatenates onto our extracted line.
+// Rate-con PDFs use table layouts; PDF.js extracts each row as a single string
+// with the columns separated by SINGLE spaces (not multi-space as we originally
+// assumed). So "17005 W RYERSON RD" becomes "17005 W RYERSON RD Earliest:
+// 07/07/2026 08:00" in the extracted text.
+//
+// Strategy: find the first occurrence of a known "next column" indicator token
+// (Earliest:, Latest:, PKU#, Weight:, etc.) and truncate everything from there.
+// Also handles the legacy multi-space case for older PDFs.
 function _rcFirstCell(s){
   if(!s)return"";
-  const parts=s.split(/\s{2,}/);
-  let t=(parts[0]||"").trim();
-  t=t.replace(/[\s,;]+$/,"").trim();
-  return t;
+  // Column-header tokens seen right after data in rate-con tables. Ordered by frequency.
+  // Word-boundary-ish anchoring via \s+ prefix ensures we don't strip mid-word.
+  const tailPattern=/\s+(?:Earliest:|Latest:|PKU#|DELV#|Weight:|Pallets:|Pieces:|Appointment:?|Item:|Note:|Dock|Facility:|REF#|Ref:|Ref#|Trailer:|Load\s*#|Order\s*#|BOL:?|Seal:?|Time:?|Contact:?|Phone:?|Fax:?|Email:?|MC\d+|DOT\d+|PU\s*#|SO\s*#|Stop\s*\d+).*$/i;
+  let t=String(s).replace(tailPattern,"");
+  // Legacy: also handle the multi-space column separator (older PDFs)
+  t=t.split(/\s{2,}/)[0]||"";
+  return t.replace(/[\s,;]+$/,"").trim();
 }
 function rateConToLoadFields(parsed){
   const out={};
@@ -1091,8 +973,95 @@ const mkLoad=(o={})=>({id:uid(),sr:"",broker:"",pickup:"",delivery:"",product:""
 const mkGroup=()=>({id:uid(),tripMiles:"",groupDriver:"",groupTruck:"",groupTrailer:"",groupStatus:"Pending",groupNotes:"",loads:[mkLoad()]});
 const mkWeek=(label)=>({id:uid(),label:label||"New Week",groups:[mkGroup()],localDeliveries:[],crossdockDrops:[],accessorials:[],openSections:{main:true,local:false,xdrop:false,acc:false,otr:true}});
 const mkLocal=()=>({id:uid(),destination:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",otrBroughtBy:"",notes:"",status:""});
-const mkXDrop=()=>({id:uid(),location:"",deliveryLocation:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",broughtByOtr:"",deliveringOtr:"",notes:"",status:""});
-const mkAcc=()=>({id:uid(),broker:"",loadNum:"",amount:"",type:"Detention",notes:"",status:""});
+const mkXDrop=()=>({id:uid(),location:"",deliveryLocation:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",broughtByOtr:"",deliveringOtr:"",notes:"",status:"",manualStatus:"",createdAt:new Date().toISOString()});
+
+// ─── CROSSDOCK STATUS SYSTEM ─────────────────────────────────────────────
+// Status is either MANUAL (user picked Issues / Dispatched / Delivered from the
+// dropdown, and it sticks) or AUTO (derived from row state — Waiting Appointment
+// / Need Driver / Driver Assigned — recomputed on every render, never stored).
+//
+// This means:
+//   • If user picks a manual status, it's saved to r.manualStatus
+//   • Auto states are NEVER saved to the row — the dropdown just shows them
+//   • To "reset" from manual back to auto, user picks the "Auto" option
+//
+// r.status is a legacy field kept only so old rows don't lose their prior state
+// on first load — we migrate it into manualStatus if it's a manual-type value.
+const XDOCK_MANUAL_STATUSES=["Issues","Dispatched","Delivered"];
+const XDOCK_AUTO_STATUSES=["Waiting Appointment","Need Driver","Driver Assigned"];
+const XDOCK_ALL_STATUSES=[...XDOCK_AUTO_STATUSES,...XDOCK_MANUAL_STATUSES];
+
+// Read the effective status of a row. Manual wins if set, else derive from state.
+// Also handles legacy `status` field from before the manualStatus split.
+function xdockEffectiveStatus(r){
+  const m=(r.manualStatus||"").trim();
+  if(m&&XDOCK_MANUAL_STATUSES.includes(m))return m;
+  // Legacy migration: old rows have `status` set to whatever the user picked before.
+  // If that legacy value is manual-type, treat as manual (but don't mutate the row here).
+  const legacy=(r.status||"").trim();
+  if(XDOCK_MANUAL_STATUSES.includes(legacy))return legacy;
+  // Otherwise derive from row state
+  return xdockDerivedStatus(r);
+}
+
+// Compute the auto-status from row state (never manual states — those are handled above)
+function xdockDerivedStatus(r){
+  const hasTime=(r.datetime||"").trim().length>0;
+  const hasDriver=(r.driver||"").trim().length>0;
+  if(!hasTime)return "Waiting Appointment";
+  if(!hasDriver)return "Need Driver";
+  return "Driver Assigned";
+}
+
+// Colors per user spec:
+//   Waiting Appointment — bright gray
+//   Need Driver — bright red
+//   Issues — bright orange
+//   Driver Assigned — bright yellow
+//   Dispatched — purple
+//   Delivered — light green (deemed "almost invisible" via 30% opacity at card level)
+function xdockStatusStyle(status){
+  switch(status){
+    case"Waiting Appointment":return{bg:"#e5e7eb",c:"#374151",bd:"#9ca3af",dot:"#6b7280"};
+    case"Need Driver":         return{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444",dot:"#ef4444"};
+    case"Issues":              return{bg:"#ffedd5",c:"#9a3412",bd:"#f97316",dot:"#f97316"};
+    case"Driver Assigned":     return{bg:"#fef9c3",c:"#713f12",bd:"#eab308",dot:"#eab308"};
+    case"Dispatched":          return{bg:"#f3e8ff",c:"#6b21a8",bd:"#a855f7",dot:"#a855f7"};
+    case"Delivered":           return{bg:"#dcfce7",c:"#166534",bd:"#22c55e",dot:"#22c55e"};
+    default:                   return{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1",dot:"#94a3b8"};
+  }
+}
+
+// Days-sitting counter — whole days since the row was created. Format "3d" or "—".
+// Returns "—" if createdAt is missing (existing rows from before this feature).
+function daysInCrossdock(r){
+  if(!r.createdAt)return "—";
+  const created=new Date(r.createdAt).getTime();
+  if(!isFinite(created))return "—";
+  const now=Date.now();
+  const days=Math.floor((now-created)/(1000*60*60*24));
+  return days+"d";
+}
+
+// ─── ACCESSORIAL STATUS SYSTEM ───────────────────────────────────────────
+// Only two statuses per user spec: Requested (bright red) + Paid (light green).
+// "Approved" was removed. Migration: any legacy "Approved" row shows as Requested
+// (safer default — it hasn't been paid yet, so still awaiting resolution).
+const ACC_STATUSES=["Requested","Paid"];
+function accEffectiveStatus(r){
+  const s=(r.status||"").trim();
+  if(s==="Paid")return "Paid";
+  // Everything else (Requested, Approved-legacy, blank) counts as Requested
+  return "Requested";
+}
+function accStatusStyle(status){
+  switch(status){
+    case"Paid":     return{bg:"#dcfce7",c:"#166534",bd:"#22c55e",dot:"#22c55e"};
+    case"Requested":return{bg:"#fee2e2",c:"#991b1b",bd:"#ef4444",dot:"#ef4444"};
+    default:        return{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1",dot:"#94a3b8"};
+  }
+}
+const mkAcc=()=>({id:uid(),broker:"",loadNum:"",amount:"",type:"Detention",notes:"",status:"",driver:""});
 
 function calcGroup(g){
   const loads=g.loads.map(l=>{
@@ -2069,18 +2038,8 @@ function App(){
     // ---- 1. Try LOCAL PDF.js + regex parser first (free, no API) ----
     if(/pdf$/i.test(file.type)||/\.pdf$/i.test(file.name||"")){
       try{
-        const{text,items}=await extractPdfText(file);
+        const text=await extractPdfText(file);
         const parsed=parseRateCon(text);
-        // Positional (coordinate-based) extraction wins for shipper/receiver
-        // when a known layout is recognized — it reconstructs table columns
-        // exactly, so no column-tail junk regardless of spacing.
-        const pos=extractStopsPositional(items);
-        if(pos){
-          if(pos.shipperCo)parsed.shipperCo=pos.shipperCo;
-          if(pos.shipperAddr)parsed.shipperAddr=pos.shipperAddr;
-          if(pos.receiverCo)parsed.receiverCo=pos.receiverCo;
-          if(pos.receiverAddr)parsed.receiverAddr=pos.receiverAddr;
-        }
         const candidate=rateConToLoadFields(parsed);
         // Use the local result only if we got SOMETHING meaningful out of it.
         const meaningful=(candidate.sr&&candidate.sr.length>3)||candidate.broker||candidate.rate||candidate.pickup;
@@ -2397,6 +2356,294 @@ function App(){
   // For editing/saving/active operations, keep using `weeks` (live only).
   const allTimeWeeks=React.useMemo(()=>[...weeks,...archivedWeeks],[weeks,archivedWeeks]);
 
+  // ─── CROSSDOCK: Transfer to Next Week ───────────────────────────────────
+  // Moves a crossdock row from the current week to the next week. Auto-creates
+  // the next week if it doesn't exist. Preserves createdAt (days-sitting keeps
+  // counting) and stamps transferredFrom for the "transferred" badge.
+  const transferXdockToNextWeek=(rowId)=>{
+    const curIdx=Math.min(activeWeek,weeks.length-1);
+    const curWeek=weeks[curIdx];
+    if(!curWeek)return;
+    const row=(curWeek.crossdockDrops||[]).find(r=>r.id===rowId);
+    if(!row)return;
+    setWeeksAndSave(prev=>{
+      const next=[...prev];
+      // Ensure next week exists — create one if we're at the last week
+      let nextIdx=curIdx+1;
+      if(nextIdx>=next.length){
+        // Build a label; try to increment date-like labels, else just "New Week"
+        const parentLabel=next[curIdx]?.label||"";
+        const newLabel=parentLabel?parentLabel+" +1":"New Week";
+        next.push(mkWeek(newLabel));
+      }
+      // Remove from current week
+      next[curIdx]={
+        ...next[curIdx],
+        crossdockDrops:(next[curIdx].crossdockDrops||[]).filter(r=>r.id!==rowId)
+      };
+      // Add to next week with same id (preserves createdAt naturally) + transferred marker
+      next[nextIdx]={
+        ...next[nextIdx],
+        crossdockDrops:[
+          ...(next[nextIdx].crossdockDrops||[]),
+          {...row,transferredFrom:curWeek.label||"prev week"}
+        ]
+      };
+      return next;
+    });
+  };
+
+  // ─── CROSSDOCK: Unified card renderer ────────────────────────────────────
+  // Called from BOTH the top "Loads Dropped at Crossdock" section AND the side
+  // panel's Xdock tab. Both places render identical cards from this one function
+  // so their UX is finally consistent.
+  //
+  // Params:
+  //   row — the crossdock row object
+  //   opts — {compact: bool} — currently both use the same layout, so unused
+  const renderXdockCard=(row,opts={})=>{
+    const effStatus=xdockEffectiveStatus(row);
+    const sp=xdockStatusStyle(effStatus);
+    const isDelivered=effStatus==="Delivered";
+    const days=daysInCrossdock(row);
+    // Update helper — writes to the row in the current week
+    const upd=(field,value)=>updSub("crossdockDrops",row.id,field,value);
+    // Status dropdown handler: manual states get stored, auto states clear manualStatus
+    const onStatusChange=(newStatus)=>{
+      if(!newStatus){
+        // "Auto" — clear both status fields
+        upd("manualStatus","");
+        upd("status","");
+      } else if(XDOCK_MANUAL_STATUSES.includes(newStatus)){
+        // User picked a manual state — store it
+        upd("manualStatus",newStatus);
+        upd("status",newStatus); // keep legacy field aligned so other code that reads it doesn't get confused
+      } else {
+        // User picked an auto state from the dropdown — just clear manual, let derivation take over
+        upd("manualStatus","");
+        upd("status","");
+      }
+    };
+    return(
+      <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderLeft:`4px solid ${sp.bd}`,borderRadius:"8px",overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDelivered?0.3:1,marginBottom:"10px",transition:"opacity .2s"}}>
+        {/* HEADER — location + status pill + days badge */}
+        <div style={{padding:"8px 12px",background:sp.bg,display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap",borderBottom:`1px solid ${sp.bd}`}}>
+          <span style={{width:"8px",height:"8px",borderRadius:"50%",background:sp.dot,flexShrink:0}}/>
+          <input type="text" value={row.location||""} onChange={e=>upd("location",e.target.value)}
+            placeholder="Crossdock location where load is sitting..."
+            style={{flex:1,minWidth:"120px",background:"transparent",border:"none",outline:"none",fontSize:"13px",fontWeight:"700",color:sp.c,fontFamily:"inherit",padding:"2px 0"}}
+            disabled={isViewer}/>
+          {row.transferredFrom&&<span title={"Transferred from "+row.transferredFrom} style={{fontSize:"9px",color:sp.c,background:"rgba(255,255,255,.6)",border:`1px solid ${sp.bd}`,padding:"1px 6px",borderRadius:"3px",fontWeight:"700",cursor:"help"}}>↩ transferred</span>}
+          {row.carriedFrom&&<span title={"Carried from "+row.carriedFrom} style={{fontSize:"9px",color:sp.c,background:"rgba(255,255,255,.6)",border:`1px solid ${sp.bd}`,padding:"1px 6px",borderRadius:"3px",fontWeight:"700",cursor:"help"}}>↩ carried</span>}
+          {/* Days-sitting badge */}
+          <span title="Days sitting in crossdock (from creation date)"
+            style={{fontSize:"10px",fontWeight:"800",color:sp.c,background:"rgba(255,255,255,.7)",border:`1px solid ${sp.bd}`,padding:"2px 7px",borderRadius:"4px",cursor:"help"}}>
+            ⏱ {days}
+          </span>
+          {/* Status dropdown */}
+          <select value={effStatus} onChange={e=>onStatusChange(e.target.value)}
+            style={{fontSize:"10px",fontWeight:"700",padding:"3px 6px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:"#fff",color:sp.c,cursor:isViewer?"not-allowed":"pointer",outline:"none",maxWidth:"140px"}}
+            disabled={isViewer}>
+            <option value="">— Auto —</option>
+            <optgroup label="Auto (derived from fields)">
+              {XDOCK_AUTO_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
+            </optgroup>
+            <optgroup label="Manual">
+              {XDOCK_MANUAL_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
+            </optgroup>
+          </select>
+        </div>
+        {/* BODY — grid of fields */}
+        <div style={{padding:"10px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 10px"}}>
+          {/* Delivery location — full width */}
+          <div style={{gridColumn:"1/-1"}}>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>📍 Delivery Location</div>
+            <input type="text" value={row.deliveryLocation||""} onChange={e=>upd("deliveryLocation",e.target.value)}
+              placeholder="Where load needs to be delivered..."
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}
+              disabled={isViewer}/>
+          </div>
+          {/* Broker + Load# */}
+          <div>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Broker</div>
+            <input type="text" value={row.broker||""} onChange={e=>upd("broker",e.target.value)}
+              placeholder="Broker name"
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}
+              disabled={isViewer}/>
+          </div>
+          <div>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Load #</div>
+            <input type="text" value={row.loadNum||""} onChange={e=>upd("loadNum",e.target.value)}
+              placeholder="Load #"
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}
+              disabled={isViewer}/>
+          </div>
+          {/* Date/Time — full width */}
+          <div style={{gridColumn:"1/-1"}}>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Date / Time</div>
+            <input type="text" value={row.datetime||""} onChange={e=>upd("datetime",e.target.value)}
+              placeholder="e.g. 6/5/2026 8AM-5PM"
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}
+              disabled={!isAdmin}/>
+          </div>
+          {/* Current + Original driver */}
+          <div>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>🚛 Current Driver</div>
+            <input type="text" value={row.driver||""} onChange={e=>upd("driver",e.target.value)}
+              placeholder="Who's handling it now"
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}
+              disabled={isViewer}/>
+          </div>
+          <div>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Original Driver</div>
+            <input type="text" value={row.broughtByOtr||""} onChange={e=>upd("broughtByOtr",e.target.value)}
+              placeholder="Who brought it to crossdock"
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}
+              disabled={isViewer}/>
+          </div>
+          {/* Notes — full width */}
+          <div style={{gridColumn:"1/-1"}}>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Notes</div>
+            <textarea value={row.notes||""} onChange={e=>upd("notes",e.target.value)}
+              placeholder="Notes..."
+              rows={2}
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box",resize:"vertical",minHeight:"36px"}}
+              disabled={isViewer}/>
+          </div>
+        </div>
+        {/* FOOTER — action buttons */}
+        {isAdmin&&(
+          <div style={{padding:"6px 12px 10px",display:"flex",justifyContent:"flex-end",gap:"6px",flexWrap:"wrap"}}>
+            <button onClick={()=>transferXdockToNextWeek(row.id)}
+              title="Move this card to next week (creates it if needed). Days-sitting keeps counting."
+              style={{background:"#eff6ff",color:"#1e40af",border:"1px solid #bfdbfe",borderRadius:"5px",padding:"4px 10px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>
+              → Transfer to next week
+            </button>
+            <button onClick={()=>{if(confirm("Delete this crossdock entry?"))setW("crossdockDrops",(week.crossdockDrops||[]).filter(r=>r.id!==row.id));}}
+              style={{background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:"5px",padding:"4px 10px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>
+              × Remove
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Sort helper — non-delivered first, delivered at the bottom, otherwise keep insertion order.
+  const sortXdockRows=(rows)=>{
+    const idx=new Map(rows.map((r,i)=>[r.id,i]));
+    return[...rows].sort((a,b)=>{
+      const aDone=xdockEffectiveStatus(a)==="Delivered";
+      const bDone=xdockEffectiveStatus(b)==="Delivered";
+      if(aDone!==bDone)return aDone?1:-1;
+      return idx.get(a.id)-idx.get(b.id);
+    });
+  };
+
+  // ─── ACCESSORIALS: Unified card renderer ────────────────────────────────
+  // Same pattern as crossdock — one shared card used by top section + side panel.
+  //
+  // Fields: Type (dropdown), Broker, Load#, Amount, Driver (NEW), Notes.
+  // Status: Requested (red) / Paid (green). Approved is gone per spec.
+  // Paid cards render at 30% opacity.
+  const renderAccCard=(row)=>{
+    const typeColors={Detention:"#ef4444",Layover:"#f59e0b",Lumper:"#06b6d4",TONU:"#a855f7",Other:"#64748b"};
+    const tColor=typeColors[row.type]||typeColors.Other;
+    const effStatus=accEffectiveStatus(row);
+    const sp=accStatusStyle(effStatus);
+    const isPaid=effStatus==="Paid";
+    const upd=(field,value)=>updSub("accessorials",row.id,field,value);
+    return(
+      <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderLeft:`4px solid ${tColor}`,borderRadius:"8px",overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isPaid?0.3:1,marginBottom:"10px",transition:"opacity .2s"}}>
+        {/* HEADER — type + broker + amount + carried + status */}
+        <div style={{padding:"8px 12px",background:sp.bg,display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap",borderBottom:`1px solid ${sp.bd}`}}>
+          <select value={row.type||"Detention"} onChange={e=>upd("type",e.target.value)}
+            style={{fontSize:"11px",fontWeight:"800",color:tColor,background:"#fff",border:`1px solid ${tColor}`,borderRadius:"4px",padding:"3px 7px",cursor:isViewer?"not-allowed":"pointer",outline:"none"}}
+            disabled={isViewer}>
+            <option>Detention</option>
+            <option>Lumper</option>
+            <option>Layover</option>
+            <option>TONU</option>
+            <option>Other</option>
+          </select>
+          <span style={{fontSize:"12px",fontWeight:"700",color:sp.c,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:"80px"}}>
+            {row.broker||<span style={{opacity:.5,fontStyle:"italic",fontWeight:"400"}}>No broker</span>}
+          </span>
+          {row.carriedFrom&&<span title={"Carried from "+row.carriedFrom} style={{fontSize:"9px",color:sp.c,background:"rgba(255,255,255,.6)",border:`1px solid ${sp.bd}`,padding:"1px 6px",borderRadius:"3px",fontWeight:"700",cursor:"help"}}>↩ carried</span>}
+          {row.amount&&<span style={{fontSize:"13px",fontWeight:"900",color:sp.c,whiteSpace:"nowrap"}}>${parseFloat(row.amount||0).toLocaleString()}</span>}
+          <select value={effStatus} onChange={e=>upd("status",e.target.value)}
+            style={{fontSize:"10px",fontWeight:"700",padding:"3px 6px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:"#fff",color:sp.c,cursor:isViewer?"not-allowed":"pointer",outline:"none"}}
+            disabled={isViewer}>
+            {ACC_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        {/* BODY */}
+        <div style={{padding:"10px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 10px"}}>
+          {/* Broker — full width, editable */}
+          <div style={{gridColumn:"1/-1"}}>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>🏢 Broker</div>
+            <input type="text" value={row.broker||""} onChange={e=>upd("broker",e.target.value)}
+              placeholder="Broker name..."
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box",fontWeight:"600"}}
+              disabled={isViewer}/>
+          </div>
+          {/* Load# + Amount */}
+          <div>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Load #</div>
+            <input type="text" value={row.loadNum||""} onChange={e=>upd("loadNum",e.target.value)}
+              placeholder="Load #"
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}
+              disabled={isViewer}/>
+          </div>
+          <div>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Amount $</div>
+            <input type="number" value={row.amount||""} onChange={e=>upd("amount",e.target.value)}
+              placeholder="0"
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box",fontWeight:"700",color:"#059669"}}
+              disabled={isViewer}/>
+          </div>
+          {/* NEW Driver field — full width */}
+          <div style={{gridColumn:"1/-1"}}>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>🚛 Driver</div>
+            <input type="text" value={row.driver||""} onChange={e=>upd("driver",e.target.value)}
+              placeholder="Driver name..."
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}
+              disabled={isViewer}/>
+          </div>
+          {/* Notes — full width */}
+          <div style={{gridColumn:"1/-1"}}>
+            <div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"3px"}}>Notes</div>
+            <textarea value={row.notes||""} onChange={e=>upd("notes",e.target.value)}
+              placeholder="Notes / description..."
+              rows={2}
+              style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px 8px",fontSize:"12px",background:"#f8fafc",outline:"none",fontFamily:"inherit",boxSizing:"border-box",resize:"vertical",minHeight:"36px"}}
+              disabled={isViewer}/>
+          </div>
+        </div>
+        {/* FOOTER — remove button */}
+        {isAdmin&&(
+          <div style={{padding:"6px 12px 10px",display:"flex",justifyContent:"flex-end"}}>
+            <button onClick={()=>{if(confirm("Delete this accessorial?"))setW("accessorials",(week.accessorials||[]).filter(r=>r.id!==row.id));}}
+              style={{background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:"5px",padding:"4px 10px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>
+              × Remove
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Sort: Paid at bottom, otherwise insertion order (matches crossdock pattern)
+  const sortAccRows=(rows)=>{
+    const idx=new Map(rows.map((r,i)=>[r.id,i]));
+    return[...rows].sort((a,b)=>{
+      const aPaid=accEffectiveStatus(a)==="Paid";
+      const bPaid=accEffectiveStatus(b)==="Paid";
+      if(aPaid!==bPaid)return aPaid?1:-1;
+      return idx.get(a.id)-idx.get(b.id);
+    });
+  };
+
   // ─── MAIN BOARD PARSER ───────────────────────────────────────────────────
   // Parses a Google Sheets HTML export of the weekly Main Board and extracts
   // per-dispatcher, per-driver data. Structure of the sheet (constants that
@@ -2465,47 +2712,26 @@ function App(){
     sections.forEach(sec=>{
       const drivers=[];
       let i=sec.startRow;
-      while(i<=sec.endRow-2){ // need at least 3 rows: header + MILES + gross-total
+      while(i<=sec.endRow-3){ // need at least 4 rows for a driver block
         const r1=grid[i]||[];  // driver header: # | # | name+co | truck# | day1 pickup | ...
         const r2=grid[i+1]||[]; // phone + deliveries
         const r3=grid[i+2]||[]; // "MILES" + total + per-day
         const r4=grid[i+3]||[]; // "GROSS" + total + per-day
         // A driver block starts when col 1 is a small integer (driver slot 1-11) AND col 3 is MILES-like row below
-        // A driver block starts at a header row: col1 is a small slot integer (1-15) and col2 has a name.
-        // The MILES row follows within 1-2 rows; the GROSS TOTAL is the first $ value on the row
-        // immediately after MILES — WHETHER OR NOT it carries the literal "GROSS" label (the sheet
-        // is inconsistent: some trucks label it, some leave col1 blank). Requiring the label here
-        // silently dropped drivers (e.g. Lukas), so we no longer require it.
-        const hdrSlot=r1[1]&&/^\d{1,2}$/.test(r1[1]);
-        const hdrName=(r1[2]||"").trim();
-        const nameLooksReal=hdrName&&/[A-Za-z]/.test(hdrName)&&!/^MILES$|^GROSS$/i.test(hdrName);
-        // Locate the MILES row: it's r3 in the normal layout, but tolerate it being r2.
-        let milesRel=-1;
-        if((r3[1]||"")==="MILES")milesRel=2;
-        else if((r2[1]||"")==="MILES")milesRel=1;
-        const isDriverHeader=hdrSlot&&nameLooksReal&&milesRel>=0;
+        const isDriverHeader=r1[1]&&/^\d{1,2}$/.test(r1[1])&&r3[1]==="MILES"&&r4[1]==="GROSS";
         if(!isDriverHeader){i++;continue;}
         // Extract driver info
-        const rawName=(r1[2]||"").replace(/\*+/g,"").replace(/\s*\/.*$/,"").replace(/\s+Co[\s-]?driver.*$/i,"").replace(/\s+Has\s+Chains.*$/i,"").trim();
+        const rawName=(r1[2]||"").replace(/\*+\s*Co[- ]?driver.*/i,"").replace(/\*+/g,"").trim();
         const truck=(r1[3]||"").trim();
         const phone=(r2[2]||"").trim();
-        // GROSS total = first $-value on the row right after the MILES row (labeled or not).
-        const grossRow=grid[i+milesRel+1]||[];
-        let gross=NaN;
-        for(let c=2;c<grossRow.length;c++){
-          const cell=(grossRow[c]||"");
-          if(cell.includes("$")){
-            const num=parseFloat(cell.replace(/[$,\s]/g,""));
-            if(isFinite(num)){gross=num;break;}
-          }
-        }
-        // Skip empty driver slots (no name, no positive gross)
+        // Gross = col 2 of GROSS row, format "$1,234" or "$1,234.56"
+        const grossStr=(r4[2]||"").replace(/[$,\s]/g,"");
+        const gross=parseFloat(grossStr);
+        // Skip empty driver slots (no name, no gross)
         if(rawName&&isFinite(gross)&&gross>0){
           drivers.push({name:rawName,truck,phone,gross:Math.round(gross)});
         }
-        // Advance past this driver: header + up to the gross row. Then let the loop re-detect
-        // the next header (blocks aren't always exactly 4 rows).
-        i+=milesRel+2;
+        i+=4;
       }
       if(drivers.length>0){
         dispatchersOut.push({name:sec.dispName,drivers});
@@ -3148,24 +3374,17 @@ ${accRows.length>0?`
   // 'important' trailers outrank 'reschedule' trailers.
   // Backward compat: legacy boolean `needsReschedule:true` on a load OR group
   // is interpreted as flag='reschedule' until the user touches it.
-  // Find a load by gid+lid across ALL weeks — live AND archived. Returns
-  // {week, group, load, weekIdx, isArchived} or null. Used by the manual-address
-  // modal + save handler; the modal lists loads from any week (via Insights
-  // buckets), including archived ones so historical loads can get addresses too.
+  // Find a load by gid+lid across ALL live weeks. Returns {week, group, load, weekIdx}
+  // or null. Used by the manual-address modal + save handler; the modal lists loads
+  // from any week (via Insights buckets), so restricting to `week.groups` was the
+  // bug that made "Add Address" silently no-op on cross-week loads.
   const findLoadAcrossLiveWeeks=(gid,lid)=>{
     for(let wi=0;wi<weeks.length;wi++){
       const w=weeks[wi];
       const g=(w.groups||[]).find(g=>g.id===gid);
       if(!g)continue;
       const l=(g.loads||[]).find(l=>l.id===lid);
-      if(l)return{week:w,group:g,load:l,weekIdx:wi,isArchived:false};
-    }
-    for(let ai=0;ai<archivedWeeks.length;ai++){
-      const w=archivedWeeks[ai];
-      const g=(w.groups||[]).find(g=>g.id===gid);
-      if(!g)continue;
-      const l=(g.loads||[]).find(l=>l.id===lid);
-      if(l)return{week:w,group:g,load:l,weekIdx:-1,isArchived:true};
+      if(l)return{week:w,group:g,load:l,weekIdx:wi};
     }
     return null;
   };
@@ -3179,7 +3398,7 @@ ${accRows.length>0?`
     if(!normCity)return[];
     const targetBroker=(targetLoad.broker||"").trim();
     const out=[];
-    const scan=(wArr,isLiveArr)=>wArr.forEach(w=>(w.groups||[]).forEach(g=>(g.loads||[]).forEach(l=>{
+    weeks.forEach(w=>(w.groups||[]).forEach(g=>(g.loads||[]).forEach(l=>{
       if(g.id===targetGid&&l.id===targetLid)return;
       if(l.shipperAddr&&String(l.shipperAddr).trim())return;
       const{s:lsCity}=parseSR(l.sr||"");
@@ -3191,39 +3410,25 @@ ${accRows.length>0?`
         broker:l.broker||"",
         pickup:l.pickup||"",
         rate:parseFloat(l.rate)||0,
-        sameBroker:targetBroker&&(l.broker||"").trim()===targetBroker,
-        archived:!isLiveArr
+        sameBroker:targetBroker&&(l.broker||"").trim()===targetBroker
       });
     })));
-    scan(weeks,true);
-    scan(archivedWeeks,false);
     return out;
   };
 
-  // Save address to a set of {gid, lid} targets across ALL weeks — live and
-  // archived. Called from the manual entry modal after user picks siblings.
+  // Save address to a set of {gid, lid} targets across all live weeks.
+  // Called from the manual entry modal after user picks which siblings to include.
   const saveManualShipperAddr=(gid,lid,address,alsoApplyTo=[])=>{
     const trimmed=String(address||"").trim();
     if(!trimmed){setAddrEntryFor(null);return;}
     const targetKey=gid+":"+lid;
     // Build a Set of "gid:lid" keys we want to update
     const keys=new Set([targetKey,...alsoApplyTo.map(t=>t.gid+":"+t.lid)]);
-    const hasKey=(wArr)=>wArr.some(w=>(w.groups||[]).some(g=>(g.loads||[]).some(l=>keys.has(g.id+":"+l.id))));
-    const applyKeys=(wArr)=>wArr.map(w=>({...w,groups:(w.groups||[]).map(g=>({...g,loads:(g.loads||[]).map(l=>{
+    setWeeksAndSave(ws=>ws.map(w=>({...w,groups:(w.groups||[]).map(g=>({...g,loads:(g.loads||[]).map(l=>{
       const k=g.id+":"+l.id;
       if(keys.has(k))return{...l,shipperAddr:trimmed};
       return l;
-    })}))}));
-    // Live weeks — only touch when a target actually lives there (avoids a
-    // pointless undo snapshot + Sheets save for archive-only edits)
-    if(hasKey(weeks))setWeeksAndSave(ws=>applyKeys(ws));
-    // Archived weeks — same key set applies since gid/lid are preserved on archive
-    if(hasKey(archivedWeeks)){
-      const newArchive=applyKeys(archivedWeeks);
-      setArchivedWeeks(newArchive);
-      localStorage.setItem("fcbv2_archive",JSON.stringify(newArchive));
-      saveToSheets({archive:newArchive});
-    }
+    })}))})));
     setAddrEntryFor(null);
     setToasts(t=>t.filter(x=>!(x.kind==="addr-miss"&&x.gid===gid&&x.lid===lid)));
   };
@@ -3629,7 +3834,6 @@ ${accRows.length>0?`
             <div style={{fontSize:"14px",fontWeight:"800",color:"#0f1f3d",marginBottom:"4px"}}>Enter shipper address</div>
             <div style={{fontSize:"11px",color:"#64748b",marginBottom:"12px",lineHeight:"1.4"}}>
               <strong>{sCity||"(unknown city)"}</strong>{l.broker?<> · {l.broker}</>:null} · {found.week.label||"current week"}
-              {found.isArchived&&<span style={{marginLeft:"6px",fontSize:"9px",background:"#ede9fe",color:"#5b21b6",padding:"1px 6px",borderRadius:"3px",fontWeight:"700"}}>ARCHIVED</span>}
             </div>
             <input
               autoFocus
@@ -3678,7 +3882,6 @@ ${accRows.length>0?`
                           <div style={{fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                             {s.broker||"(no broker)"}
                             {s.sameBroker&&<span style={{marginLeft:"6px",fontSize:"9px",background:"#dbeafe",color:"#1e40af",padding:"1px 5px",borderRadius:"3px",fontWeight:"700"}}>same broker</span>}
-                            {s.archived&&<span style={{marginLeft:"6px",fontSize:"9px",background:"#ede9fe",color:"#5b21b6",padding:"1px 5px",borderRadius:"3px",fontWeight:"700"}}>archived</span>}
                           </div>
                           <div style={{fontSize:"10px",color:"#64748b",marginTop:"1px"}}>
                             {s.weekLabel&&<span>{s.weekLabel} · </span>}
@@ -4576,7 +4779,7 @@ ${accRows.length>0?`
                   <button onClick={()=>{
                     if(activeSideTab==="local")setW("localDeliveries",[...(week.localDeliveries||[]),mkLocal()]);
                     else if(activeSideTab==="xdrop")setW("crossdockDrops",[...(week.crossdockDrops||[]),mkXDrop()]);
-                    else if(activeSideTab==="acc")setW("accessorials",[...(week.accessorials||[]),{id:uid(),broker:"",loadNum:"",type:"Detention",amount:"",notes:"",status:"Requested"}]);
+                    else if(activeSideTab==="acc")setW("accessorials",[...(week.accessorials||[]),{...mkAcc(),status:"Requested"}]);
                   }} style={{background:"rgba(255,255,255,.95)",color:_pc,border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>+ Add</button>
                   <button onClick={()=>setActiveSideTab(null)} style={{background:"rgba(255,255,255,.2)",border:"none",color:"#fff",borderRadius:"5px",padding:"3px 9px",fontSize:"13px",cursor:"pointer",lineHeight:1}}>✕</button>
                 </div>
@@ -4654,118 +4857,14 @@ ${accRows.length>0?`
                 {activeSideTab==="xdrop"&&(()=>{
                   const rows=week.crossdockDrops||[];
                   if(!rows.length)return(<div style={{textAlign:"center",padding:"30px 10px",color:"#94a3b8",fontSize:"12px"}}>No crossdock entries this week.<br/><span style={{fontSize:"10px"}}>Click + Add to create one.</span></div>);
-                  return rows.map(r=>{
-                    const flagged=xdropNeedsAttention(r);
-                    return(
-                      <div key={r.id} style={{background:"#fff",border:`1px solid ${flagged?"#f59e0b":"#e2e8f0"}`,borderLeft:`4px solid ${flagged?"#f59e0b":"#a855f7"}`,borderRadius:"7px",padding:"10px 12px",marginBottom:"10px",boxShadow:"0 1px 2px rgba(0,0,0,.04)"}}>
-                        {/* Row 1 — crossdock location headline + alert + status */}
-                        <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"8px"}}>
-                          {flagged&&<span title="Needs attention — missing required field" style={{fontSize:"13px",cursor:"help"}}>⚠️</span>}
-                          <input type="text" value={r.location||""} onChange={e=>updRow("crossdockDrops",r.id,"location",e.target.value)} placeholder="Crossdock location (where load is sitting)..." style={{...inpStyle,fontWeight:"700",fontSize:"13px",flex:1,border:"none",borderBottom:"1px solid #e2e8f0",borderRadius:"0",padding:"3px 0"}}/>
-                          <select value={r.status||""} onChange={e=>updRow("crossdockDrops",r.id,"status",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:"4px",padding:"3px 6px",fontSize:"10px",fontWeight:"700",background:"#fff",cursor:"pointer",color:r.status==="Delivered"?"#15803d":"#64748b"}}>
-                            <option value="">— Status —</option>
-                            <option value="At yard">At yard</option>
-                            <option value="Dispatched">Dispatched</option>
-                            <option value="Delivered">Delivered</option>
-                          </select>
-                        </div>
-                        {/* Row 2 — delivery location (the OTHER address) */}
-                        <div style={{marginBottom:"8px"}}>
-                          <label style={reqLblStyle}>📍 Delivery location (where it's going)</label>
-                          <input type="text" value={r.deliveryLocation||""} onChange={e=>updRow("crossdockDrops",r.id,"deliveryLocation",e.target.value)} placeholder="Final delivery destination..." style={inpStyle}/>
-                        </div>
-                        {/* Row 3 — broker + load# */}
-                        <div style={gridStyle}>
-                          <div><label style={lblStyle}>Broker</label><input type="text" value={r.broker||""} onChange={e=>updRow("crossdockDrops",r.id,"broker",e.target.value)} placeholder="Broker name" style={inpStyle}/></div>
-                          <div><label style={lblStyle}>Load #</label><input type="text" value={r.loadNum||""} onChange={e=>updRow("crossdockDrops",r.id,"loadNum",e.target.value)} placeholder="Load #" style={inpStyle}/></div>
-                        </div>
-                        {/* Row 4 — date/time */}
-                        <div style={{marginBottom:"8px"}}>
-                          <label style={lblStyle}>Date / Time</label>
-                          <input type="text" value={r.datetime||""} onChange={e=>updRow("crossdockDrops",r.id,"datetime",e.target.value)} placeholder="e.g. 6/5/2026 8AM-5PM" style={inpStyle}/>
-                        </div>
-                        {/* Row 5 — local truck + driver */}
-                        <div style={gridStyle}>
-                          <div><label style={lblStyle}>Local Truck</label>
-                            <select value={r.truck||""} onChange={e=>onPickTruck("crossdockDrops",r.id,e.target.value)} style={{...inpStyle,cursor:"pointer"}}>
-                              <option value="">— Truck —</option>
-                              {allTrucksLocal.map(t=><option key={t} value={t}>#{t}{truckAssignments[t]?" — "+truckAssignments[t]:""}</option>)}
-                            </select>
-                          </div>
-                          <div><label style={lblStyle}>Local Driver</label>
-                            <input list={`xdrop-drv-${r.id}`} value={r.driver||""} onChange={e=>updRow("crossdockDrops",r.id,"driver",e.target.value)} placeholder="Driver name" style={inpStyle}/>
-                            <datalist id={`xdrop-drv-${r.id}`}>{allDriversLocal.map(d=><option key={d} value={d}/>)}</datalist>
-                          </div>
-                        </div>
-                        {/* Row 6 — dual OTR drivers */}
-                        <div style={gridStyle}>
-                          <div><label style={reqLblStyle}>🚛 Brought by OTR</label>
-                            <input type="text" value={r.broughtByOtr||""} onChange={e=>updRow("crossdockDrops",r.id,"broughtByOtr",e.target.value)} placeholder="Who delivered to xdock" style={inpStyle}/>
-                          </div>
-                          <div><label style={reqLblStyle}>🚛 Delivering OTR</label>
-                            <input type="text" value={r.deliveringOtr||""} onChange={e=>updRow("crossdockDrops",r.id,"deliveringOtr",e.target.value)} placeholder="Who picks it up next" style={inpStyle}/>
-                          </div>
-                        </div>
-                        {/* Row 7 — notes */}
-                        <div style={{marginBottom:"6px"}}>
-                          <label style={lblStyle}>Notes</label>
-                          <textarea value={r.notes||""} onChange={e=>updRow("crossdockDrops",r.id,"notes",e.target.value)} placeholder="Notes..." rows={2} style={{...inpStyle,resize:"vertical",minHeight:"32px"}}/>
-                        </div>
-                        <div style={{display:"flex",justifyContent:"flex-end"}}>
-                          <button onClick={()=>{if(confirm("Delete this crossdock entry?"))delRow("crossdockDrops",r.id);}} style={{background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:"4px",padding:"3px 9px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>× Remove</button>
-                        </div>
-                      </div>
-                    );
-                  });
+                  return sortXdockRows(rows).map(r=>renderXdockCard(r));
                 })()}
 
                 {/* ───── EXTRAS / ACCESSORIALS ───── */}
                 {activeSideTab==="acc"&&(()=>{
                   const rows=week.accessorials||[];
                   if(!rows.length)return(<div style={{textAlign:"center",padding:"30px 10px",color:"#94a3b8",fontSize:"12px"}}>No accessorials this week.<br/><span style={{fontSize:"10px"}}>Click + Add to create one.</span></div>);
-                  const typeColors={Detention:"#ef4444",Layover:"#f59e0b",Lumper:"#06b6d4",TONU:"#a855f7"};
-                  return rows.map(r=>{
-                    const flagged=accNeedsAttention(r);
-                    const tColor=typeColors[r.type]||"#64748b";
-                    return(
-                      <div key={r.id} style={{background:"#fff",border:`1px solid ${flagged?"#f59e0b":"#e2e8f0"}`,borderLeft:`4px solid ${flagged?"#f59e0b":tColor}`,borderRadius:"7px",padding:"10px 12px",marginBottom:"10px",boxShadow:"0 1px 2px rgba(0,0,0,.04)"}}>
-                        {/* Row 1 — type dropdown + alert + status */}
-                        <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"8px"}}>
-                          {flagged&&<span title="Needs attention — unresolved or no amount" style={{fontSize:"13px",cursor:"help"}}>⚠️</span>}
-                          <select value={r.type||"Detention"} onChange={e=>updRow("accessorials",r.id,"type",e.target.value)} style={{border:"1px solid "+tColor,background:"#fff",color:tColor,fontWeight:"700",fontSize:"12px",padding:"4px 8px",borderRadius:"5px",cursor:"pointer",flex:1}}>
-                            <option value="Detention">Detention</option>
-                            <option value="Layover">Layover</option>
-                            <option value="Lumper">Lumper</option>
-                            <option value="TONU">TONU</option>
-                          </select>
-                          <select value={r.status||""} onChange={e=>updRow("accessorials",r.id,"status",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:"4px",padding:"3px 6px",fontSize:"10px",fontWeight:"700",background:"#fff",cursor:"pointer",color:r.status==="Paid"?"#15803d":r.status==="Approved"?"#0369a1":r.status==="Requested"?"#b45309":"#64748b"}}>
-                            <option value="">— Status —</option>
-                            <option value="Requested">Requested</option>
-                            <option value="Approved">Approved</option>
-                            <option value="Paid">Paid</option>
-                          </select>
-                        </div>
-                        {/* Row 2 — broker (REQUIRED) */}
-                        <div style={{marginBottom:"8px"}}>
-                          <label style={reqLblStyle}>🏢 Brokerage (required)</label>
-                          <input type="text" value={r.broker||""} onChange={e=>updRow("accessorials",r.id,"broker",e.target.value)} placeholder="Brokerage name..." style={{...inpStyle,fontWeight:"600",border:r.broker?inpStyle.border:"1px solid #f59e0b",background:r.broker?"#fff":"#fffbeb"}}/>
-                        </div>
-                        {/* Row 3 — load# + amount */}
-                        <div style={gridStyle}>
-                          <div><label style={lblStyle}>Load #</label><input type="text" value={r.loadNum||""} onChange={e=>updRow("accessorials",r.id,"loadNum",e.target.value)} placeholder="Load #" style={inpStyle}/></div>
-                          <div><label style={lblStyle}>Amount $</label><input type="number" value={r.amount||""} onChange={e=>updRow("accessorials",r.id,"amount",e.target.value)} placeholder="0" style={{...inpStyle,fontWeight:"700",color:"#059669"}}/></div>
-                        </div>
-                        {/* Row 4 — notes */}
-                        <div style={{marginBottom:"6px"}}>
-                          <label style={lblStyle}>Notes</label>
-                          <textarea value={r.notes||""} onChange={e=>updRow("accessorials",r.id,"notes",e.target.value)} placeholder="Notes..." rows={2} style={{...inpStyle,resize:"vertical",minHeight:"32px"}}/>
-                        </div>
-                        <div style={{display:"flex",justifyContent:"flex-end"}}>
-                          <button onClick={()=>{if(confirm("Delete this accessorial?"))delRow("accessorials",r.id);}} style={{background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:"4px",padding:"3px 9px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>× Remove</button>
-                        </div>
-                      </div>
-                    );
-                  });
+                  return sortAccRows(rows).map(r=>renderAccCard(r));
                 })()}
 
               </div>
@@ -6231,81 +6330,10 @@ ${accRows.length>0?`
       {(activeSection==="all"||activeSection==="xdrop")&&week.openSections?.xdrop&&(<div style={{border:"1px solid #ede9fe",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"10px",background:"#f5f3ff"}}>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:"8px",marginBottom:"8px"}}>
         {!(week.crossdockDrops||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No crossdock drops</div>}
-        {(week.crossdockDrops||[]).map((row,i)=>{
-          const dt=parsePickupDate(row.datetime);const dtT=dt?dt.getTime():null;const todayT=today.getTime();
-          let sp;
-          if(row.status==="Delivered"){sp={bg:"#dcfce7",c:"#14532d",bd:"#16a34a"};}
-          else if(row.status==="In Transit"){sp={bg:"#ede9fe",c:"#5b21b6",bd:"#7c3aed"};}
-          else if(row.status==="Waiting Appointment"){sp={bg:"#e0e7ff",c:"#3730a3",bd:"#6366f1"};}
-          else{sp=dtT&&dtT<=todayT?{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}:{bg:"#f1f5f9",c:"#64748b",bd:"#cbd5e1"};}
-          const isDone=row.status==="Delivered";
-          return(
-            <div key={row.id} style={{background:"#fff",border:`1px solid ${sp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${sp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isDone?.65:1}}>
-              <div style={{background:"#7c3aed",padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
-                {row.trailer&&<span style={{fontSize:"11px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.12)",padding:"2px 7px",borderRadius:"4px"}}>{row.trailer}</span>}
-                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.location||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No location</span>}</span>
-                {row.carriedFrom&&<span style={{fontSize:"8px",color:"#c4b5fd",background:"rgba(196,181,253,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>&#8617; carried</span>}
-                <select value={row.status||""} onChange={e=>updSub("crossdockDrops",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"100px"}} disabled={isViewer}>
-                  <option value="">-- status --</option>
-                  {["In Transit","Waiting Appointment","Delivered"].map(s=>(<option key={s}>{s}</option>))}
-                </select>
-              </div>
-              <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Broker</div>
-                <input value={row.broker||""} onChange={e=>updSub("crossdockDrops",row.id,"broker",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Broker" disabled={isViewer}/></div>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Load #</div>
-                <input value={row.loadNum||""} onChange={e=>updSub("crossdockDrops",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Date / Time</div>
-                <input value={row.datetime||""} onChange={e=>updSub("crossdockDrops",row.id,"datetime",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="3/31 8AM" disabled={!isAdmin}/></div>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Truck</div>
-                <select
-                  value={row.truck||""}
-                  onChange={e=>{
-                    const tk=e.target.value;
-                    updSub("crossdockDrops",row.id,"truck",tk);
-                    if(tk&&truckAssignments[tk]&&!row.driver){updSub("crossdockDrops",row.id,"driver",truckAssignments[tk]);}
-                  }}
-                  style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none",fontFamily:"inherit"}}
-                  disabled={isViewer}
-                >
-                  <option value="">— select truck —</option>
-                  {allTrucks.map(tk=>(<option key={tk} value={tk}>{truckAssignments[tk]?`#${tk} — ${truckAssignments[tk]}`:`#${tk}`}</option>))}
-                </select></div>
-                <div><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Driver</div>
-                <input value={row.driver||""} onChange={e=>updSub("crossdockDrops",row.id,"driver",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Driver" disabled={isViewer}/>
-                {/* Samsara live location pill */}
-                {(()=>{
-                  if(!row.truck)return null;
-                  const tk=liveTrucks[row.truck];
-                  if(!tk||!tk.address)return null;
-                  const parts=tk.address.split(",").map(s=>s.trim()).filter(Boolean);
-                  let short=tk.address;
-                  if(parts.length>=2){
-                    const lastPart=parts[parts.length-1];
-                    const state=lastPart.length<=2?lastPart:(parts[parts.length-2]||"");
-                    const city=lastPart.length<=2?parts[parts.length-2]:parts[parts.length-3];
-                    if(city&&state)short=city+", "+state;
-                    else short=parts.slice(-2).join(", ");
-                  }
-                  if(short.length>26)short=short.slice(0,24)+"…";
-                  const tip=tk.address+" — "+liveAgo(tk.asOf)+" (truck #"+row.truck+")";
-                  return(
-                    <div title={tip} style={{marginTop:"4px",fontSize:"10px",fontWeight:"700",color:"#a16207",background:"#fef3c7",border:"1px solid #fcd34d",padding:"2px 6px",borderRadius:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"help",display:"inline-block"}}>
-                      📍 {short}
-                    </div>
-                  );
-                })()}
-                </div>
-                <div style={{gridColumn:"1/-1"}}><div style={{fontSize:"9px",color:"#94a3b8",fontWeight:"700",textTransform:"uppercase",marginBottom:"2px"}}>Notes</div>
-                <input value={row.notes||""} onChange={e=>updSub("crossdockDrops",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Notes" disabled={isViewer}/></div>
-              </div>
-              {isAdmin&&<div style={{padding:"2px 12px 8px",display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setW("crossdockDrops",(week.crossdockDrops||[]).filter(r=>r.id!==row.id))} style={{fontSize:"9px",color:"#ef4444",background:"none",border:"1px solid #fecaca",borderRadius:"4px",padding:"2px 8px",cursor:"pointer"}}>&#10005; Remove</button></div>}
-            </div>
-          );
-        })}
+        {sortXdockRows(week.crossdockDrops||[]).map(row=>renderXdockCard(row))}
         </div>
         <div style={{display:"flex",gap:"6px",flexWrap:"wrap",alignItems:"center"}}>
-        {isAdmin&&<button onClick={()=>setW("crossdockDrops",[...(week.crossdockDrops||[]),{id:uid(),location:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",notes:"",status:""}])} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button>}
+        {isAdmin&&<button onClick={()=>setW("crossdockDrops",[...(week.crossdockDrops||[]),mkXDrop()])} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Crossdock Drop</button>}
         {isAdmin&&<button onClick={()=>setShowXdropLocModal(true)} style={{background:"#fff",color:"#7c3aed",border:"1px solid #7c3aed",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>📍 Partner Locations</button>}
       </div>
       </div>)}
@@ -6315,40 +6343,9 @@ ${accRows.length>0?`
       {(activeSection==="all"||activeSection==="acc")&&week.openSections?.acc&&(<div style={{border:"1px solid #fde68a",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"10px",background:"#fffbeb"}}>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:"8px",marginBottom:"8px"}}>
         {!(week.accessorials||[]).length&&<div style={{gridColumn:"1/-1",padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:"12px",background:"#fff",borderRadius:"8px",border:"1px solid #e2e8f0"}}>No accessorials</div>}
-        {(week.accessorials||[]).map((row,i)=>{
-          const TP={"Detention":{bg:"#fff7ed",c:"#c2410c",bd:"#f97316",hdr:"#b45309"},"Lumper":{bg:"#eff6ff",c:"#1e40af",bd:"#3b82f6",hdr:"#1e40af"},"Layover":{bg:"#f0fdf4",c:"#166534",bd:"#16a34a",hdr:"#166534"},"TONU":{bg:"#fff1f2",c:"#be123c",bd:"#f43f5e",hdr:"#be123c"},"Other":{bg:"#f8fafc",c:"#475569",bd:"#94a3b8",hdr:"#475569"}};
-          const SP={"Paid":{bg:"#dcfce7",c:"#14532d",bd:"#16a34a"},"Requested":{bg:"#fef9c3",c:"#713f12",bd:"#eab308"}};
-          const tp=TP[row.type||"Detention"]||TP["Other"];
-          const sp=SP[row.status]||{bg:"#f1f5f9",c:"#9ca3af",bd:"#e2e8f0"};
-          const isPaid=row.status==="Paid";
-          return(
-            <div key={row.id} style={{background:"#fff",border:`1px solid ${tp.bd}`,borderRadius:"10px",overflow:"hidden",borderLeft:`3px solid ${tp.bd}`,boxShadow:"0 1px 3px rgba(0,0,0,.06)",opacity:isPaid?.6:1}}>
-              <div style={{background:tp.hdr,padding:"7px 12px",display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
-                <select value={row.type||"Detention"} onChange={e=>updSub("accessorials",row.id,"type",e.target.value)} style={{fontSize:"10px",fontWeight:"800",color:"#fff",background:"rgba(255,255,255,.15)",border:"1px solid rgba(255,255,255,.3)",borderRadius:"4px",padding:"2px 5px",cursor:isViewer?"not-allowed":"pointer",outline:"none"}} disabled={isViewer}>
-                  <option>Detention</option><option>Lumper</option><option>Layover</option><option>TONU</option><option>Other</option>
-                </select>
-                <span style={{fontSize:"12px",fontWeight:"700",color:"#fff",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{row.broker||<span style={{opacity:.4,fontStyle:"italic",fontWeight:"400"}}>No broker</span>}</span>
-                {row.carriedFrom&&<span style={{fontSize:"8px",color:"rgba(255,255,255,.7)",background:"rgba(255,255,255,.15)",padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap"}}>↩ carried</span>}
-                {row.amount&&<span style={{fontSize:"13px",fontWeight:"900",color:"#fff",whiteSpace:"nowrap"}}>${parseFloat(row.amount||0).toLocaleString()}</span>}
-                <select value={row.status||""} onChange={e=>updSub("accessorials",row.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"700",padding:"2px 4px",borderRadius:"4px",border:`1px solid ${sp.bd}`,background:sp.bg,color:sp.c,cursor:"pointer",outline:"none",maxWidth:"80px"}} disabled={isViewer}>
-                  <option value="">— status —</option>
-                  <option>Requested</option><option>Paid</option>
-                </select>
-              </div>
-              <div style={{padding:"8px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
-                <div><span style={{color:"#94a3b8",fontSize:"9px",display:"block",fontWeight:"600",textTransform:"uppercase"}}>Load #</span>
-                <input value={row.loadNum||""} onChange={e=>updSub("accessorials",row.id,"loadNum",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Load #" disabled={isViewer}/></div>
-                <div><span style={{color:"#94a3b8",fontSize:"9px",display:"block",fontWeight:"600",textTransform:"uppercase"}}>Amount</span>
-                <input value={row.amount||""} onChange={e=>updSub("accessorials",row.id,"amount",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="$0" disabled={isViewer}/></div>
-                <div style={{gridColumn:"1/-1"}}><span style={{color:"#94a3b8",fontSize:"9px",display:"block",fontWeight:"600",textTransform:"uppercase"}}>Notes</span>
-                <input value={row.notes||""} onChange={e=>updSub("accessorials",row.id,"notes",e.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"3px 6px",fontSize:"11px",background:"#f8fafc",outline:"none"}} placeholder="Description" disabled={isViewer}/></div>
-              </div>
-              {isAdmin&&<div style={{padding:"4px 12px 8px",display:"flex",justifyContent:"flex-end"}}><button onClick={()=>updSub("accessorials",row.id,"_del",true)||setW("accessorials",(week.accessorials||[]).filter(r=>r.id!==row.id))} style={{fontSize:"9px",color:"#ef4444",background:"none",border:"1px solid #fecaca",borderRadius:"4px",padding:"2px 8px",cursor:"pointer"}}>✕ Remove</button></div>}
-            </div>
-          );
-        })}
+        {sortAccRows(week.accessorials||[]).map(row=>renderAccCard(row))}
         </div>
-        {isAdmin&&<button onClick={()=>setW("accessorials",[...(week.accessorials||[]),{id:uid(),broker:"",loadNum:"",type:"Detention",amount:"",notes:"",status:""}])} style={{background:"#b45309",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Accessorial</button>}
+        {isAdmin&&<button onClick={()=>setW("accessorials",[...(week.accessorials||[]),mkAcc()])} style={{background:"#b45309",color:"#fff",border:"none",borderRadius:"5px",padding:"4px 12px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>+ Add Accessorial</button>}
         </div>)}
     </div>
     )}
@@ -6890,11 +6887,7 @@ ${accRows.length>0?`
               });
             });
           });
-          const fullList=Object.entries(shippers).sort((a,b)=>{
-            // Shippers WITHOUT an address sink to the bottom of the list
-            if(a[1].hasAddress!==b[1].hasAddress)return a[1].hasAddress?-1:1;
-            return b[1].totalLoads-a[1].totalLoads;
-          });
+          const fullList=Object.entries(shippers).sort((a,b)=>b[1].totalLoads-a[1].totalLoads);
           if(!fullList.length)return(<div style={{padding:"40px 20px",textAlign:"center",color:"#94a3b8",fontSize:"13px"}}>No shipper data yet. Drop rate-cons onto loads to start tracking.</div>);
           // Live filter — matches address, city, or company name (case-insensitive substring)
           const searchTerm=shipperSearch.trim().toLowerCase();
@@ -6940,16 +6933,12 @@ ${accRows.length>0?`
                   <span/>
                 </div>
                 {list.length===0&&(<div style={{padding:"30px",textAlign:"center",color:"#94a3b8",fontSize:"12px"}}>No shippers match "{shipperSearch}"</div>)}
-                {list.map(([key,s],idx)=>{
+                {list.map(([key,s])=>{
                   const total=s.totalLoads;
                   const combinePct=total>0?Math.round(s.combined/total*100):0;
                   const avgRate=total>0?Math.round(s.totalRate/total):0;
                   const isExp=expandedShipper===key;
                   const pallets=s.pallets.slice().sort((a,b)=>a-b);
-                  // Divider where the "missing address" section begins (only when
-                  // there are addressed shippers above it)
-                  const prev=idx>0?list[idx-1][1]:null;
-                  const showNoAddrDivider=!s.hasAddress&&prev&&prev.hasAddress;
                   const palletMin=pallets[0]||0;
                   const palletMax=pallets[pallets.length-1]||0;
                   const palletAvg=pallets.length>0?Math.round(pallets.reduce((a,b)=>a+b,0)/pallets.length):0;
@@ -6965,15 +6954,7 @@ ${accRows.length>0?`
                   // Combine % color: green if mostly combined, red if mostly single, amber in middle
                   const pctColor=combinePct>=60?"#059669":combinePct>=30?"#b45309":"#b91c1c";
                   return(
-                    <Fragment key={key}>
-                    {showNoAddrDivider&&(
-                      <div style={{display:"flex",alignItems:"center",gap:"8px",padding:"10px 4px 4px"}}>
-                        <div style={{flex:1,borderTop:"1px dashed #fbbf24"}}/>
-                        <span style={{fontSize:"9px",fontWeight:"700",color:"#b45309",textTransform:"uppercase",letterSpacing:".06em",whiteSpace:"nowrap"}}>⚠️ Missing address</span>
-                        <div style={{flex:1,borderTop:"1px dashed #fbbf24"}}/>
-                      </div>
-                    )}
-                    <div style={{background:"#fff",border:"1px solid #e2e8f0",borderLeft:s.hasAddress?"3px solid #059669":"3px solid #f59e0b",borderRadius:"6px",overflow:"hidden",boxShadow:isExp?"0 2px 6px rgba(0,0,0,.08)":"0 1px 2px rgba(0,0,0,.03)"}}>
+                    <div key={key} style={{background:"#fff",border:"1px solid #e2e8f0",borderLeft:s.hasAddress?"3px solid #059669":"3px solid #f59e0b",borderRadius:"6px",overflow:"hidden",boxShadow:isExp?"0 2px 6px rgba(0,0,0,.08)":"0 1px 2px rgba(0,0,0,.03)"}}>
                       {/* COLLAPSED ROW — click anywhere to toggle */}
                       <div onClick={()=>setExpandedShipper(isExp?null:key)} style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) 70px 70px 80px 24px",gap:"12px",padding:"9px 12px",alignItems:"center",cursor:"pointer",background:isExp?"#f8fafc":"transparent",transition:"background .1s"}}>
                         <div style={{minWidth:0,overflow:"hidden"}}>
@@ -7005,8 +6986,10 @@ ${accRows.length>0?`
                                       {m.pickup&&<span style={{color:"#64748b",marginLeft:"6px"}}>· PU {m.pickup}</span>}
                                       {!m.isLive&&<span style={{marginLeft:"6px",fontSize:"9px",color:"#94a3b8",fontWeight:"700"}}>(archived)</span>}
                                     </div>
-                                    <button onClick={e=>{e.stopPropagation();setAddrEntryFor({gid:m.gid,lid:m.lid});}}
-                                      style={{background:m.isLive?"#059669":"#7c3aed",color:"#fff",border:"none",borderRadius:"4px",padding:"3px 9px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>+ Add address</button>
+                                    {m.isLive
+                                      ?<button onClick={e=>{e.stopPropagation();setAddrEntryFor({gid:m.gid,lid:m.lid});}}
+                                        style={{background:"#059669",color:"#fff",border:"none",borderRadius:"4px",padding:"3px 9px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>+ Add address</button>
+                                      :<span style={{fontSize:"9px",color:"#94a3b8",fontStyle:"italic",flexShrink:0}}>not editable</span>}
                                   </div>
                                 ))}
                               </div>
@@ -7042,7 +7025,6 @@ ${accRows.length>0?`
                         </div>
                       )}
                     </div>
-                    </Fragment>
                   );
                 })}
               </div>
