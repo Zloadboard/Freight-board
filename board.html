@@ -144,6 +144,25 @@ function parsePickupDate(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/)
 function parseTS(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return Infinity;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);if(tm){let h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}else{d.setHours(0,0,0,0);}return d.getTime();}
 function parseSR(t=""){const i=t.indexOf(" - ");return i<0?{s:t.trim(),r:""}:{s:t.slice(0,i).trim(),r:t.slice(i+3).trim()};}
 // Parse the ending date out of a week label (handles "3.30.2026 - 4.6.2026", "Week of 5/12/2026", "4-6-26")
+function weekDateRange(label){
+  if(!label)return null;
+  var ms=String(label).match(/(\d{1,2})[\/._\-](\d{1,2})[\/._\-](\d{2,4})/g);
+  if(!ms||!ms.length)return null;
+  var toD=function(s){var p=s.match(/(\d{1,2})[\/._\-](\d{1,2})[\/._\-](\d{2,4})/);if(!p)return null;var yr=+p[3];if(yr<100)yr+=2000;var d=new Date(yr,+p[1]-1,+p[2]);d.setHours(0,0,0,0);return isNaN(d.getTime())?null:d;};
+  var start=toD(ms[0]),end=toD(ms[ms.length-1]);
+  if(!start||!end)return null;
+  if(end<start){var t=start;start=end;end=t;}
+  return {start:start,end:end};
+}
+function freightWeeksOverlapping(boardLabel, freightWeeks){
+  var br=weekDateRange(boardLabel);
+  if(!br)return [];
+  return (freightWeeks||[]).filter(function(w){
+    var fr=weekDateRange(w&&w.label);
+    if(!fr)return false;
+    return br.start<=fr.end && fr.start<=br.end;
+  });
+}
 function weekEndDate(label){
   if(!label)return null;
   var ms=String(label).match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/g);
@@ -1492,6 +1511,9 @@ function App(){
   const[insightsTab,setInsightsTab]=useState("shippers");
   // PAYROLL — which week index in allTimeWeeks we're viewing (null = default to current)
   const[payrollWeekIdx,setPayrollWeekIdx]=useState(null);
+  // PAYROLL — manual pick of which Freight Board week feeds each Main Board week's Zygis 10%.
+  // Keyed by Main Board key: {[boardKey]: freightWeekId}. Always wins over auto-suggest.
+  const[manualFreightKey,setManualFreightKey]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_manualfreight")||"{}");}catch{return{};}});
   // Manual per-dispatcher overrides: {[weekId]: {[dispName]: {amount, note}}}
   const[payrollOverrides,setPayrollOverrides]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_payroll_ov")||"{}");}catch{return{};}});
   const savePayrollOverrides=(next)=>{setPayrollOverrides(next);try{localStorage.setItem("fcbv2_payroll_ov",JSON.stringify(next));}catch{}};
@@ -2712,26 +2734,42 @@ function App(){
     sections.forEach(sec=>{
       const drivers=[];
       let i=sec.startRow;
-      while(i<=sec.endRow-3){ // need at least 4 rows for a driver block
+      while(i<=sec.endRow-2){ // need at least 3 rows: header + MILES + gross-total
         const r1=grid[i]||[];  // driver header: # | # | name+co | truck# | day1 pickup | ...
         const r2=grid[i+1]||[]; // phone + deliveries
         const r3=grid[i+2]||[]; // "MILES" + total + per-day
         const r4=grid[i+3]||[]; // "GROSS" + total + per-day
         // A driver block starts when col 1 is a small integer (driver slot 1-11) AND col 3 is MILES-like row below
-        const isDriverHeader=r1[1]&&/^\d{1,2}$/.test(r1[1])&&r3[1]==="MILES"&&r4[1]==="GROSS";
+        // Header row: col1 is a small slot integer and col2 has a real name. The MILES row follows
+        // within 1-2 rows; the GROSS TOTAL is the first $ value on the row AFTER MILES — labeled or
+        // not (the sheet is inconsistent; requiring the "GROSS" label silently dropped drivers like Lukas's).
+        const hdrSlot=r1[1]&&/^\d{1,2}$/.test(r1[1]);
+        const hdrName=(r1[2]||"").trim();
+        const nameLooksReal=hdrName&&/[A-Za-z]/.test(hdrName)&&!/^MILES$|^GROSS$/i.test(hdrName);
+        let milesRel=-1;
+        if((r3[1]||"")==="MILES")milesRel=2;
+        else if((r2[1]||"")==="MILES")milesRel=1;
+        const isDriverHeader=hdrSlot&&nameLooksReal&&milesRel>=0;
         if(!isDriverHeader){i++;continue;}
         // Extract driver info
-        const rawName=(r1[2]||"").replace(/\*+\s*Co[- ]?driver.*/i,"").replace(/\*+/g,"").trim();
+        const rawName=(r1[2]||"").replace(/\*+/g,"").replace(/\s*\/.*$/,"").replace(/\s+Co[\s-]?driver.*$/i,"").replace(/\s+Has\s+Chains.*$/i,"").trim();
         const truck=(r1[3]||"").trim();
         const phone=(r2[2]||"").trim();
-        // Gross = col 2 of GROSS row, format "$1,234" or "$1,234.56"
-        const grossStr=(r4[2]||"").replace(/[$,\s]/g,"");
-        const gross=parseFloat(grossStr);
-        // Skip empty driver slots (no name, no gross)
+        // GROSS total = first $-value on the row right after the MILES row (labeled or not).
+        const grossRow=grid[i+milesRel+1]||[];
+        let gross=NaN;
+        for(let c=2;c<grossRow.length;c++){
+          const cell=(grossRow[c]||"");
+          if(cell.includes("$")){
+            const num=parseFloat(cell.replace(/[$,\s]/g,""));
+            if(isFinite(num)){gross=num;break;}
+          }
+        }
+        // Skip empty driver slots (no name, no positive gross)
         if(rawName&&isFinite(gross)&&gross>0){
           drivers.push({name:rawName,truck,phone,gross:Math.round(gross)});
         }
-        i+=4;
+        i+=milesRel+2;
       }
       if(drivers.length>0){
         dispatchersOut.push({name:sec.dispName,drivers});
@@ -2807,7 +2845,7 @@ function App(){
     }
     const results=[];
     mainBoardData.dispatchers.forEach(disp=>{
-      const isZygis=String(disp.name).toLowerCase().includes("zygis");
+      const isZygis=/(zygis|ziggy)/i.test(String(disp.name||""));
       const activeDrivers=disp.drivers.filter(d=>d.gross>0);
       const driverCount=activeDrivers.length;
       // Base compensation
@@ -7192,17 +7230,26 @@ ${accRows.length>0?`
           });
           const activeBoardKey=selectedMainBoardKey||boardKeys[0]||null;
           const activeBoard=activeBoardKey?mainBoards[activeBoardKey]:null;
-          // Match a Freight Board week for Zygis 10% math. Best-effort match by week label.
-          const freightWeekForBoard=activeBoard
-            ?(allTimeWeeks.find(w=>{
-              if(!w.label||!activeBoard.label)return false;
-              // Both contain date strings — try substring match
-              const wLabel=String(w.label).replace(/[_\s]/g,"-").toLowerCase();
-              const bLabel=String(activeBoard.label).replace(/[_\s]/g,"-").toLowerCase();
-              return wLabel.includes(bLabel.split("-").slice(0,3).join("-"))
-                  || bLabel.includes(wLabel.split("-").slice(0,3).join("-"));
-            })||weeks[0])
-            :weeks[0];
+          // Freight Board week for Zygis 10%: MANUAL PICK always wins (saved per Main Board week).
+          // If no manual pick yet, suggest the date-overlapping Freight week (max overlap), else null.
+          let freightWeekForBoard=null;
+          if(activeBoard){
+            const picked=manualFreightKey[activeBoardKey];
+            if(picked){
+              freightWeekForBoard=allTimeWeeks.find(w=>w.id===picked)||null;
+            }else{
+              const overlapping=freightWeeksOverlapping(activeBoard.label,allTimeWeeks);
+              if(overlapping.length===1){freightWeekForBoard=overlapping[0];}
+              else if(overlapping.length>1){
+                const br=weekDateRange(activeBoard.label);
+                freightWeekForBoard=overlapping.slice().sort((a,b)=>{
+                  const ra=weekDateRange(a.label),rb=weekDateRange(b.label);
+                  const ov=r=>Math.max(0,Math.min(br.end,r.end)-Math.max(br.start,r.start));
+                  return ov(rb)-ov(ra);
+                })[0];
+              }
+            }
+          }
           const payroll=activeBoard?computePayroll(activeBoard,freightWeekForBoard):{dispatchers:[],combinedTrailers:[]};
           const grandTotal=payroll.dispatchers.reduce((s,d)=>s+d.total,0);
           const zygisEntry=payroll.dispatchers.find(d=>d.isZygis);
@@ -7320,9 +7367,13 @@ ${accRows.length>0?`
             {activeBoard&&(
               <div style={{marginBottom:"14px",padding:"8px 12px",background:freightWeekForBoard?"#f0fdf4":"#fef3c7",border:`1px solid ${freightWeekForBoard?"#bbf7d0":"#fcd34d"}`,borderRadius:"6px",fontSize:"11px",color:freightWeekForBoard?"#166534":"#92400e"}}>
                 <strong>Zygis 10% source:</strong>{" "}
+                <select value={manualFreightKey[activeBoardKey]||(freightWeekForBoard?freightWeekForBoard.id:"")} onChange={e=>{const v=e.target.value;setManualFreightKey(prev=>{const n={...prev};if(v)n[activeBoardKey]=v;else delete n[activeBoardKey];localStorage.setItem("fcbv2_manualfreight",JSON.stringify(n));return n;});}} style={{fontSize:"11px",padding:"2px 6px",border:`1px solid ${freightWeekForBoard?"#bbf7d0":"#fcd34d"}`,borderRadius:"4px",fontWeight:"600",marginRight:"6px"}}>
+                  <option value="">— pick Freight Board week —</option>
+                  {allTimeWeeks.map(w=><option key={w.id} value={w.id}>{w.label||"(unlabeled)"}</option>)}
+                </select>
                 {freightWeekForBoard
-                  ?<>Freight Board week <strong>{freightWeekForBoard.label||"(unlabeled)"}</strong> matched — {payroll.combinedTrailers.length} combined trailer{payroll.combinedTrailers.length===1?"":"s"} found</>
-                  :<>No matching Freight Board week found. Zygis 10% shown as $0 until a matching week exists in Freight Board.</>}
+                  ?<>{payroll.combinedTrailers.length} combined trailer{payroll.combinedTrailers.length===1?"":"s"}{manualFreightKey[activeBoardKey]?"":" (auto-suggested — pick to lock)"}</>
+                  :<>No Freight week selected. Zygis 10% is $0 until you pick one above.</>}
               </div>
             )}
 
