@@ -1474,6 +1474,141 @@ function LoadDetailPanel({loadDetailId,weeks,isAdmin,isDispatcher,canSeeBroker,s
   );
 }
 
+// ─── PIN MANAGER MODAL ───────────────────────────────────────────────────
+// Set / change / clear Admin and Viewer PINs. All state is local to this
+// component — nothing is written to localStorage until the user clicks
+// "Save Changes" (unlike the old modal which wrote on blur, causing
+// confusion). Fields left empty mean "no change to this PIN".
+function PinManagerModal({currentAdminPin,currentViewerPin,onClose,onSave}){
+  // For each PIN slot: newPin (what user typed), confirmPin (retype), showPin (toggle mask), cleared (mark for removal)
+  const[adminNew,setAdminNew]=useState("");
+  const[adminConfirm,setAdminConfirm]=useState("");
+  const[adminShow,setAdminShow]=useState(false);
+  const[adminCleared,setAdminCleared]=useState(false);
+  const[viewerNew,setViewerNew]=useState("");
+  const[viewerConfirm,setViewerConfirm]=useState("");
+  const[viewerShow,setViewerShow]=useState(false);
+  const[viewerCleared,setViewerCleared]=useState(false);
+  const[err,setErr]=useState("");
+
+  // Handle Save: validate then bubble up changes. `undefined` = no change, "" = clear, string = new value.
+  const handleSave=()=>{
+    setErr("");
+    let adminChange,viewerChange;
+    // Determine what admin PIN change to make
+    if(adminCleared){
+      adminChange=""; // clear
+    } else if(adminNew){
+      if(adminNew.length<4){setErr("Admin PIN must be at least 4 characters.");return;}
+      if(adminNew!==adminConfirm){setErr("Admin PIN and confirmation don't match.");return;}
+      adminChange=adminNew;
+    } else if(adminConfirm){
+      // User typed in confirm but not new — mistake
+      setErr("Please enter new Admin PIN in both fields.");return;
+    }
+    // Same for viewer
+    if(viewerCleared){
+      viewerChange="";
+    } else if(viewerNew){
+      if(viewerNew.length<4){setErr("Viewer PIN must be at least 4 characters.");return;}
+      if(viewerNew!==viewerConfirm){setErr("Viewer PIN and confirmation don't match.");return;}
+      viewerChange=viewerNew;
+    } else if(viewerConfirm){
+      setErr("Please enter new Viewer PIN in both fields.");return;
+    }
+    // Cross-PIN check: admin and viewer must differ
+    const finalAdmin=adminChange!==undefined?adminChange:currentAdminPin;
+    const finalViewer=viewerChange!==undefined?viewerChange:currentViewerPin;
+    if(finalAdmin&&finalViewer&&finalAdmin===finalViewer){
+      setErr("Admin and Viewer PINs must be different.");return;
+    }
+    // If nothing changed, just close
+    if(adminChange===undefined&&viewerChange===undefined){onClose();return;}
+    onSave(adminChange,viewerChange);
+  };
+
+  // Render one PIN slot (admin or viewer)
+  const renderSlot=(label,hint,color,currentPin,{newVal,setNew,confirmVal,setConfirm,shown,setShown,cleared,setCleared})=>{
+    const isSet=Boolean(currentPin);
+    return(
+      <div style={{marginBottom:"20px",padding:"14px",border:`1px solid ${color.bd}`,borderRadius:"8px",background:color.bg}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px",marginBottom:"4px",flexWrap:"wrap"}}>
+          <div>
+            <div style={{fontSize:"13px",fontWeight:"800",color:color.c}}>{label}</div>
+            <div style={{fontSize:"10px",color:"#64748b",marginTop:"1px"}}>{hint}</div>
+          </div>
+          <span style={{fontSize:"10px",fontWeight:"700",padding:"2px 8px",borderRadius:"10px",background:isSet?"#dcfce7":"#fee2e2",color:isSet?"#166534":"#991b1b"}}>
+            {isSet?"● Set":"○ Not set"}
+          </span>
+        </div>
+        {cleared?(
+          <div style={{marginTop:"10px",padding:"8px 10px",background:"#fff",border:"1px dashed #f97316",borderRadius:"5px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px",flexWrap:"wrap"}}>
+            <span style={{fontSize:"11px",color:"#c2410c",fontWeight:"700"}}>⚠ Will be cleared on Save</span>
+            <button onClick={()=>setCleared(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",borderRadius:"4px",padding:"3px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>Undo</button>
+          </div>
+        ):(
+          <>
+            <div style={{marginTop:"10px",display:"flex",alignItems:"stretch",gap:"6px"}}>
+              <input
+                type={shown?"text":"password"}
+                value={newVal}
+                onChange={e=>setNew(e.target.value)}
+                placeholder={isSet?"Enter new PIN (leave blank to keep current)":"Enter new PIN"}
+                style={{flex:1,padding:"7px 10px",border:"1px solid #d1d5db",borderRadius:"5px",fontSize:"13px",fontFamily:"inherit",letterSpacing:shown?"normal":"3px"}}
+                autoComplete="new-password"
+              />
+              <button onClick={()=>setShown(v=>!v)} title={shown?"Hide":"Show"} style={{background:"#fff",color:"#64748b",border:"1px solid #d1d5db",borderRadius:"5px",padding:"0 10px",fontSize:"14px",cursor:"pointer"}}>
+                {shown?"🙈":"👁"}
+              </button>
+            </div>
+            <div style={{marginTop:"6px"}}>
+              <input
+                type={shown?"text":"password"}
+                value={confirmVal}
+                onChange={e=>setConfirm(e.target.value)}
+                placeholder="Confirm PIN"
+                style={{width:"100%",padding:"7px 10px",border:"1px solid #d1d5db",borderRadius:"5px",fontSize:"13px",fontFamily:"inherit",letterSpacing:shown?"normal":"3px",boxSizing:"border-box"}}
+                autoComplete="new-password"
+              />
+            </div>
+            {isSet&&(
+              <button onClick={()=>{if(confirm("Clear "+label+"? Anyone who was using it will lose access."))setCleared(true);}}
+                style={{marginTop:"8px",background:"#fef2f2",color:"#b91c1c",border:"1px solid #fecaca",borderRadius:"4px",padding:"4px 10px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>
+                Clear this PIN
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    );
+  };
+
+  return(
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"440px",width:"100%"}}>
+        <div style={{fontWeight:"800",fontSize:"16px",color:"#1a2e50",marginBottom:"4px"}}>🔐 PIN Management</div>
+        <div style={{fontSize:"11px",color:"#64748b",marginBottom:"16px",lineHeight:"1.4"}}>
+          Set or change the Admin (full access) and Viewer (read-only, no Payroll edits, current week only) PINs. Changes save when you click <strong>Save Changes</strong>.
+        </div>
+
+        {renderSlot("Admin PIN","Full board access — you",{bd:"#c4b5fd",bg:"#faf5ff",c:"#6b21a8"},currentAdminPin,{
+          newVal:adminNew,setNew:setAdminNew,confirmVal:adminConfirm,setConfirm:setAdminConfirm,shown:adminShow,setShown:setAdminShow,cleared:adminCleared,setCleared:setAdminCleared
+        })}
+        {renderSlot("Viewer PIN","Read-only, no Payroll edits",{bd:"#93c5fd",bg:"#eff6ff",c:"#1e40af"},currentViewerPin,{
+          newVal:viewerNew,setNew:setViewerNew,confirmVal:viewerConfirm,setConfirm:setViewerConfirm,shown:viewerShow,setShown:setViewerShow,cleared:viewerCleared,setCleared:setViewerCleared
+        })}
+
+        {err&&<div style={{marginBottom:"12px",padding:"8px 12px",background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:"5px",fontSize:"11px",color:"#991b1b",fontWeight:"700"}}>⚠ {err}</div>}
+
+        <div style={{display:"flex",justifyContent:"flex-end",gap:"8px"}}>
+          <button onClick={onClose} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"8px 16px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Cancel</button>
+          <button onClick={handleSave} style={{background:"#2563eb",color:"#fff",border:"none",padding:"8px 16px",borderRadius:"6px",fontSize:"12px",fontWeight:"800",cursor:"pointer"}}>Save Changes</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App(){
   const[appMode,setAppMode]=useState("viewer"); // default: everyone starts as viewer
   const sessionToken=React.useRef(""); // role session token sent to Sheets
@@ -4089,7 +4224,31 @@ ${accRows.length>0?`
       <div style={{position:"absolute",bottom:"16px",color:"#fff",fontSize:"12px"}}>{photoViewer.index+1} / {photoViewer.photos.length}</div>
     </div>)}
     {/* PIN MODAL */}
-    {showPinModal&&(<div className="modal-bg" onClick={()=>setShowPinModal(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontWeight:"700",fontSize:"16px",color:"#1a2e50",marginBottom:"16px"}}>🔐 Change PINs</div>{[["Admin PIN",ADMIN_PIN_KEY,"Full board access"],["Viewer PIN",VIEWER_PIN_KEY,"Read-only access"]].map((pinItem)=>{const [label,key,hint]=pinItem;return(<div key={key} style={{marginBottom:"16px"}}><label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"5px"}}>{label} <span style={{color:"#9ca3af",fontWeight:"400"}}>({hint})</span></label><input defaultValue={localStorage.getItem(key)||""} onBlur={e=>{localStorage.setItem(key,e.target.value);}} style={{width:"100%",padding:"8px 10px",border:"1px solid #d1d5db",borderRadius:"6px",fontSize:"14px",letterSpacing:"3px"}} placeholder="Enter new PIN"/></div>);})}<div style={{display:"flex",justifyContent:"flex-end",gap:"8px"}}><button onClick={()=>setShowPinModal(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Close</button><button onClick={()=>{alert("PINs saved!");setShowPinModal(false);}} style={{background:"#2563eb",color:"#fff",border:"none",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Save PINs</button></div></div></div>)}
+    {showPinModal&&<PinManagerModal
+      currentAdminPin={localStorage.getItem(ADMIN_PIN_KEY)||""}
+      currentViewerPin={localStorage.getItem(VIEWER_PIN_KEY)||""}
+      onClose={()=>setShowPinModal(false)}
+      onSave={(newAdmin,newViewer)=>{
+        // Write both to localStorage and trigger a sheets sync so PINs propagate
+        // across the user's devices. Only writes fields that were touched
+        // (undefined means "unchanged"). Empty string means "cleared".
+        if(newAdmin!==undefined){
+          if(newAdmin==="")localStorage.removeItem(ADMIN_PIN_KEY);
+          else localStorage.setItem(ADMIN_PIN_KEY,newAdmin);
+        }
+        if(newViewer!==undefined){
+          if(newViewer==="")localStorage.removeItem(VIEWER_PIN_KEY);
+          else localStorage.setItem(VIEWER_PIN_KEY,newViewer);
+        }
+        // Kick off sheets sync so change follows the user across devices
+        try{
+          sheetsSave({weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,
+            adminPin:localStorage.getItem(ADMIN_PIN_KEY)||"",
+            viewerPin:localStorage.getItem(VIEWER_PIN_KEY)||""});
+        }catch{}
+        setShowPinModal(false);
+      }}
+    />}
 
     {/* API KEY MODAL */}
     {showSupabaseModal&&(<div className="modal-bg" onClick={()=>setShowSupabaseModal(false)}><div className="modal" onClick={e=>e.stopPropagation()}>
