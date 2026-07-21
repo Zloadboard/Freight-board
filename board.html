@@ -1181,33 +1181,34 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
   const adminPin=localStorage.getItem(ADMIN_PIN_KEY)||"";
   const viewerPin=localStorage.getItem(VIEWER_PIN_KEY)||"";
   const dispatchers=dispProp&&dispProp.length>0?dispProp:JSON.parse(localStorage.getItem(DISPATCHERS_KEY)||"[]");
-  const[mode,setMode]=useState(null);
   const[pin,setPin]=useState("");
   const[err,setErr]=useState("");
   const inputRef=useRef(null);
-  useEffect(()=>{if(mode)setTimeout(()=>inputRef.current?.focus(),100);},[mode]);
+  useEffect(()=>{setTimeout(()=>inputRef.current?.focus(),100);},[]);
+  // Single-input login. The entered PIN auto-detects the role: admin, viewer,
+  // or dispatcher. Empty PIN + "Continue as Guest" gives Public Viewer mode
+  // (Dashboard only, no menu items).
   const attempt=()=>{
     const pinStr=String(pin).trim();
-    // If no admin PIN in localStorage yet, board hasn't synced — guide user
-    if(!adminPin&&!viewerPin){
+    if(!pinStr){setErr("Enter a PIN or Continue as Guest");return;}
+    // If no PINs synced yet, guide user
+    if(!adminPin&&!viewerPin&&dispatchers.length===0){
       setErr("Board is loading — please wait a moment and try again");
       setPin("");return;
     }
-    if(pinStr===String(adminPin).trim()){onLogin("admin",null);return;}
-    if(pinStr===String(viewerPin).trim()){onLogin("viewer",null);return;}
-    // Re-read dispatchers fresh from localStorage
+    if(adminPin&&pinStr===String(adminPin).trim()){onLogin("admin",null);return;}
+    if(viewerPin&&pinStr===String(viewerPin).trim()){onLogin("viewer",null);return;}
+    // Try dispatcher PIN (hashed or legacy plaintext)
     let freshDispatchers=dispatchers;
     try{
       const stored=JSON.parse(localStorage.getItem(DISPATCHERS_KEY)||"[]");
       if(stored.length>0)freshDispatchers=stored;
     }catch(e){}
-    if(freshDispatchers.length===0){setErr("Still loading — please wait a moment and try again");setPin("");return;}
-    // Hash the entered PIN, then compare to stored hashes (or plaintext for unmigrated)
+    if(freshDispatchers.length===0){setErr("Incorrect PIN — try again");setPin("");return;}
     hashPin(pinStr).then(function(hashed){
       let matched=freshDispatchers.find(function(d){
         if(!d.pin)return false;
         if(d.pinHashed)return d.pin===hashed;
-        // Legacy plaintext fallback (migrated next save)
         return String(d.pin).trim()===pinStr;
       });
       if(matched){onLogin("dispatcher",matched);return;}
@@ -1217,29 +1218,22 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
   return(
     <div className="login-wrap">
       <div className="login-card fade-in">
-        <div style={{textAlign:"center",marginBottom:"28px"}}>
+        <div style={{textAlign:"center",marginBottom:"24px"}}>
           <div style={{width:"54px",height:"54px",background:"#0f1f3d",borderRadius:"14px",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 14px",fontSize:"26px"}}>🚛</div>
           <div className="login-logo">Freight Board</div>
-          <div className="login-sub">Romeoville, IL Hub · Restricted Access</div>
+          <div className="login-sub">Romeoville, IL Hub</div>
         </div>
-        {!mode?(
-          <>
-            <button className="mode-btn" onClick={()=>setMode("admin")} style={{justifyContent:"center"}}><div className="mode-icon" style={{background:"#1e3a5f"}}>🔐</div><div style={{textAlign:"center"}}><div style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>Admin Access</div></div></button>
-            
-            <button className="mode-btn" onClick={()=>onLogin("viewer",null)} style={{justifyContent:"center"}}><div className="mode-icon" style={{background:"#064e3b"}}>👁</div><div style={{textAlign:"center"}}><div style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>View Dashboard</div></div></button>
-          </>
-        ):(
-          <div className="fade-in">
-            <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"16px"}}>
-              <button onClick={()=>{setMode(null);setPin("");setErr("");}} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",color:"#475569",cursor:"pointer"}}>← Back</button>
-              <span style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>{mode==="admin"?"Admin PIN":mode==="dispatcher"?"Dispatcher PIN":"Viewer PIN"}</span>
-            </div>
-            {mode==="dispatcher"&&<div style={{fontSize:"11px",color:"#64748b",marginBottom:"8px",textAlign:"center"}}>Enter your personal dispatcher PIN</div>}
-            <input ref={inputRef} type="password" className="pin-input" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>e.key==="Enter"&&attempt()} placeholder="••••" maxLength={20} autoComplete="off"/>
-            {err&&<div className="pin-error">{err}</div>}
-            <button className="login-btn" onClick={attempt}>{mode==="admin"?"Enter Admin Mode":mode==="dispatcher"?"Dispatcher Login →":"View Board →"}</button>
-          </div>
-        )}
+        <div style={{fontSize:"12px",fontWeight:"700",color:"#0f1f3d",marginBottom:"6px"}}>Sign in with PIN</div>
+        <input ref={inputRef} type="password" className="pin-input" value={pin} onChange={e=>{setPin(e.target.value);if(err)setErr("");}} onKeyDown={e=>e.key==="Enter"&&attempt()} placeholder="••••" maxLength={20} autoComplete="off"/>
+        {err&&<div className="pin-error">{err}</div>}
+        <button className="login-btn" onClick={attempt}>Sign In →</button>
+        <div style={{marginTop:"18px",paddingTop:"18px",borderTop:"1px solid #e2e8f0"}}>
+          <div style={{fontSize:"10px",color:"#94a3b8",textAlign:"center",marginBottom:"8px",fontWeight:"600"}}>OR</div>
+          <button onClick={()=>onLogin("public",null)}
+            style={{width:"100%",background:"#f8fafc",color:"#475569",border:"1px solid #cbd5e1",borderRadius:"8px",padding:"10px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>
+            👁 Continue as Guest (Dashboard only)
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1610,7 +1604,7 @@ function PinManagerModal({currentAdminPin,currentViewerPin,onClose,onSave}){
 }
 
 function App(){
-  const[appMode,setAppMode]=useState("viewer"); // default: everyone starts as viewer
+  const[appMode,setAppMode]=useState("public"); // default: everyone lands as public viewer (Dashboard only)
   const sessionToken=React.useRef(""); // role session token sent to Sheets
   const[weeks,setWeeks]=useState([]);
   const[activeWeek,setActiveWeek]=useState(0);
@@ -1623,8 +1617,10 @@ function App(){
     }
   },[appMode,weeks?.length]);
   const[_activeTab,_setActiveTab]=useState(()=>localStorage.getItem("fcbv2_lastTab")||"dashboard");
-  const activeTab=_activeTab;
-  const setActiveTab=(tab)=>{_setActiveTab(tab);};
+  // Public mode is pinned to Dashboard. Any attempt to navigate elsewhere is a no-op.
+  // Viewer + admin navigate freely via _setActiveTab.
+  const activeTab=appMode==="public"?"dashboard":_activeTab;
+  const setActiveTab=(tab)=>{if(appMode==="public")return;_setActiveTab(tab);};
   const[boardFilter,setBoardFilter]=useState("all");
   // Compact/cards view toggle for Planned Shipments — persisted across sessions
   const[plannedView,setPlannedView]=useState(()=>localStorage.getItem("fcbv2_plannedView")||"cards");
@@ -1865,9 +1861,12 @@ function App(){
   };
   const isViewer=appMode==="viewer";
   const isDispatcher=appMode==="dispatcher";
-  // Force viewer to dashboard tab whenever appMode changes
+  const isPublic=appMode==="public";
+  // Force viewer + public to dashboard tab whenever appMode changes into either mode.
+  // Public is also pinned to dashboard by the activeTab router above; this handles the
+  // initial mount case where activeTab may be loaded from localStorage as something else.
   React.useEffect(()=>{
-    if(appMode==="viewer"){_setActiveTab("dashboard");}
+    if(appMode==="viewer"||appMode==="public"){_setActiveTab("dashboard");}
   },[appMode]);
   const saveDispatchers=(list)=>{
     localStorage.setItem(DISPATCHERS_KEY,JSON.stringify(list));
@@ -3912,7 +3911,7 @@ ${accRows.length>0?`
     // Dispatchers go straight to the board; admins go to dashboard
     if(mode==="dispatcher"){setActiveTab("weeks");localStorage.setItem("fcbv2_lastTab","weeks");}
     else if(mode==="admin"){const lastTab=localStorage.getItem("fcbv2_lastTab")||"dashboard";setActiveTab(lastTab);}
-    const entry={name:mode==="dispatcher"&&disp?disp.name:mode==="admin"?"Admin":"Viewer",role:mode,ts:new Date().toLocaleString("en-US",{month:"2-digit",day:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true})};
+    const entry={name:mode==="dispatcher"&&disp?disp.name:mode==="admin"?"Admin":mode==="viewer"?"Viewer":"Public Viewer",role:mode,ts:new Date().toLocaleString("en-US",{month:"2-digit",day:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true})};
     setLoginLog(prev=>{const next=[entry,...prev].slice(0,200);localStorage.setItem("fcbv2_loginlog",JSON.stringify(next));return next;});
   }}/>;
 
