@@ -1968,6 +1968,12 @@ function App(){
   }, [appMode]);
   const[archivedWeeks,setArchivedWeeks]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_archive")||"[]");}catch{return[];}});
   const[customDrivers,setCustomDrivers]=useState([]);
+  // Terminated drivers: name strings that have been let go but not deleted.
+  // Kept because drivers often come back. Hidden from load assignment dropdowns,
+  // dispatcher's driver checkbox list, and driver autocomplete — but still
+  // appear in Top Drivers leaderboard (lifetime data is historical fact) and
+  // in the Terminated section of the Drivers page (so admin can reactivate).
+  const[terminatedDrivers,setTerminatedDrivers]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_terminatedDrivers")||"[]");}catch{return[];}});
   const[customTrucks,setCustomTrucks]=useState([]);
   const[customTrailers,setCustomTrailers]=useState([]);
   const[truckAssignments,setTruckAssignments]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_truckassign")||"{}");}catch{return{};}});
@@ -1981,7 +1987,13 @@ function App(){
   const[liveStatus,setLiveStatus]=useState("idle");  // "idle" | "loading" | "ok" | "err"
   const[liveError,setLiveError]=useState("");
   const[liveFetchedAt,setLiveFetchedAt]=useState(null);
+  // All-known driver names — includes terminated. Used by lifetime views (Top Drivers leaderboard).
   const allDrivers=useMemo(()=>[...DRIVERS,...customDrivers].sort(),[customDrivers]);
+  // Active driver names — excludes terminated. Used for dropdowns, dispatcher assignment lists, autocomplete.
+  const terminatedSet=useMemo(()=>new Set(terminatedDrivers),[terminatedDrivers]);
+  const activeDrivers=useMemo(()=>allDrivers.filter(d=>!terminatedSet.has(d)),[allDrivers,terminatedSet]);
+  // Persist terminatedDrivers to localStorage on every change so it survives reload
+  useEffect(()=>{try{localStorage.setItem("fcbv2_terminatedDrivers",JSON.stringify(terminatedDrivers));}catch{}},[terminatedDrivers]);
   const allTrucks=useMemo(()=>[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[customTrucks]);
   const allTrailers=useMemo(()=>[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[customTrailers]);
   const[dispatchers,setDispatchers]=useState(()=>{try{return JSON.parse(localStorage.getItem(DISPATCHERS_KEY)||"[]");}catch{return[];}});
@@ -2139,7 +2151,7 @@ function App(){
         if(local.weeks)local.weeks=stripTripPrice(local.weeks);
         // F1: remember when server data was last seen
         lastLoadedServerTs.current=sheetsSavedAt;
-        if(useLocalData){if(local.customDrivers)setCustomDrivers(local.customDrivers);if(local.customTrucks)setCustomTrucks(local.customTrucks);if(local.customTrailers)setCustomTrailers(local.customTrailers);if(local.dispatchers)setDispatchers(local.dispatchers);const storedPhotosL=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");const localWithPhotos=(local.weeks||[]).map(function(wk){
+        if(useLocalData){if(local.customDrivers)setCustomDrivers(local.customDrivers); if(Array.isArray(local.terminatedDrivers))setTerminatedDrivers(local.terminatedDrivers);if(local.customTrucks)setCustomTrucks(local.customTrucks);if(local.customTrailers)setCustomTrailers(local.customTrailers);if(local.dispatchers)setDispatchers(local.dispatchers);const storedPhotosL=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");const localWithPhotos=(local.weeks||[]).map(function(wk){
             return {...wk,groups:(wk.groups||[]).map(function(g){
               return {...g,loads:(g.loads||[]).map(function(l){
                 const sheetsPhotos=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&p.data;});
@@ -2201,7 +2213,7 @@ function App(){
             setArchivedWeeks(finalArch);
             try{localStorage.setItem("fcbv2_archive",JSON.stringify(finalArch));}catch(ex){}
           })();
-          if(data.customDrivers)setCustomDrivers(data.customDrivers);
+          if(data.customDrivers)setCustomDrivers(data.customDrivers); if(Array.isArray(data.terminatedDrivers))setTerminatedDrivers(data.terminatedDrivers);
           // Dispatcher emails: Sheets is the source of truth once it has data.
           // A union-merge would resurrect removed emails, so we don't merge —
           // we take the Sheets list (deduplicated) and only fall back to local
@@ -2235,7 +2247,7 @@ function App(){
             const local=JSON.parse(localStorage.getItem("fcbv2_localdata")||"{}");
             if(local.weeks&&local.weeks.length>0){
               setWeeks(local.weeks);
-              if(local.customDrivers)setCustomDrivers(local.customDrivers);
+              if(local.customDrivers)setCustomDrivers(local.customDrivers); if(Array.isArray(local.terminatedDrivers))setTerminatedDrivers(local.terminatedDrivers);
               if(local.customTrucks)setCustomTrucks(local.customTrucks);
               if(local.customTrailers)setCustomTrailers(local.customTrailers);
               if(local.dispatchers)setDispatchers(local.dispatchers);
@@ -2250,7 +2262,7 @@ function App(){
           const local=JSON.parse(localStorage.getItem("fcbv2_localdata")||"{}");
           if(local.weeks&&local.weeks.length>0){
             setWeeks(local.weeks);
-            if(local.customDrivers)setCustomDrivers(local.customDrivers);
+            if(local.customDrivers)setCustomDrivers(local.customDrivers); if(Array.isArray(local.terminatedDrivers))setTerminatedDrivers(local.terminatedDrivers);
             if(local.customTrucks)setCustomTrucks(local.customTrucks);
             if(local.customTrailers)setCustomTrailers(local.customTrailers);
             if(local.dispatchers)setDispatchers(local.dispatchers);
@@ -2501,7 +2513,7 @@ function App(){
   // Keep a ref with latest state so saveToSheets never has stale closure
   const latestState=useRef({});
   const weeksSnapshot=useRef([]); // tracks weeks for undo capture
-  useEffect(()=>{latestState.current={weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks};weeksSnapshot.current=weeks;},[weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks]);
+  useEffect(()=>{latestState.current={weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks,terminatedDrivers};weeksSnapshot.current=weeks;},[weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,dispatcherEmails,archivedWeeks,terminatedDrivers]);
 
   // ── Live tracking — fetch from Apps Script every 60 seconds ──────────────
   useEffect(()=>{
@@ -2592,6 +2604,7 @@ function App(){
     const ta=isArr?(ls.truckAssignments||{}):(data.truckAssignments!==undefined?data.truckAssignments:(ls.truckAssignments||{}));
     // archive syncs too — never silently lost, and consistent across devices
     const arch=isArr?(ls.archivedWeeks||[]):(data.archive!==undefined?data.archive:(ls.archivedWeeks||[]));
+    const tdrv=isArr?(ls.terminatedDrivers||[]):(data.terminatedDrivers!==undefined?data.terminatedDrivers:(ls.terminatedDrivers||[]));
     clearTimeout(saveTimer.current);setSaveStatus("saving");
     // F1: Quick check — has server been updated since we last loaded?
     // We check by re-loading savedAt only (fast, no-cors so we can't read response directly)
@@ -2616,12 +2629,12 @@ function App(){
           })};
         });
         try{localStorage.setItem("fcbv2_photos",JSON.stringify(photoStore));}catch(e){}
-        localStorage.setItem(LS_KEY,JSON.stringify({weeks:wNoPhotos,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,savedAt:Date.now()}));
+        localStorage.setItem(LS_KEY,JSON.stringify({weeks:wNoPhotos,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,terminatedDrivers:tdrv,savedAt:Date.now()}));
         localStorage.setItem("fcbv2_truckassign",JSON.stringify(ta));
       }catch(e){}
       // Sheets save — no-cors fetch always throws TypeError on redirect but data still saves
       try{
-        await sheetsSave({weeks:w,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,dispatcherEmails:(ls.dispatcherEmails&&ls.dispatcherEmails.length?ls.dispatcherEmails:(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch(e){return[];}})()),
+        await sheetsSave({weeks:w,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,terminatedDrivers:tdrv,dispatcherEmails:(ls.dispatcherEmails&&ls.dispatcherEmails.length?ls.dispatcherEmails:(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch(e){return[];}})()),
         adminPin:localStorage.getItem(ADMIN_PIN_KEY)||"",viewerPin:localStorage.getItem(VIEWER_PIN_KEY)||""});
         setSaveStatus("saved");setTimeout(()=>setSaveStatus("idle"),3000);
       }catch(err){
@@ -3220,7 +3233,16 @@ function App(){
   const cLocalTomorrow=(week?.localDeliveries||[]).filter(r=>{const pd=parsePickupDate(r.datetime);return pd&&pd.getTime()===tomorrow.getTime();}).length;
   const cCrossdock=(week?.crossdockDrops||[]).filter(r=>r.status!=="Delivered").length;
   const wagesBase=computed.filter(g=>g.loads.length>1).reduce((s,g)=>{const rates=g.loads.map(l=>l.tripPrice).sort((a,b)=>b-a);return s+rates.slice(1).reduce((x,r)=>x+r,0);},0);
-  const overallRPM=(()=>{const totalMi=computed.reduce((s,g)=>s+(g.calcTripMi||0),0);const net=totGross-totLocal;return totalMi>0?+((net/totalMi).toFixed(2)):null;})();
+  const overallRPM=(()=>{
+    // Denominator uses effective miles per trailer — matches per-trailer RPM logic (line 1147).
+    // Manual override (calcTripMi) wins if set. Falls back to auto-calculated (autoTripMi)
+    // if the user hasn't overridden. Trailers with neither contribute 0 miles but their
+    // gross still contributes to the numerator — those are flagged in the To Do panel
+    // as "Missing miles" so the user can fix them.
+    const totalMi=computed.reduce((s,g)=>s+(g.calcTripMi||g.autoTripMi||0),0);
+    const net=totGross-totLocal;
+    return totalMi>0?+((net/totalMi).toFixed(2)):null;
+  })();
 
   const setW=(f,v)=>setWeeksAndSave(p=>p.map((w,i)=>i!==activeWeek?w:{...w,[f]:v}));
   const toggleSection=k=>setW("openSections",{...week.openSections,[k]:!week.openSections?.[k]});
@@ -3283,11 +3305,42 @@ function App(){
   // ── NEEDS ATTENTION + DUPLICATE DETECTION ─────────────────────────
   const attention=useMemo(()=>{
     const PROGRESS_ST=["Dispatched","Dock","Yard","Picked Up","In Transit","Loaded"];
+    // Statuses where the trailer is either underway or done — miles should be known.
+    // Pending trailers are excluded so the panel isn't spammed with fresh work-in-progress.
+    const MILES_REQUIRED_ST=new Set([...PROGRESS_ST,"Delivered"]);
     const items=[],dups=[];
     const todayT=today.getTime();
     (weeks||[]).forEach((w,wi)=>{
       // problem scan
       (w.groups||[]).forEach(g=>{
+        // ── Missing miles check (per-trailer) ──
+        // Flags trailers whose gross is in the Dashboard aggregate but whose miles are missing.
+        // That's the exact leak that makes RPM look wrong. Only flags in-progress and delivered
+        // trailers — pending trailers may not have miles set yet on purpose.
+        // Only fires when BOTH manual override AND auto-calculated miles are absent.
+        const grpStatus=(g.groupStatus||"").trim();
+        if(MILES_REQUIRED_ST.has(grpStatus)){
+          const cg=calcGroup(g);
+          const effMi=cg.calcTripMi||cg.autoTripMi||0;
+          if(effMi<=0){
+            const firstLoad=(g.loads||[])[0];
+            if(firstLoad){
+              const grossVal=(g.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
+              if(grossVal>0){
+                items.push({
+                  key:w.id+"_"+firstLoad.id+"_mi",
+                  weekId:w.id,weekIdx:wi,weekLabel:w.label||"Week",
+                  loadId:firstLoad.id,
+                  sr:firstLoad.sr||"\u2014",
+                  pickup:firstLoad.pickup||"",
+                  delivery:firstLoad.delivery||"",
+                  reason:"Trailer miles missing — set trip miles for accurate RPM",
+                  sev:1
+                });
+              }
+            }
+          }
+        }
         if(g.groupStatus==="Delivered")return;
         (g.loads||[]).forEach(l=>{
           const driver=((l.driver||g.groupDriver||"")+"").trim();
@@ -4257,7 +4310,7 @@ ${accRows.length>0?`
             const storedPhotos=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");
             const rawWithPhotos=rawWeeks.map(function(wk){return{...wk,groups:(wk.groups||[]).map(function(g){return{...g,loads:(g.loads||[]).map(function(l){const sp=(l.photos||[]).filter(function(p){return p&&typeof p==="object"&&(p.url||p.data);});const lp=(storedPhotos[l.id]||[]).filter(function(p){return p&&p.data;});const m=sp.length>0?sp:lp;return m.length>0?{...l,photos:m}:l;})};})};});
             setWeeks(rawWithPhotos);
-            if(data.customDrivers)setCustomDrivers(data.customDrivers);
+            if(data.customDrivers)setCustomDrivers(data.customDrivers); if(Array.isArray(data.terminatedDrivers))setTerminatedDrivers(data.terminatedDrivers);
             if(data.customTrucks)setCustomTrucks(data.customTrucks);
             if(data.dispatchers&&data.dispatchers.length>0)setDispatchers(data.dispatchers);
             lastLoadedServerTs.current=pd.data.savedAt||Date.now();
@@ -4914,7 +4967,7 @@ ${accRows.length>0?`
                 const rw=Array.isArray(data)?data:(data.weeks||[]);
                 if(rw.length>0){
                   setWeeks(rw);
-                  if(data.customDrivers)setCustomDrivers(data.customDrivers);
+                  if(data.customDrivers)setCustomDrivers(data.customDrivers); if(Array.isArray(data.terminatedDrivers))setTerminatedDrivers(data.terminatedDrivers);
                   if(data.dispatchers&&data.dispatchers.length>0)setDispatchers(data.dispatchers);
                   if(data.adminPin&&data.adminPin!==localStorage.getItem(ADMIN_PIN_KEY))localStorage.setItem(ADMIN_PIN_KEY,data.adminPin);
                   if(data.viewerPin&&data.viewerPin!==localStorage.getItem(VIEWER_PIN_KEY))localStorage.setItem(VIEWER_PIN_KEY,data.viewerPin);
@@ -5078,7 +5131,7 @@ ${accRows.length>0?`
         const gridStyle={display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginBottom:"8px"};
         const allTrucksLocal=[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
         const allTrailersLocal=[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
-        const allDriversLocal=[...DRIVERS,...customDrivers].filter((v,i,a)=>a.indexOf(v)===i).sort();
+        const allDriversLocal=activeDrivers.slice();
         // helper to update a row in localDeliveries / crossdockDrops / accessorials
         const updRow=(key,id,field,val)=>setW(key,(week[key]||[]).map(r=>r.id===id?{...r,[field]:val}:r));
         const delRow=(key,id)=>setW(key,(week[key]||[]).filter(r=>r.id!==id));
@@ -6698,7 +6751,7 @@ ${accRows.length>0?`
       )}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:"14px"}}>
         {dispatchers.map((disp,di)=>{
-          const allAssigned=[...DRIVERS,...customDrivers].sort();
+          const allAssigned=activeDrivers.slice();
           return(
             <div key={disp.id} style={{border:"1px solid #e9d5ff",borderRadius:"10px",padding:"14px",background:"#faf5ff"}}>
               <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"12px"}}>
@@ -6969,7 +7022,11 @@ ${accRows.length>0?`
           });
         });
         const allDrivers=[...DRIVERS,...customDrivers].sort();
-        const filtered=allDrivers.filter(d=>!driverSearch||d.toLowerCase().includes(driverSearch.toLowerCase()));
+        // Split into active + terminated (Q4=a: separate collapsible section for terminated)
+        const activeDriversList=allDrivers.filter(d=>!terminatedSet.has(d));
+        const terminatedDriversList=allDrivers.filter(d=>terminatedSet.has(d));
+        const filtered=activeDriversList.filter(d=>!driverSearch||d.toLowerCase().includes(driverSearch.toLowerCase()));
+        const filteredTerminated=terminatedDriversList.filter(d=>!driverSearch||d.toLowerCase().includes(driverSearch.toLowerCase()));
 
         // Driver detail view - all loads for selected driver
         if(selectedDriver){
@@ -7067,11 +7124,58 @@ ${accRows.length>0?`
                       <div style={{fontSize:"11px",fontWeight:"700",color:"#059669"}}>{ds.delivered}/{ds.loads}</div>
                       <div style={{fontSize:"9px",color:"#94a3b8"}}>done</div>
                     </div>}
+                    {isAdmin&&<button onClick={e=>{
+                      e.stopPropagation();
+                      if(!confirm(`Terminate ${name}?\n\nThey'll be moved to the Terminated section and unassigned from any dispatcher. Their historical data (leaderboard, past loads) stays intact. You can reactivate them anytime.`))return;
+                      // Add to terminated set
+                      const nextTerminated=[...new Set([...terminatedDrivers,name])];
+                      setTerminatedDrivers(nextTerminated);
+                      // Auto-unassign from all dispatchers (Q2=B)
+                      const nextDisp=dispatchers.map(d=>({...d,drivers:(d.drivers||[]).filter(dn=>dn!==name)}));
+                      if(JSON.stringify(nextDisp)!==JSON.stringify(dispatchers))saveDispatchers(nextDisp);
+                      // Sync to sheets so it propagates across devices
+                      try{saveToSheets({weeks,customDrivers,customTrucks,customTrailers,dispatchers:nextDisp,terminatedDrivers:nextTerminated});}catch{}
+                    }} title="Terminate — keep data, hide from active list"
+                      style={{background:"#fef2f2",color:"#b91c1c",border:"1px solid #fecaca",borderRadius:"4px",padding:"3px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>🚫</button>}
                   </div>
                 );
               })}
             </div>
-            {filtered.length===0&&<div style={{textAlign:"center",padding:"30px",color:"#94a3b8",fontSize:"13px"}}>No drivers match "{driverSearch}"</div>}
+            {filtered.length===0&&!filteredTerminated.length&&<div style={{textAlign:"center",padding:"30px",color:"#94a3b8",fontSize:"13px"}}>No drivers match "{driverSearch}"</div>}
+
+            {/* ── TERMINATED SECTION ── Per Q4=a: separate section at bottom */}
+            {filteredTerminated.length>0&&(
+              <div style={{marginTop:"24px"}}>
+                <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"10px",paddingBottom:"8px",borderBottom:"1px solid #e2e8f0"}}>
+                  <span style={{fontSize:"11px",fontWeight:"800",color:"#64748b",textTransform:"uppercase",letterSpacing:".06em"}}>🚫 Terminated</span>
+                  <span style={{fontSize:"10px",color:"#94a3b8",fontWeight:"700",background:"#f1f5f9",padding:"1px 8px",borderRadius:"10px"}}>{filteredTerminated.length}</span>
+                  <span style={{fontSize:"10px",color:"#94a3b8",marginLeft:"auto"}}>Hidden from dropdowns and dispatcher lists. Historical data preserved.</span>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:"8px",opacity:0.6}}>
+                  {filteredTerminated.map(name=>{
+                    const ds=driverStats[name]||{loads:0,delivered:0,inTransit:0,gross:0,miles:0,weeks:new Set()};
+                    return(
+                      <div key={name} onClick={()=>setSelectedDriver(name)} style={{background:"#f8fafc",border:"1px dashed #cbd5e1",borderRadius:"10px",padding:"10px 14px",display:"flex",alignItems:"center",gap:"10px",cursor:"pointer",transition:"box-shadow .1s"}} onMouseEnter={e=>e.currentTarget.style.boxShadow="0 2px 8px rgba(0,0,0,0.08)"} onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
+                        <span style={{fontSize:"20px",filter:"grayscale(1)"}}>🧑‍✈️</span>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:"12px",fontWeight:"700",color:"#64748b",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{name}</div>
+                          <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"1px"}}>
+                            {ds.loads>0?`${ds.loads} lifetime loads`:"No historical data"}
+                          </div>
+                        </div>
+                        {isAdmin&&<button onClick={e=>{
+                          e.stopPropagation();
+                          const nextTerminated=terminatedDrivers.filter(n=>n!==name);
+                          setTerminatedDrivers(nextTerminated);
+                          try{saveToSheets({weeks,customDrivers,customTrucks,customTrailers,dispatchers,terminatedDrivers:nextTerminated});}catch{}
+                        }} title="Reactivate — restore to active list. You'll need to reassign to a dispatcher."
+                          style={{background:"#ecfdf5",color:"#065f46",border:"1px solid #86efac",borderRadius:"4px",padding:"3px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer",flexShrink:0}}>↩ Reactivate</button>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}
@@ -8550,7 +8654,7 @@ ${accRows.length>0?`
                       {topDrivers.map((dr,i)=>(
                         <div key={dr[0]} style={{display:"flex",alignItems:"center",gap:"8px"}}>
                           <span style={{fontSize:"13px",fontWeight:"800",color:i===0?"#f59e0b":i===1?"#94a3b8":i===2?"#d97706":"#cbd5e1",minWidth:"20px"}}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":"#"+(i+1)}</span>
-                          <span style={{fontSize:"12px",fontWeight:"600",color:"#374151",minWidth:"100px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{(()=>{const firstName=dr[0].split(" ")[0];const trk=Object.entries(truckAssignments||{}).find(([t,d])=>d===dr[0]);return trk?"#"+trk[0]+" "+firstName:firstName;})()}</span>
+                          <span style={{fontSize:"12px",fontWeight:"600",color:"#374151",minWidth:"100px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={dr[0]}>{dr[0]}</span>
                           <div style={{flex:1,height:"8px",background:"#f1f5f9",borderRadius:"4px",overflow:"hidden"}}>
                             <div style={{height:"100%",width:Math.round(dr[1]/maxDriverGross*100)+"%",background:i===0?"#f59e0b":i===1?"#94a3b8":"#2563eb",borderRadius:"4px"}}/>
                           </div>
