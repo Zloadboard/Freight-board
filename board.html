@@ -7253,17 +7253,23 @@ ${accRows.length>0?`
           // File-drop handler for Main Board HTML import
           const handleMainBoardImport=async(files)=>{
             for(const file of files){
-              const isXlsx=/\.xlsx?$/i.test(file.name);
-              const isHtml=/\.html?$/i.test(file.name);
-              if(!isXlsx&&!isHtml){
-                alert("Please upload a .xlsx (all weeks at once) or .html (single week) file.");
-                continue;
+              // Detect by CONTENT, not extension: xlsx/xlsm are ZIPs (start with "PK");
+              // anything containing a <table is treated as a Sheets HTML export.
+              const buf0=await file.arrayBuffer();
+              const b=new Uint8Array(buf0.slice(0,2));
+              const isXlsx=b.length>=2&&b[0]===0x50&&b[1]===0x4B; // "PK"
+              let htmlText=null;
+              if(!isXlsx){
+                htmlText=new TextDecoder("utf-8").decode(buf0);
+                if(!/<table/i.test(htmlText)){
+                  alert(file.name+" doesn't look like an Excel file or a Sheets HTML export.\nDownload your Google Sheet as Microsoft Excel (.xlsx) and upload that.");
+                  continue;
+                }
               }
               if(isXlsx){
                 if(typeof XLSX==="undefined"){alert("Excel library not loaded — check your internet connection and reload.");continue;}
                 try{
-                  const buf=await file.arrayBuffer();
-                  const wb=XLSX.read(buf,{type:"array"});
+                  const wb=XLSX.read(buf0,{type:"array"});
                   let imported=0,skipped=[];
                   let nextBoards={...mainBoards};let lastKey=null;
                   wb.SheetNames.forEach(sheetName=>{
@@ -7298,8 +7304,7 @@ ${accRows.length>0?`
                 }
                 continue;
               }
-              const text=await file.text();
-              const parsed=parseMainBoardHTML(text);
+              const parsed=parseMainBoardHTML(htmlText);
               if(!parsed.ok){
                 alert("Failed to parse "+file.name+":\n"+parsed.error);
                 continue;
@@ -7336,7 +7341,7 @@ ${accRows.length>0?`
             {/* Import + Board selector */}
             <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:"10px",marginBottom:"18px",padding:"12px",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"8px"}}>
               <label style={{background:"#059669",color:"#fff",padding:"8px 14px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer",display:"inline-flex",alignItems:"center",gap:"6px"}}>
-                <input type="file" accept=".html,.htm,.xlsx,.xls" multiple style={{display:"none"}}
+                <input type="file" multiple style={{display:"none"}}
                   onChange={e=>{if(e.target.files&&e.target.files.length){handleMainBoardImport(Array.from(e.target.files));e.target.value="";}}}/>
                 📥 Import Main Board (Excel or HTML)
               </label>
