@@ -53,6 +53,7 @@ input:disabled,select:disabled{opacity:0.72;cursor:not-allowed!important;}
 </style>
 <!-- PDF.js — extracts text from rate-con PDFs locally, no API needed -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>if(window.pdfjsLib&&window.pdfjsLib.GlobalWorkerOptions)window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
 </head>
 <body>
@@ -144,6 +145,25 @@ function parsePickupDate(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/)
 function parseTS(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return Infinity;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);if(tm){let h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}else{d.setHours(0,0,0,0);}return d.getTime();}
 function parseSR(t=""){const i=t.indexOf(" - ");return i<0?{s:t.trim(),r:""}:{s:t.slice(0,i).trim(),r:t.slice(i+3).trim()};}
 // Parse the ending date out of a week label (handles "3.30.2026 - 4.6.2026", "Week of 5/12/2026", "4-6-26")
+function weekDateRange(label){
+  if(!label)return null;
+  var ms=String(label).match(/(\d{1,2})[\/._\-](\d{1,2})[\/._\-](\d{2,4})/g);
+  if(!ms||!ms.length)return null;
+  var toD=function(s){var p=s.match(/(\d{1,2})[\/._\-](\d{1,2})[\/._\-](\d{2,4})/);if(!p)return null;var yr=+p[3];if(yr<100)yr+=2000;var d=new Date(yr,+p[1]-1,+p[2]);d.setHours(0,0,0,0);return isNaN(d.getTime())?null:d;};
+  var start=toD(ms[0]),end=toD(ms[ms.length-1]);
+  if(!start||!end)return null;
+  if(end<start){var t=start;start=end;end=t;}
+  return {start:start,end:end};
+}
+function freightWeeksOverlapping(boardLabel, freightWeeks){
+  var br=weekDateRange(boardLabel);
+  if(!br)return [];
+  return (freightWeeks||[]).filter(function(w){
+    var fr=weekDateRange(w&&w.label);
+    if(!fr)return false;
+    return br.start<=fr.end && fr.start<=br.end;
+  });
+}
 function weekEndDate(label){
   if(!label)return null;
   var ms=String(label).match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/g);
@@ -1181,34 +1201,33 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
   const adminPin=localStorage.getItem(ADMIN_PIN_KEY)||"";
   const viewerPin=localStorage.getItem(VIEWER_PIN_KEY)||"";
   const dispatchers=dispProp&&dispProp.length>0?dispProp:JSON.parse(localStorage.getItem(DISPATCHERS_KEY)||"[]");
+  const[mode,setMode]=useState(null);
   const[pin,setPin]=useState("");
   const[err,setErr]=useState("");
   const inputRef=useRef(null);
-  useEffect(()=>{setTimeout(()=>inputRef.current?.focus(),100);},[]);
-  // Single-input login. The entered PIN auto-detects the role: admin, viewer,
-  // or dispatcher. Empty PIN + "Continue as Guest" gives Public Viewer mode
-  // (Dashboard only, no menu items).
+  useEffect(()=>{if(mode)setTimeout(()=>inputRef.current?.focus(),100);},[mode]);
   const attempt=()=>{
     const pinStr=String(pin).trim();
-    if(!pinStr){setErr("Enter a PIN or Continue as Guest");return;}
-    // If no PINs synced yet, guide user
-    if(!adminPin&&!viewerPin&&dispatchers.length===0){
+    // If no admin PIN in localStorage yet, board hasn't synced — guide user
+    if(!adminPin&&!viewerPin){
       setErr("Board is loading — please wait a moment and try again");
       setPin("");return;
     }
-    if(adminPin&&pinStr===String(adminPin).trim()){onLogin("admin",null);return;}
-    if(viewerPin&&pinStr===String(viewerPin).trim()){onLogin("viewer",null);return;}
-    // Try dispatcher PIN (hashed or legacy plaintext)
+    if(pinStr===String(adminPin).trim()){onLogin("admin",null);return;}
+    if(pinStr===String(viewerPin).trim()){onLogin("viewer",null);return;}
+    // Re-read dispatchers fresh from localStorage
     let freshDispatchers=dispatchers;
     try{
       const stored=JSON.parse(localStorage.getItem(DISPATCHERS_KEY)||"[]");
       if(stored.length>0)freshDispatchers=stored;
     }catch(e){}
-    if(freshDispatchers.length===0){setErr("Incorrect PIN — try again");setPin("");return;}
+    if(freshDispatchers.length===0){setErr("Still loading — please wait a moment and try again");setPin("");return;}
+    // Hash the entered PIN, then compare to stored hashes (or plaintext for unmigrated)
     hashPin(pinStr).then(function(hashed){
       let matched=freshDispatchers.find(function(d){
         if(!d.pin)return false;
         if(d.pinHashed)return d.pin===hashed;
+        // Legacy plaintext fallback (migrated next save)
         return String(d.pin).trim()===pinStr;
       });
       if(matched){onLogin("dispatcher",matched);return;}
@@ -1218,22 +1237,29 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
   return(
     <div className="login-wrap">
       <div className="login-card fade-in">
-        <div style={{textAlign:"center",marginBottom:"24px"}}>
+        <div style={{textAlign:"center",marginBottom:"28px"}}>
           <div style={{width:"54px",height:"54px",background:"#0f1f3d",borderRadius:"14px",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 14px",fontSize:"26px"}}>🚛</div>
           <div className="login-logo">Freight Board</div>
-          <div className="login-sub">Romeoville, IL Hub</div>
+          <div className="login-sub">Romeoville, IL Hub · Restricted Access</div>
         </div>
-        <div style={{fontSize:"12px",fontWeight:"700",color:"#0f1f3d",marginBottom:"6px"}}>Sign in with PIN</div>
-        <input ref={inputRef} type="password" className="pin-input" value={pin} onChange={e=>{setPin(e.target.value);if(err)setErr("");}} onKeyDown={e=>e.key==="Enter"&&attempt()} placeholder="••••" maxLength={20} autoComplete="off"/>
-        {err&&<div className="pin-error">{err}</div>}
-        <button className="login-btn" onClick={attempt}>Sign In →</button>
-        <div style={{marginTop:"18px",paddingTop:"18px",borderTop:"1px solid #e2e8f0"}}>
-          <div style={{fontSize:"10px",color:"#94a3b8",textAlign:"center",marginBottom:"8px",fontWeight:"600"}}>OR</div>
-          <button onClick={()=>onLogin("public",null)}
-            style={{width:"100%",background:"#f8fafc",color:"#475569",border:"1px solid #cbd5e1",borderRadius:"8px",padding:"10px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>
-            👁 Continue as Guest (Dashboard only)
-          </button>
-        </div>
+        {!mode?(
+          <>
+            <button className="mode-btn" onClick={()=>setMode("admin")} style={{justifyContent:"center"}}><div className="mode-icon" style={{background:"#1e3a5f"}}>🔐</div><div style={{textAlign:"center"}}><div style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>Admin Access</div></div></button>
+            
+            <button className="mode-btn" onClick={()=>onLogin("viewer",null)} style={{justifyContent:"center"}}><div className="mode-icon" style={{background:"#064e3b"}}>👁</div><div style={{textAlign:"center"}}><div style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>View Dashboard</div></div></button>
+          </>
+        ):(
+          <div className="fade-in">
+            <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"16px"}}>
+              <button onClick={()=>{setMode(null);setPin("");setErr("");}} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",color:"#475569",cursor:"pointer"}}>← Back</button>
+              <span style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>{mode==="admin"?"Admin PIN":mode==="dispatcher"?"Dispatcher PIN":"Viewer PIN"}</span>
+            </div>
+            {mode==="dispatcher"&&<div style={{fontSize:"11px",color:"#64748b",marginBottom:"8px",textAlign:"center"}}>Enter your personal dispatcher PIN</div>}
+            <input ref={inputRef} type="password" className="pin-input" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>e.key==="Enter"&&attempt()} placeholder="••••" maxLength={20} autoComplete="off"/>
+            {err&&<div className="pin-error">{err}</div>}
+            <button className="login-btn" onClick={attempt}>{mode==="admin"?"Enter Admin Mode":mode==="dispatcher"?"Dispatcher Login →":"View Board →"}</button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1468,159 +1494,14 @@ function LoadDetailPanel({loadDetailId,weeks,isAdmin,isDispatcher,canSeeBroker,s
   );
 }
 
-// ─── PIN MANAGER MODAL ───────────────────────────────────────────────────
-// Set / change / clear Admin and Viewer PINs. All state is local to this
-// component — nothing is written to localStorage until the user clicks
-// "Save Changes" (unlike the old modal which wrote on blur, causing
-// confusion). Fields left empty mean "no change to this PIN".
-function PinManagerModal({currentAdminPin,currentViewerPin,onClose,onSave}){
-  // For each PIN slot: newPin (what user typed), confirmPin (retype), showPin (toggle mask), cleared (mark for removal)
-  const[adminNew,setAdminNew]=useState("");
-  const[adminConfirm,setAdminConfirm]=useState("");
-  const[adminShow,setAdminShow]=useState(false);
-  const[adminCleared,setAdminCleared]=useState(false);
-  const[viewerNew,setViewerNew]=useState("");
-  const[viewerConfirm,setViewerConfirm]=useState("");
-  const[viewerShow,setViewerShow]=useState(false);
-  const[viewerCleared,setViewerCleared]=useState(false);
-  const[err,setErr]=useState("");
-
-  // Handle Save: validate then bubble up changes. `undefined` = no change, "" = clear, string = new value.
-  const handleSave=()=>{
-    setErr("");
-    let adminChange,viewerChange;
-    // Determine what admin PIN change to make
-    if(adminCleared){
-      adminChange=""; // clear
-    } else if(adminNew){
-      if(adminNew.length<4){setErr("Admin PIN must be at least 4 characters.");return;}
-      if(adminNew!==adminConfirm){setErr("Admin PIN and confirmation don't match.");return;}
-      adminChange=adminNew;
-    } else if(adminConfirm){
-      // User typed in confirm but not new — mistake
-      setErr("Please enter new Admin PIN in both fields.");return;
-    }
-    // Same for viewer
-    if(viewerCleared){
-      viewerChange="";
-    } else if(viewerNew){
-      if(viewerNew.length<4){setErr("Viewer PIN must be at least 4 characters.");return;}
-      if(viewerNew!==viewerConfirm){setErr("Viewer PIN and confirmation don't match.");return;}
-      viewerChange=viewerNew;
-    } else if(viewerConfirm){
-      setErr("Please enter new Viewer PIN in both fields.");return;
-    }
-    // Cross-PIN check: admin and viewer must differ
-    const finalAdmin=adminChange!==undefined?adminChange:currentAdminPin;
-    const finalViewer=viewerChange!==undefined?viewerChange:currentViewerPin;
-    if(finalAdmin&&finalViewer&&finalAdmin===finalViewer){
-      setErr("Admin and Viewer PINs must be different.");return;
-    }
-    // If nothing changed, just close
-    if(adminChange===undefined&&viewerChange===undefined){onClose();return;}
-    onSave(adminChange,viewerChange);
-  };
-
-  // Render one PIN slot (admin or viewer)
-  const renderSlot=(label,hint,color,currentPin,{newVal,setNew,confirmVal,setConfirm,shown,setShown,cleared,setCleared})=>{
-    const isSet=Boolean(currentPin);
-    return(
-      <div style={{marginBottom:"20px",padding:"14px",border:`1px solid ${color.bd}`,borderRadius:"8px",background:color.bg}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px",marginBottom:"4px",flexWrap:"wrap"}}>
-          <div>
-            <div style={{fontSize:"13px",fontWeight:"800",color:color.c}}>{label}</div>
-            <div style={{fontSize:"10px",color:"#64748b",marginTop:"1px"}}>{hint}</div>
-          </div>
-          <span style={{fontSize:"10px",fontWeight:"700",padding:"2px 8px",borderRadius:"10px",background:isSet?"#dcfce7":"#fee2e2",color:isSet?"#166534":"#991b1b"}}>
-            {isSet?"● Set":"○ Not set"}
-          </span>
-        </div>
-        {cleared?(
-          <div style={{marginTop:"10px",padding:"8px 10px",background:"#fff",border:"1px dashed #f97316",borderRadius:"5px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px",flexWrap:"wrap"}}>
-            <span style={{fontSize:"11px",color:"#c2410c",fontWeight:"700"}}>⚠ Will be cleared on Save</span>
-            <button onClick={()=>setCleared(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",borderRadius:"4px",padding:"3px 8px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>Undo</button>
-          </div>
-        ):(
-          <>
-            <div style={{marginTop:"10px",display:"flex",alignItems:"stretch",gap:"6px"}}>
-              <input
-                type={shown?"text":"password"}
-                value={newVal}
-                onChange={e=>setNew(e.target.value)}
-                placeholder={isSet?"Enter new PIN (leave blank to keep current)":"Enter new PIN"}
-                style={{flex:1,padding:"7px 10px",border:"1px solid #d1d5db",borderRadius:"5px",fontSize:"13px",fontFamily:"inherit",letterSpacing:shown?"normal":"3px"}}
-                autoComplete="new-password"
-              />
-              <button onClick={()=>setShown(v=>!v)} title={shown?"Hide":"Show"} style={{background:"#fff",color:"#64748b",border:"1px solid #d1d5db",borderRadius:"5px",padding:"0 10px",fontSize:"14px",cursor:"pointer"}}>
-                {shown?"🙈":"👁"}
-              </button>
-            </div>
-            <div style={{marginTop:"6px"}}>
-              <input
-                type={shown?"text":"password"}
-                value={confirmVal}
-                onChange={e=>setConfirm(e.target.value)}
-                placeholder="Confirm PIN"
-                style={{width:"100%",padding:"7px 10px",border:"1px solid #d1d5db",borderRadius:"5px",fontSize:"13px",fontFamily:"inherit",letterSpacing:shown?"normal":"3px",boxSizing:"border-box"}}
-                autoComplete="new-password"
-              />
-            </div>
-            {isSet&&(
-              <button onClick={()=>{if(confirm("Clear "+label+"? Anyone who was using it will lose access."))setCleared(true);}}
-                style={{marginTop:"8px",background:"#fef2f2",color:"#b91c1c",border:"1px solid #fecaca",borderRadius:"4px",padding:"4px 10px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>
-                Clear this PIN
-              </button>
-            )}
-          </>
-        )}
-      </div>
-    );
-  };
-
-  return(
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"440px",width:"100%"}}>
-        <div style={{fontWeight:"800",fontSize:"16px",color:"#1a2e50",marginBottom:"4px"}}>🔐 PIN Management</div>
-        <div style={{fontSize:"11px",color:"#64748b",marginBottom:"16px",lineHeight:"1.4"}}>
-          Set or change the Admin (full access) and Viewer (read-only, no Payroll edits, current week only) PINs. Changes save when you click <strong>Save Changes</strong>.
-        </div>
-
-        {renderSlot("Admin PIN","Full board access — you",{bd:"#c4b5fd",bg:"#faf5ff",c:"#6b21a8"},currentAdminPin,{
-          newVal:adminNew,setNew:setAdminNew,confirmVal:adminConfirm,setConfirm:setAdminConfirm,shown:adminShow,setShown:setAdminShow,cleared:adminCleared,setCleared:setAdminCleared
-        })}
-        {renderSlot("Viewer PIN","Read-only, no Payroll edits",{bd:"#93c5fd",bg:"#eff6ff",c:"#1e40af"},currentViewerPin,{
-          newVal:viewerNew,setNew:setViewerNew,confirmVal:viewerConfirm,setConfirm:setViewerConfirm,shown:viewerShow,setShown:setViewerShow,cleared:viewerCleared,setCleared:setViewerCleared
-        })}
-
-        {err&&<div style={{marginBottom:"12px",padding:"8px 12px",background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:"5px",fontSize:"11px",color:"#991b1b",fontWeight:"700"}}>⚠ {err}</div>}
-
-        <div style={{display:"flex",justifyContent:"flex-end",gap:"8px"}}>
-          <button onClick={onClose} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"8px 16px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Cancel</button>
-          <button onClick={handleSave} style={{background:"#2563eb",color:"#fff",border:"none",padding:"8px 16px",borderRadius:"6px",fontSize:"12px",fontWeight:"800",cursor:"pointer"}}>Save Changes</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function App(){
-  const[appMode,setAppMode]=useState("public"); // default: everyone lands as public viewer (Dashboard only)
+  const[appMode,setAppMode]=useState("viewer"); // default: everyone starts as viewer
   const sessionToken=React.useRef(""); // role session token sent to Sheets
   const[weeks,setWeeks]=useState([]);
   const[activeWeek,setActiveWeek]=useState(0);
-  // Viewer is locked to the newest week — no ability to navigate past weeks.
-  // We snap activeWeek to weeks.length-1 whenever the weeks list changes.
-  useEffect(()=>{
-    if(appMode==="viewer"&&weeks&&weeks.length>0){
-      const newest=weeks.length-1;
-      if(activeWeek!==newest)setActiveWeek(newest);
-    }
-  },[appMode,weeks?.length]);
   const[_activeTab,_setActiveTab]=useState(()=>localStorage.getItem("fcbv2_lastTab")||"dashboard");
-  // Public mode is pinned to Dashboard. Any attempt to navigate elsewhere is a no-op.
-  // Viewer + admin navigate freely via _setActiveTab.
-  const activeTab=appMode==="public"?"dashboard":_activeTab;
-  const setActiveTab=(tab)=>{if(appMode==="public")return;_setActiveTab(tab);};
+  const activeTab=appMode==="viewer"?"dashboard":_activeTab;
+  const setActiveTab=(tab)=>{if(appMode==="viewer"&&tab!=="dashboard")return;_setActiveTab(tab);};
   const[boardFilter,setBoardFilter]=useState("all");
   // Compact/cards view toggle for Planned Shipments — persisted across sessions
   const[plannedView,setPlannedView]=useState(()=>localStorage.getItem("fcbv2_plannedView")||"cards");
@@ -1631,6 +1512,8 @@ function App(){
   const[insightsTab,setInsightsTab]=useState("shippers");
   // PAYROLL — which week index in allTimeWeeks we're viewing (null = default to current)
   const[payrollWeekIdx,setPayrollWeekIdx]=useState(null);
+  // PAYROLL — manual pick of which Freight Board week feeds each Main Board week's Zygis 10%.
+  const[manualFreightKey,setManualFreightKey]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_manualfreight")||"{}");}catch{return{};}});
   // Manual per-dispatcher overrides: {[weekId]: {[dispName]: {amount, note}}}
   const[payrollOverrides,setPayrollOverrides]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_payroll_ov")||"{}");}catch{return{};}});
   const savePayrollOverrides=(next)=>{setPayrollOverrides(next);try{localStorage.setItem("fcbv2_payroll_ov",JSON.stringify(next));}catch{}};
@@ -1861,12 +1744,9 @@ function App(){
   };
   const isViewer=appMode==="viewer";
   const isDispatcher=appMode==="dispatcher";
-  const isPublic=appMode==="public";
-  // Force viewer + public to dashboard tab whenever appMode changes into either mode.
-  // Public is also pinned to dashboard by the activeTab router above; this handles the
-  // initial mount case where activeTab may be loaded from localStorage as something else.
+  // Force viewer to dashboard tab whenever appMode changes
   React.useEffect(()=>{
-    if(appMode==="viewer"||appMode==="public"){_setActiveTab("dashboard");}
+    if(appMode==="viewer"){_setActiveTab("dashboard");}
   },[appMode]);
   const saveDispatchers=(list)=>{
     localStorage.setItem(DISPATCHERS_KEY,JSON.stringify(list));
@@ -2809,6 +2689,9 @@ function App(){
     // Turn table into a 2D grid of trimmed cell text
     const trs=Array.from(table.querySelectorAll("tr"));
     const grid=trs.map(tr=>Array.from(tr.querySelectorAll("td,th")).map(td=>(td.textContent||"").trim()));
+    return parseMainBoardGrid(grid);
+  };
+  const parseMainBoardGrid=(grid)=>{
     // Identify summary rows: contain "Gross:" AND "/truck". The cell BEFORE "$RPM" is the dispatcher name.
     // Row format: [rowNum, dispName, "$RPM", "Gross:", "$totalGross", "/truck", ...]
     const summaryIdxs=[];
@@ -2854,26 +2737,39 @@ function App(){
     sections.forEach(sec=>{
       const drivers=[];
       let i=sec.startRow;
-      while(i<=sec.endRow-3){ // need at least 4 rows for a driver block
+      while(i<=sec.endRow-2){ // need at least 3 rows: header + MILES + gross-total
         const r1=grid[i]||[];  // driver header: # | # | name+co | truck# | day1 pickup | ...
         const r2=grid[i+1]||[]; // phone + deliveries
         const r3=grid[i+2]||[]; // "MILES" + total + per-day
         const r4=grid[i+3]||[]; // "GROSS" + total + per-day
         // A driver block starts when col 1 is a small integer (driver slot 1-11) AND col 3 is MILES-like row below
-        const isDriverHeader=r1[1]&&/^\d{1,2}$/.test(r1[1])&&r3[1]==="MILES"&&r4[1]==="GROSS";
+        const hdrSlot=r1[1]&&/^\d{1,2}$/.test(r1[1]);
+        const hdrName=(r1[2]||"").trim();
+        const nameLooksReal=hdrName&&/[A-Za-z]/.test(hdrName)&&!/^MILES$|^GROSS$/i.test(hdrName);
+        let milesRel=-1;
+        if((r3[1]||"")==="MILES")milesRel=2;
+        else if((r2[1]||"")==="MILES")milesRel=1;
+        const isDriverHeader=hdrSlot&&nameLooksReal&&milesRel>=0;
         if(!isDriverHeader){i++;continue;}
         // Extract driver info
-        const rawName=(r1[2]||"").replace(/\*+\s*Co[- ]?driver.*/i,"").replace(/\*+/g,"").trim();
+        const rawName=(r1[2]||"").replace(/\*+/g,"").replace(/\s*\/.*$/,"").replace(/\s+Co[\s-]?driver.*$/i,"").replace(/\s+Has\s+Chains.*$/i,"").trim();
         const truck=(r1[3]||"").trim();
         const phone=(r2[2]||"").trim();
-        // Gross = col 2 of GROSS row, format "$1,234" or "$1,234.56"
-        const grossStr=(r4[2]||"").replace(/[$,\s]/g,"");
-        const gross=parseFloat(grossStr);
-        // Skip empty driver slots (no name, no gross)
+        // GROSS total = first $-value on the row right after the MILES row (labeled or not).
+        const grossRow=grid[i+milesRel+1]||[];
+        let gross=NaN;
+        for(let c=2;c<grossRow.length;c++){
+          const cell=(grossRow[c]||"");
+          if(cell.includes("$")){
+            const num=parseFloat(cell.replace(/[$,\s]/g,""));
+            if(isFinite(num)){gross=num;break;}
+          }
+        }
+        // Skip empty driver slots (no name, no positive gross)
         if(rawName&&isFinite(gross)&&gross>0){
           drivers.push({name:rawName,truck,phone,gross:Math.round(gross)});
         }
-        i+=4;
+        i+=milesRel+2;
       }
       if(drivers.length>0){
         dispatchersOut.push({name:sec.dispName,drivers});
@@ -2949,7 +2845,7 @@ function App(){
     }
     const results=[];
     mainBoardData.dispatchers.forEach(disp=>{
-      const isZygis=String(disp.name).toLowerCase().includes("zygis");
+      const isZygis=/(zygis|ziggy)/i.test(String(disp.name||""));
       const activeDrivers=disp.drivers.filter(d=>d.gross>0);
       const driverCount=activeDrivers.length;
       // Base compensation
@@ -3911,7 +3807,7 @@ ${accRows.length>0?`
     // Dispatchers go straight to the board; admins go to dashboard
     if(mode==="dispatcher"){setActiveTab("weeks");localStorage.setItem("fcbv2_lastTab","weeks");}
     else if(mode==="admin"){const lastTab=localStorage.getItem("fcbv2_lastTab")||"dashboard";setActiveTab(lastTab);}
-    const entry={name:mode==="dispatcher"&&disp?disp.name:mode==="admin"?"Admin":mode==="viewer"?"Viewer":"Public Viewer",role:mode,ts:new Date().toLocaleString("en-US",{month:"2-digit",day:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true})};
+    const entry={name:mode==="dispatcher"&&disp?disp.name:mode==="admin"?"Admin":"Viewer",role:mode,ts:new Date().toLocaleString("en-US",{month:"2-digit",day:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true})};
     setLoginLog(prev=>{const next=[entry,...prev].slice(0,200);localStorage.setItem("fcbv2_loginlog",JSON.stringify(next));return next;});
   }}/>;
 
@@ -4223,31 +4119,7 @@ ${accRows.length>0?`
       <div style={{position:"absolute",bottom:"16px",color:"#fff",fontSize:"12px"}}>{photoViewer.index+1} / {photoViewer.photos.length}</div>
     </div>)}
     {/* PIN MODAL */}
-    {showPinModal&&<PinManagerModal
-      currentAdminPin={localStorage.getItem(ADMIN_PIN_KEY)||""}
-      currentViewerPin={localStorage.getItem(VIEWER_PIN_KEY)||""}
-      onClose={()=>setShowPinModal(false)}
-      onSave={(newAdmin,newViewer)=>{
-        // Write both to localStorage and trigger a sheets sync so PINs propagate
-        // across the user's devices. Only writes fields that were touched
-        // (undefined means "unchanged"). Empty string means "cleared".
-        if(newAdmin!==undefined){
-          if(newAdmin==="")localStorage.removeItem(ADMIN_PIN_KEY);
-          else localStorage.setItem(ADMIN_PIN_KEY,newAdmin);
-        }
-        if(newViewer!==undefined){
-          if(newViewer==="")localStorage.removeItem(VIEWER_PIN_KEY);
-          else localStorage.setItem(VIEWER_PIN_KEY,newViewer);
-        }
-        // Kick off sheets sync so change follows the user across devices
-        try{
-          sheetsSave({weeks,customDrivers,customTrucks,customTrailers,dispatchers,truckAssignments,
-            adminPin:localStorage.getItem(ADMIN_PIN_KEY)||"",
-            viewerPin:localStorage.getItem(VIEWER_PIN_KEY)||""});
-        }catch{}
-        setShowPinModal(false);
-      }}
-    />}
+    {showPinModal&&(<div className="modal-bg" onClick={()=>setShowPinModal(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontWeight:"700",fontSize:"16px",color:"#1a2e50",marginBottom:"16px"}}>🔐 Change PINs</div>{[["Admin PIN",ADMIN_PIN_KEY,"Full board access"],["Viewer PIN",VIEWER_PIN_KEY,"Read-only access"]].map((pinItem)=>{const [label,key,hint]=pinItem;return(<div key={key} style={{marginBottom:"16px"}}><label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"5px"}}>{label} <span style={{color:"#9ca3af",fontWeight:"400"}}>({hint})</span></label><input defaultValue={localStorage.getItem(key)||""} onBlur={e=>{localStorage.setItem(key,e.target.value);}} style={{width:"100%",padding:"8px 10px",border:"1px solid #d1d5db",borderRadius:"6px",fontSize:"14px",letterSpacing:"3px"}} placeholder="Enter new PIN"/></div>);})}<div style={{display:"flex",justifyContent:"flex-end",gap:"8px"}}><button onClick={()=>setShowPinModal(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Close</button><button onClick={()=>{alert("PINs saved!");setShowPinModal(false);}} style={{background:"#2563eb",color:"#fff",border:"none",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Save PINs</button></div></div></div>)}
 
     {/* API KEY MODAL */}
     {showSupabaseModal&&(<div className="modal-bg" onClick={()=>setShowSupabaseModal(false)}><div className="modal" onClick={e=>e.stopPropagation()}>
@@ -4711,15 +4583,15 @@ ${accRows.length>0?`
             {isViewer&&<div style={{fontSize:"11px",color:"#94a3b8",padding:"4px 12px",fontStyle:"italic"}}>Dashboard view only</div>}
             
             <button className={"hdr-menu-item"+(activeTab==="dashboard"?" active":"")} style={{color:activeTab==="dashboard"?"#0891b2":"#374151",background:activeTab==="dashboard"?"#ecfeff":"transparent"}} onClick={()=>{setActiveTab("dashboard");setDashCurIdx(activeWeek);setDashPrevIdx(activeWeek>0?activeWeek-1:activeWeek+1);setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center"}}>📊</span> Dashboard</button>
-            {(isAdmin||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="weeks"?" active":"")} style={{color:activeTab==="weeks"?"#2563eb":"#374151",background:activeTab==="weeks"?"#eff6ff":"transparent"}} onClick={()=>{setActiveTab("weeks");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📅</span>Weekly Boards</button>}
-            {(isAdmin||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="dispatchers"?" active":"")} style={{color:activeTab==="dispatchers"?"#7c3aed":"#374151",background:activeTab==="dispatchers"?"#faf5ff":"transparent"}} onClick={()=>{setActiveTab("dispatchers");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🎯</span>Dispatchers</button>}
-            {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="roster"?" active":"")} style={{color:activeTab==="roster"?"#065f46":"#374151",background:activeTab==="roster"?"#ecfdf5":"transparent"}} onClick={()=>{setActiveTab("roster");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>👥</span>Drivers</button>}
-            {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="equipment"?" active":"")} style={{color:activeTab==="equipment"?"#0369a1":"#374151",background:activeTab==="equipment"?"#eff6ff":"transparent"}} onClick={()=>{setActiveTab("equipment");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🚛</span>Equipment</button>}
-            {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="xdock"?" active":"")} style={{color:activeTab==="xdock"?"#7c3aed":"#374151",background:activeTab==="xdock"?"#faf5ff":"transparent"}} onClick={()=>{setActiveTab("xdock");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🔁</span>Crossdock</button>}
-            {(isAdmin||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="archive"?" active":"")} style={{color:activeTab==="archive"?"#4c1d95":"#374151",background:activeTab==="archive"?"#faf5ff":"transparent"}} onClick={()=>{setActiveTab("archive");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📦</span>Archive{archivedWeeks.length>0 ? <span style={{marginLeft:"auto",fontSize:"9px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 6px",borderRadius:"10px"}}>{archivedWeeks.length}</span> : null}</button>}
-            {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="stats"?" active":"")} style={{color:activeTab==="stats"?"#b45309":"#374151",background:activeTab==="stats"?"#fffbeb":"transparent"}} onClick={()=>{setActiveTab("stats");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📊</span>Stats</button>}
-            {(isAdmin||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="insights"?" active":"")} style={{color:activeTab==="insights"?"#0891b2":"#374151",background:activeTab==="insights"?"#ecfeff":"transparent"}} onClick={()=>{setActiveTab("insights");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🧠</span>Insights</button>}
-            {(isAdmin||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="payroll"?" active":"")} style={{color:activeTab==="payroll"?"#059669":"#374151",background:activeTab==="payroll"?"#f0fdf4":"transparent"}} onClick={()=>{setActiveTab("payroll");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>💰</span>Payroll</button>}
+            {isAdmin&&<button className={"hdr-menu-item"+(activeTab==="weeks"?" active":"")} style={{color:activeTab==="weeks"?"#2563eb":"#374151",background:activeTab==="weeks"?"#eff6ff":"transparent"}} onClick={()=>{setActiveTab("weeks");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📅</span>Weekly Boards</button>}
+            {isAdmin&&<button className={"hdr-menu-item"+(activeTab==="dispatchers"?" active":"")} style={{color:activeTab==="dispatchers"?"#7c3aed":"#374151",background:activeTab==="dispatchers"?"#faf5ff":"transparent"}} onClick={()=>{setActiveTab("dispatchers");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🎯</span>Dispatchers</button>}
+            {(isAdmin||isDispatcher)&&<button className={"hdr-menu-item"+(activeTab==="roster"?" active":"")} style={{color:activeTab==="roster"?"#065f46":"#374151",background:activeTab==="roster"?"#ecfdf5":"transparent"}} onClick={()=>{setActiveTab("roster");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>👥</span>Drivers</button>}
+            {(isAdmin||isDispatcher)&&<button className={"hdr-menu-item"+(activeTab==="equipment"?" active":"")} style={{color:activeTab==="equipment"?"#0369a1":"#374151",background:activeTab==="equipment"?"#eff6ff":"transparent"}} onClick={()=>{setActiveTab("equipment");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🚛</span>Equipment</button>}
+            {(isAdmin||isDispatcher)&&<button className={"hdr-menu-item"+(activeTab==="xdock"?" active":"")} style={{color:activeTab==="xdock"?"#7c3aed":"#374151",background:activeTab==="xdock"?"#faf5ff":"transparent"}} onClick={()=>{setActiveTab("xdock");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🔁</span>Crossdock</button>}
+            {isAdmin&&<button className={"hdr-menu-item"+(activeTab==="archive"?" active":"")} style={{color:activeTab==="archive"?"#4c1d95":"#374151",background:activeTab==="archive"?"#faf5ff":"transparent"}} onClick={()=>{setActiveTab("archive");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📦</span>Archive{archivedWeeks.length>0 ? <span style={{marginLeft:"auto",fontSize:"9px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 6px",borderRadius:"10px"}}>{archivedWeeks.length}</span> : null}</button>}
+            {(isAdmin||isDispatcher)&&<button className={"hdr-menu-item"+(activeTab==="stats"?" active":"")} style={{color:activeTab==="stats"?"#b45309":"#374151",background:activeTab==="stats"?"#fffbeb":"transparent"}} onClick={()=>{setActiveTab("stats");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📊</span>Stats</button>}
+            {isAdmin&&<button className={"hdr-menu-item"+(activeTab==="insights"?" active":"")} style={{color:activeTab==="insights"?"#0891b2":"#374151",background:activeTab==="insights"?"#ecfeff":"transparent"}} onClick={()=>{setActiveTab("insights");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🧠</span>Insights</button>}
+            {isAdmin&&<button className={"hdr-menu-item"+(activeTab==="payroll"?" active":"")} style={{color:activeTab==="payroll"?"#059669":"#374151",background:activeTab==="payroll"?"#f0fdf4":"transparent"}} onClick={()=>{setActiveTab("payroll");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>💰</span>Payroll</button>}
             {!isAdmin&&isDispatcher ? <button className={"hdr-menu-item"+(activeTab==="weeks"?" active":"")} style={{color:activeTab==="weeks"?"#2563eb":"#374151",background:activeTab==="weeks"?"#eff6ff":"transparent"}} onClick={()=>{setActiveTab("weeks");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📅</span>Weekly Boards</button> : null}
 
             <div className="hdr-menu-divider"/>
@@ -4789,9 +4661,6 @@ ${accRows.length>0?`
     <div>
       <div style={{background:"#1a2e50",padding:"8px 12px 0",display:"flex",alignItems:"flex-end",gap:"2px",overflowX:"auto"}}>
         {weeks.map((w,i)=>(
-          // Viewer sees only the newest week tab (weeks.length - 1). All older
-          // week tabs are hidden — no navigation to past weeks allowed.
-          isViewer&&i!==weeks.length-1 ? null :
           <div key={w.id}
             draggable={isAdmin}
             onDragStart={()=>{setDragWeekIdx(i);}}
@@ -5123,16 +4992,11 @@ ${accRows.length>0?`
               if((g.loads||[]).length>1)return 2;     // multi-stop
               return 3;                                // single
             };
-            // Sort key within a tier: earliest PICKUP date of the trailer.
-            // Was previously delivery date, which caused tomorrow's pickups to
-            // appear above today's when their delivery happened to be sooner.
-            // Pickup date is the correct signal — the trailer is waiting to be
-            // picked up, and the most urgent pickups belong on top. Overdue
-            // pickups (past dates) naturally sort first, which is what we want.
+            // Sort key within a tier: earliest delivery date of the trailer
             const sortKey=g=>{
               const loads=g.loads||[];
               if(!loads.length)return Infinity;
-              const ts=loads.map(l=>parseTS(l.pickup)).filter(t=>isFinite(t));
+              const ts=loads.map(l=>parseTS(l.delivery)).filter(t=>isFinite(t));
               return ts.length?Math.min(...ts):Infinity;
             };
             return planned.slice().sort((a,b)=>{
@@ -6524,11 +6388,11 @@ ${accRows.length>0?`
     </div>
     )}
 
-    {activeTab==="dispatchers"&&(isAdmin||isViewer)&&(
+    {activeTab==="dispatchers"&&isAdmin&&(
     <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
       <div style={{display:"flex",alignItems:"center",gap:"14px",marginBottom:"20px",paddingBottom:"12px",borderBottom:"2px solid #e9d5ff"}}>
         <div style={{fontWeight:"700",fontSize:"14px",color:"#5b21b6"}}>🎯 Dispatcher Management</div>
-        {isAdmin&&<button onClick={()=>{
+        <button onClick={()=>{
           const name=prompt("Dispatcher name:");
           if(!name||!name.trim())return;
           const pin=prompt("Set PIN for "+name.trim()+" (min 4 digits):");
@@ -6538,7 +6402,7 @@ ${accRows.length>0?`
             const newDisp={id:Date.now(),name:name.trim(),pin:hashed,pinHashed:true,drivers:[]};
             saveDispatchers([...dispatchers,newDisp]);
           });
-        }} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 14px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>+ Add Dispatcher</button>}
+        }} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 14px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>+ Add Dispatcher</button>
       </div>
       {dispatchers.length===0&&(
         <div style={{textAlign:"center",padding:"40px",color:"#94a3b8",fontSize:"12px",border:"2px dashed #e2e8f0",borderRadius:"8px"}}>
@@ -6553,13 +6417,10 @@ ${accRows.length>0?`
               <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"12px"}}>
                 <div style={{width:"36px",height:"36px",background:"#7c3aed",borderRadius:"8px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"18px",flexShrink:0}}>🎯</div>
                 <div style={{flex:1}}>
-                  {isAdmin
-                    ? <input defaultValue={disp.name} key={"name-"+disp.id} onBlur={e=>{const v=e.target.value.trim();if(v&&v!==disp.name){saveDispatchers(dispatchers.map(d=>d.id===disp.id?{...d,name:v}:d));}}} style={{fontWeight:"700",fontSize:"13px",color:"#4c1d95",border:"none",outline:"none",background:"transparent",width:"100%",fontFamily:"inherit",padding:"0",cursor:"text"}} placeholder="Dispatcher name" title="Click to edit name"/>
-                    : <div style={{fontWeight:"700",fontSize:"13px",color:"#4c1d95"}}>{disp.name}</div>
-                  }
+                  <input defaultValue={disp.name} key={"name-"+disp.id} onBlur={e=>{const v=e.target.value.trim();if(v&&v!==disp.name){saveDispatchers(dispatchers.map(d=>d.id===disp.id?{...d,name:v}:d));}}} style={{fontWeight:"700",fontSize:"13px",color:"#4c1d95",border:"none",outline:"none",background:"transparent",width:"100%",fontFamily:"inherit",padding:"0",cursor:"text"}} placeholder="Dispatcher name" title="Click to edit name"/>
                   <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"1px"}}>{(disp.drivers||[]).length} driver{(disp.drivers||[]).length!==1?"s":""} · PIN: {disp.pinHashed?"••••••••":disp.pin}</div>
                 </div>
-                {isAdmin&&<button onClick={()=>{
+                <button onClick={()=>{
                   const newPin=prompt(`New PIN for ${disp.name}:`);
                   if(!newPin||newPin.trim().length<4){alert("PIN must be at least 4 chars.");return;}
                   if(dispatchers.some(d=>d.id!==disp.id&&d.pin===newPin.trim())){alert("PIN already in use.");return;}
@@ -6567,11 +6428,11 @@ ${accRows.length>0?`
                     const updated=dispatchers.map(d=>d.id===disp.id?{...d,pin:hashed,pinHashed:true}:d);
                     saveDispatchers(updated);
                   });
-                }} style={{background:"#ede9fe",color:"#5b21b6",border:"1px solid #c4b5fd",borderRadius:"5px",padding:"3px 10px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>🔐 PIN</button>}
-                {isAdmin&&<button onClick={()=>{
+                }} style={{background:"#ede9fe",color:"#5b21b6",border:"1px solid #c4b5fd",borderRadius:"5px",padding:"3px 10px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>🔐 PIN</button>
+                <button onClick={()=>{
                   if(!confirm("Remove dispatcher "+disp.name+"?"))return;
                   saveDispatchers(dispatchers.filter(d=>d.id!==disp.id));
-                }} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"5px",padding:"3px 10px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>×</button>}
+                }} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"5px",padding:"3px 10px",fontSize:"10px",fontWeight:"700",cursor:"pointer"}}>×</button>
               </div>
               <div style={{fontSize:"11px",fontWeight:"700",color:"#374151",marginBottom:"6px"}}>Assign Drivers:</div>
               <div style={{maxHeight:"180px",overflowY:"auto",border:"1px solid #e9d5ff",borderRadius:"6px",background:"#fff"}}>
@@ -6579,7 +6440,7 @@ ${accRows.length>0?`
                   const assigned=(disp.drivers||[]).includes(driver);
                   const otherDisp=dispatchers.find(d=>d.id!==disp.id&&(d.drivers||[]).includes(driver));
                   return(
-                    <div key={driver} onClick={isAdmin?()=>{
+                    <div key={driver} onClick={()=>{
                       let updated;
                       if(assigned){
                         updated=dispatchers.map(d=>d.id===disp.id?{...d,drivers:(d.drivers||[]).filter(dr=>dr!==driver)}:d);
@@ -6590,7 +6451,7 @@ ${accRows.length>0?`
                         });
                       }
                       saveDispatchers(updated);
-                    }:undefined} style={{display:"flex",alignItems:"center",gap:"8px",padding:"6px 10px",cursor:isAdmin?"pointer":"default",borderBottom:"1px solid #f3e8ff",background:assigned?"#faf5ff":"#fff",transition:"background .1s"}}>
+                    }} style={{display:"flex",alignItems:"center",gap:"8px",padding:"6px 10px",cursor:"pointer",borderBottom:"1px solid #f3e8ff",background:assigned?"#faf5ff":"#fff",transition:"background .1s"}}>
                       <div style={{width:"16px",height:"16px",borderRadius:"3px",border:`2px solid ${assigned?"#7c3aed":"#d1d5db"}`,background:assigned?"#7c3aed":"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
                         {assigned&&<span style={{color:"#fff",fontSize:"10px",lineHeight:1}}>✓</span>}
                       </div>
@@ -6653,7 +6514,7 @@ ${accRows.length>0?`
     </div>
   )}
 
-  {activeTab==="equipment"&&(isAdmin||isDispatcher||isViewer)&&(<div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}><div style={{fontWeight:"700",fontSize:"14px",color:"#0369a1",marginBottom:"20px"}}>🚛 Equipment Registry</div>
+  {activeTab==="equipment"&&(isAdmin||isDispatcher)&&(<div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}><div style={{fontWeight:"700",fontSize:"14px",color:"#0369a1",marginBottom:"20px"}}>🚛 Equipment Registry</div>
               {/* TRUCKS — manage trucks AND assign drivers in one place */}
               {(isAdmin||isDispatcher)&&(<div style={{marginBottom:"28px",background:"#f0f9ff",borderRadius:"12px",padding:"16px",border:"1px solid #bae6fd"}}>
                 <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"12px",flexWrap:"wrap"}}>
@@ -6780,7 +6641,7 @@ ${accRows.length>0?`
 </div></div>)}
 
     {/* DRIVER ROSTER TAB */}
-    {activeTab==="roster"&&(isAdmin||isDispatcher||isViewer)&&(
+    {activeTab==="roster"&&(isAdmin||isDispatcher)&&(
     <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
       <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"16px"}}>
         <div style={{fontWeight:"700",fontSize:"14px",color:"#1a2e50"}}>👥 Driver Roster</div>
@@ -6886,7 +6747,7 @@ ${accRows.length>0?`
                           <div style={{fontSize:"12px",fontWeight:"700",color:"#166534"}}>{name}</div>
                           <div style={{fontSize:"10px",color:"#059669"}}>{ds.loads} loads{ds.net>0?" · $"+ds.net.toLocaleString()+" net":""}</div>
                         </div>
-                        {isAdmin&&<button onClick={e=>{e.stopPropagation();if(!confirm(`Remove ${name}?`))return;const updated=customDrivers.filter(d=>d!==name);setCustomDrivers(updated);saveToSheets({weeks,customDrivers:updated});}} style={{background:"#fee2e2",border:"1px solid #fca5a5",color:"#dc2626",borderRadius:"4px",padding:"1px 6px",fontSize:"11px",cursor:"pointer"}}>×</button>}
+                        <button onClick={e=>{e.stopPropagation();if(!confirm(`Remove ${name}?`))return;const updated=customDrivers.filter(d=>d!==name);setCustomDrivers(updated);saveToSheets({weeks,customDrivers:updated});}} style={{background:"#fee2e2",border:"1px solid #fca5a5",color:"#dc2626",borderRadius:"4px",padding:"1px 6px",fontSize:"11px",cursor:"pointer"}}>×</button>
                       </div>
                     );
                   })}
@@ -6928,7 +6789,7 @@ ${accRows.length>0?`
   )}
 
     {/* CROSSDOCK ADDRESSES TAB */}
-    {activeTab==="xdock"&&(isAdmin||isDispatcher||isViewer)&&(
+    {activeTab==="xdock"&&(isAdmin||isDispatcher)&&(
     <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
 
       {/* Header */}
@@ -7001,10 +6862,10 @@ ${accRows.length>0?`
   )}
 
     {/* ARCHIVE TAB */}
-    {activeTab==="archive"&&(isAdmin||isViewer)&&(<div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}><div style={{fontWeight:"700",fontSize:"14px",color:"#4c1d95",marginBottom:"4px"}}>📦 Archived Weeks</div><div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px"}}>Weeks moved here from the main board.</div>{archivedWeeks.length===0?<div style={{textAlign:"center",padding:"40px",color:"#94a3b8",fontSize:"12px",border:"2px dashed #e2e8f0",borderRadius:"8px"}}>No archived weeks yet. Click 📦 on a week tab to archive it.</div>:archivedWeeks.map((w,i)=>(<div key={i} style={{border:"1px solid #e9d5ff",borderRadius:"10px",padding:"14px",marginBottom:"12px",background:"#faf5ff"}}><div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"10px"}}><span style={{fontWeight:"700",fontSize:"13px",color:"#4c1d95",flex:1}}>{w.label}</span><span style={{fontSize:"10px",color:"#94a3b8"}}>{w.archivedAt}</span><button onClick={()=>{if(!confirm("Restore?"))return;restoreArchivedWeek(i);setActiveTab("weeks");}} style={{background:"#eff6ff",color:"#2563eb",border:"1px solid #bfdbfe",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer",display:isAdmin?"inline-block":"none"}}>Restore</button><button onClick={()=>{if(!confirm("Permanently delete?"))return;deleteArchivedWeek(i);}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer",display:isAdmin?"inline-block":"none"}}>Delete</button></div><div style={{display:"flex",gap:"12px",flexWrap:"wrap",fontSize:"11px",color:"#6b7280"}}><span>{(w.groups||[]).length} trailers</span><span>{(w.groups||[]).flatMap(g=>g.loads||[]).length} loads</span><span style={{fontWeight:"700",color:"#059669"}}>${(w.groups||[]).flatMap(g=>g.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0).toLocaleString()} gross</span></div></div>))}</div>)}
+    {activeTab==="archive"&&isAdmin&&(<div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}><div style={{fontWeight:"700",fontSize:"14px",color:"#4c1d95",marginBottom:"4px"}}>📦 Archived Weeks</div><div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px"}}>Weeks moved here from the main board.</div>{archivedWeeks.length===0?<div style={{textAlign:"center",padding:"40px",color:"#94a3b8",fontSize:"12px",border:"2px dashed #e2e8f0",borderRadius:"8px"}}>No archived weeks yet. Click 📦 on a week tab to archive it.</div>:archivedWeeks.map((w,i)=>(<div key={i} style={{border:"1px solid #e9d5ff",borderRadius:"10px",padding:"14px",marginBottom:"12px",background:"#faf5ff"}}><div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"10px"}}><span style={{fontWeight:"700",fontSize:"13px",color:"#4c1d95",flex:1}}>{w.label}</span><span style={{fontSize:"10px",color:"#94a3b8"}}>{w.archivedAt}</span><button onClick={()=>{if(!confirm("Restore?"))return;restoreArchivedWeek(i);setActiveTab("weeks");}} style={{background:"#eff6ff",color:"#2563eb",border:"1px solid #bfdbfe",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>Restore</button><button onClick={()=>{if(!confirm("Permanently delete?"))return;deleteArchivedWeek(i);}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer"}}>Delete</button></div><div style={{display:"flex",gap:"12px",flexWrap:"wrap",fontSize:"11px",color:"#6b7280"}}><span>{(w.groups||[]).length} trailers</span><span>{(w.groups||[]).flatMap(g=>g.loads||[]).length} loads</span><span style={{fontWeight:"700",color:"#059669"}}>${(w.groups||[]).flatMap(g=>g.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0).toLocaleString()} gross</span></div></div>))}</div>)}
 
     {/* INSIGHTS TAB */}
-    {activeTab==="insights"&&(isAdmin||isViewer)&&(
+    {activeTab==="insights"&&isAdmin&&(
       <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"0"}}>
         {/* Sub-tab navigation */}
         <div style={{display:"flex",borderBottom:"1px solid #e2e8f0",background:"#f8fafc"}}>
@@ -7356,7 +7217,7 @@ ${accRows.length>0?`
 
 
     {/* ═══ PAYROLL TAB ═══ */}
-    {activeTab==="payroll"&&(isAdmin||isViewer)&&(
+    {activeTab==="payroll"&&isAdmin&&(
       <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
         {(()=>{
           // Pick which Main Board import to use. Sort newest week first — prefers
@@ -7369,17 +7230,26 @@ ${accRows.length>0?`
           });
           const activeBoardKey=selectedMainBoardKey||boardKeys[0]||null;
           const activeBoard=activeBoardKey?mainBoards[activeBoardKey]:null;
-          // Match a Freight Board week for Zygis 10% math. Best-effort match by week label.
-          const freightWeekForBoard=activeBoard
-            ?(allTimeWeeks.find(w=>{
-              if(!w.label||!activeBoard.label)return false;
-              // Both contain date strings — try substring match
-              const wLabel=String(w.label).replace(/[_\s]/g,"-").toLowerCase();
-              const bLabel=String(activeBoard.label).replace(/[_\s]/g,"-").toLowerCase();
-              return wLabel.includes(bLabel.split("-").slice(0,3).join("-"))
-                  || bLabel.includes(wLabel.split("-").slice(0,3).join("-"));
-            })||weeks[0])
-            :weeks[0];
+          // Freight Board week for Zygis 10%: MANUAL PICK always wins (saved per Main Board week).
+          // If no manual pick yet, suggest the date-overlapping Freight week (max overlap), else null.
+          let freightWeekForBoard=null;
+          if(activeBoard){
+            const picked=manualFreightKey[activeBoardKey];
+            if(picked){
+              freightWeekForBoard=allTimeWeeks.find(w=>w.id===picked)||null;
+            }else{
+              const overlapping=freightWeeksOverlapping(activeBoard.label,allTimeWeeks);
+              if(overlapping.length===1){freightWeekForBoard=overlapping[0];}
+              else if(overlapping.length>1){
+                const br=weekDateRange(activeBoard.label);
+                freightWeekForBoard=overlapping.slice().sort((a,b)=>{
+                  const ra=weekDateRange(a.label),rb=weekDateRange(b.label);
+                  const ov=r=>Math.max(0,Math.min(br.end,r.end)-Math.max(br.start,r.start));
+                  return ov(rb)-ov(ra);
+                })[0];
+              }
+            }
+          }
           const payroll=activeBoard?computePayroll(activeBoard,freightWeekForBoard):{dispatchers:[],combinedTrailers:[]};
           const grandTotal=payroll.dispatchers.reduce((s,d)=>s+d.total,0);
           const zygisEntry=payroll.dispatchers.find(d=>d.isZygis);
@@ -7387,8 +7257,52 @@ ${accRows.length>0?`
           // File-drop handler for Main Board HTML import
           const handleMainBoardImport=async(files)=>{
             for(const file of files){
-              if(!file.name.endsWith(".html")&&!file.name.endsWith(".htm")){
-                alert("Please upload a .html or .htm file (Google Sheets export).");
+              const isXlsx=/\.xlsx?$/i.test(file.name);
+              const isHtml=/\.html?$/i.test(file.name);
+              if(!isXlsx&&!isHtml){
+                alert("Please upload a .xlsx (all weeks at once) or .html (single week) file.");
+                continue;
+              }
+              if(isXlsx){
+                // XLSX path: one workbook, every TAB is a week. Import every tab that parses.
+                if(typeof XLSX==="undefined"){alert("Excel library not loaded — check your internet connection and reload.");continue;}
+                try{
+                  const buf=await file.arrayBuffer();
+                  const wb=XLSX.read(buf,{type:"array"});
+                  let imported=0,skipped=[];
+                  let nextBoards={...mainBoards};let lastKey=null;
+                  wb.SheetNames.forEach(sheetName=>{
+                    const ws=wb.Sheets[sheetName];
+                    const aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:""});
+                    // Prepend a spacer column so columns line up with the HTML-export grid
+                    // (Google's HTML export adds a row-number column that xlsx doesn't have).
+                    const grid=aoa.map(row=>[""].concat(row.map(c=>String(c==null?"":c).trim())));
+                    const parsed=parseMainBoardGrid(grid);
+                    if(!parsed.ok||!parsed.dispatchers||!parsed.dispatchers.length){skipped.push(sheetName);return;}
+                    const key=parsed.weekKey||sheetName;
+                    const label=parsed.weekLabel||sheetName;
+                    const existing=nextBoards[key];
+                    nextBoards[key]={
+                      label,
+                      weekKey:key,
+                      originalFilename:file.name+" › "+sheetName,
+                      importedAt:new Date().toISOString(),
+                      previousImportAt:existing?existing.importedAt:null,
+                      importCount:(existing?existing.importCount:0)+1,
+                      dispatchers:parsed.dispatchers
+                    };
+                    lastKey=key;imported++;
+                  });
+                  if(imported>0){
+                    saveMainBoards(nextBoards);
+                    if(lastKey)setSelectedMainBoardKey(lastKey);
+                    alert("Imported "+imported+" week"+(imported===1?"":"s")+" from "+file.name+(skipped.length?"\nSkipped tabs (not week boards): "+skipped.join(", "):""));
+                  }else{
+                    alert("No week boards found in "+file.name+".\nTabs checked: "+wb.SheetNames.join(", "));
+                  }
+                }catch(err){
+                  alert("Failed to read "+file.name+": "+(err&&err.message?err.message:err));
+                }
                 continue;
               }
               const text=await file.text();
@@ -7428,11 +7342,11 @@ ${accRows.length>0?`
 
             {/* Import + Board selector */}
             <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:"10px",marginBottom:"18px",padding:"12px",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"8px"}}>
-              {isAdmin&&<label style={{background:"#059669",color:"#fff",padding:"8px 14px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer",display:"inline-flex",alignItems:"center",gap:"6px"}}>
-                <input type="file" accept=".html,.htm" multiple style={{display:"none"}}
+              <label style={{background:"#059669",color:"#fff",padding:"8px 14px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer",display:"inline-flex",alignItems:"center",gap:"6px"}}>
+                <input type="file" accept=".html,.htm,.xlsx,.xls" multiple style={{display:"none"}}
                   onChange={e=>{if(e.target.files&&e.target.files.length){handleMainBoardImport(Array.from(e.target.files));e.target.value="";}}}/>
-                📥 Import Main Board (HTML)
-              </label>}
+                📥 Import Main Board (Excel or HTML)
+              </label>
               {boardKeys.length>0&&(
                 <>
                   <span style={{fontSize:"11px",color:"#64748b",fontWeight:"700"}}>Active week:</span>
@@ -7440,7 +7354,7 @@ ${accRows.length>0?`
                     style={{padding:"6px 10px",border:"1px solid #cbd5e1",borderRadius:"5px",fontSize:"12px",fontFamily:"inherit",background:"#fff",cursor:"pointer",flex:"0 1 340px"}}>
                     {boardKeys.map(k=>(<option key={k} value={k}>{mainBoards[k].label}</option>))}
                   </select>
-                  {isAdmin&&activeBoard&&(
+                  {activeBoard&&(
                     <button onClick={()=>{
                       if(!confirm("Remove this Main Board import?"))return;
                       const next={...mainBoards};delete next[activeBoardKey];saveMainBoards(next);
@@ -7497,9 +7411,13 @@ ${accRows.length>0?`
             {activeBoard&&(
               <div style={{marginBottom:"14px",padding:"8px 12px",background:freightWeekForBoard?"#f0fdf4":"#fef3c7",border:`1px solid ${freightWeekForBoard?"#bbf7d0":"#fcd34d"}`,borderRadius:"6px",fontSize:"11px",color:freightWeekForBoard?"#166534":"#92400e"}}>
                 <strong>Zygis 10% source:</strong>{" "}
+                <select value={manualFreightKey[activeBoardKey]||(freightWeekForBoard?freightWeekForBoard.id:"")} onChange={e=>{const v=e.target.value;setManualFreightKey(prev=>{const n={...prev};if(v)n[activeBoardKey]=v;else delete n[activeBoardKey];localStorage.setItem("fcbv2_manualfreight",JSON.stringify(n));return n;});}} style={{fontSize:"11px",padding:"2px 6px",border:`1px solid ${freightWeekForBoard?"#bbf7d0":"#fcd34d"}`,borderRadius:"4px",fontWeight:"600",marginRight:"6px"}}>
+                  <option value="">— pick Freight Board week —</option>
+                  {allTimeWeeks.map(w=><option key={w.id} value={w.id}>{w.label||"(unlabeled)"}</option>)}
+                </select>
                 {freightWeekForBoard
-                  ?<>Freight Board week <strong>{freightWeekForBoard.label||"(unlabeled)"}</strong> matched — {payroll.combinedTrailers.length} combined trailer{payroll.combinedTrailers.length===1?"":"s"} found</>
-                  :<>No matching Freight Board week found. Zygis 10% shown as $0 until a matching week exists in Freight Board.</>}
+                  ?<>{payroll.combinedTrailers.length} combined trailer{payroll.combinedTrailers.length===1?"":"s"}{manualFreightKey[activeBoardKey]?"":" (auto-suggested — pick to lock)"}</>
+                  :<>No Freight week selected. Zygis 10% is $0 until you pick one above.</>}
               </div>
             )}
 
@@ -7615,8 +7533,7 @@ ${accRows.length>0?`
                             <div style={{fontSize:"12px",color:"#64748b"}}>
                               Computed: <span style={{fontWeight:"700",color:"#0f1f3d"}}>${disp.computed.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
                             </div>
-                            {isAdmin&&(
-                              <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
                               <span style={{fontSize:"10px",fontWeight:"700",color:"#64748b",textTransform:"uppercase"}}>Override:</span>
                               <input type="number" placeholder="—"
                                 defaultValue={disp.override?disp.override.amount:""}
@@ -7642,8 +7559,7 @@ ${accRows.length>0?`
                                   savePayrollOverrides(next);
                                 }}
                                 style={{width:"160px",padding:"4px 8px",border:"1px solid #cbd5e1",borderRadius:"4px",fontSize:"12px",fontFamily:"inherit"}}/>
-                              </div>
-                            )}
+                            </div>
                           </div>
                         </div>
                       )}
@@ -8414,7 +8330,7 @@ ${accRows.length>0?`
       </div>
     )}
       {/* STATS TAB */}
-    {activeTab==="stats"&&(isAdmin||isDispatcher||isViewer)&&(
+    {activeTab==="stats"&&(isAdmin||isDispatcher)&&(
       <div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}>
         <div style={{fontWeight:"700",fontSize:"14px",color:"#1a2e50",marginBottom:"16px"}}>📊 Statistics — All Weeks</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:"12px"}}>
