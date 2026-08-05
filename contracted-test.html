@@ -750,7 +750,7 @@ const STORAGE = {
 // admin-only actions (releasing a claimed load).
 const ADMIN_PASSCODE = "12345";
 
-const POLL_INTERVAL_MS  = 8000;
+const POLL_INTERVAL_MS  = 3000;
 const SAVE_DEBOUNCE_MS  = 1000;
 
 // Reused from freight board for consistency (will share when merged)
@@ -1765,6 +1765,94 @@ function UnlockScreen({ expected, onUnlock }) {
   );
 }
 
+function ActivityModal({ onClose }) {
+  const [entries, setEntries] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const res = await fetch(APPS_SCRIPT_URL + "?action=getAuditLog");
+        const text = await res.text();
+        if (text.trim().startsWith("<")) throw new Error("Backend temporarily unreachable");
+        const j = JSON.parse(text);
+        if (!j.ok) throw new Error(j.error || "Load failed");
+        if (dead) return;
+        setEntries((j.entries || []).slice().sort((a,b) => b.at - a.at));
+      } catch (e) {
+        if (!dead) setErr(String(e.message || e));
+      }
+    })();
+    return () => { dead = true; };
+  }, []);
+
+  const fmtDay = (ms) => new Date(ms).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const fmtTime = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const iconFor = (a) => ({
+    status: "🔀", claim: "🙋", unclaim: "🙅", waiting: "⏳",
+    create: "➕", delete: "🗑", passcode: "🔒"
+  }[a] || "•");
+
+  // Group entries by day (yyyy-mm-dd)
+  const groups = {};
+  (entries || []).forEach(e => {
+    const d = new Date(e.at);
+    const key = d.toDateString();
+    if (!groups[key]) groups[key] = { at: e.at, entries: [] };
+    groups[key].entries.push(e);
+  });
+  const dayKeys = Object.keys(groups).sort((a, b) => groups[b].at - groups[a].at);
+
+  return (
+    <div className="clb-modal-bg" onClick={onClose}>
+      <div className="clb-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 620, maxHeight: "80vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <h3 style={{ margin: 0, fontSize: 18 }}>📋 Recent activity</h3>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "#64748b", lineHeight: 1 }}>×</button>
+        </div>
+        <p style={{ margin: "0 0 10px", fontSize: 12, color: "#64748b" }}>Last 7 days. Older entries are automatically removed.</p>
+        {err && <div style={{ padding: 10, background: "#fef2f2", color: "#991b1b", borderRadius: 6, fontSize: 13 }}>{err}</div>}
+        {!entries && !err && <div style={{ padding: 20, textAlign: "center", color: "#64748b" }}>Loading…</div>}
+        {entries && entries.length === 0 && <div style={{ padding: 20, textAlign: "center", color: "#64748b" }}>No activity yet.</div>}
+        <div style={{ overflowY: "auto", flex: 1, marginTop: 4 }}>
+          {dayKeys.map(k => (
+            <div key={k} style={{ marginBottom: 14 }}>
+              <div style={{ position: "sticky", top: 0, background: "#fff", padding: "4px 0",
+                            fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: "#64748b",
+                            textTransform: "uppercase", borderBottom: "1px solid #f1f5f9" }}>
+                {fmtDay(groups[k].at)}
+              </div>
+              {groups[k].entries.map((e, i) => (
+                <div key={i} style={{ display: "grid", gridTemplateColumns: "58px 22px 1fr", gap: 8,
+                                       padding: "8px 4px", borderBottom: "1px solid #f8fafc", fontSize: 13, alignItems: "start" }}>
+                  <div style={{ color: "#64748b", fontVariantNumeric: "tabular-nums" }}>{fmtTime(e.at)}</div>
+                  <div>{iconFor(e.action)}</div>
+                  <div>
+                    <span style={{ fontWeight: 700 }}>{e.by}</span>
+                    {" "}
+                    <span style={{ color: "#334155" }}>
+                      {e.action === "create"  ? "added"   :
+                       e.action === "delete"  ? "deleted" :
+                       e.action === "claim"   ? "claimed" :
+                       e.action === "unclaim" ? "released" :
+                       e.action === "status"  ? "changed" :
+                       e.action === "waiting" ? "" :
+                       e.action === "passcode"? "changed the board passcode" : e.action}
+                      {" "}
+                      {e.ref && e.ref !== "(new)" && <span style={{ fontFamily: "ui-monospace, SFMono-Regular, monospace", color: "#1e293b" }}>#{e.ref}</span>}
+                    </span>
+                    {e.details && <div style={{ color: "#64748b", marginTop: 2, fontSize: 12 }}>{e.details}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ChangePasscodeModal({ current, onSave, onClose }) {
   const [newP,  setNewP]  = useState("");
   const [conf,  setConf]  = useState("");
@@ -2435,7 +2523,7 @@ function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, al
 // COMPONENTS — HEADER
 // ============================================================
 
-function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onImportFromFreight, onSwitchWeek, onNewWeek, onEditWeek, onArchiveWeek, onDeleteWeek, onChangePasscode, hasAccessPasscode, storageSize, online }) {
+function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onImportFromFreight, onSwitchWeek, onNewWeek, onEditWeek, onArchiveWeek, onDeleteWeek, onChangePasscode, hasAccessPasscode, onOpenActivity, storageSize, online }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const saveLbl =
     saveStatus === "saving" ? "Saving…" :
@@ -2550,6 +2638,11 @@ function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddL
               </React.Fragment>
             )}
             <div style={{ height:1, background:"#f1f5f9", margin:"4px 0" }} />
+            <button onClick={() => { setMenuOpen(false); onOpenActivity(); }}
+                    style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13 }}>
+              📋 Recent activity
+            </button>
+            <div style={{ height:1, background:"#f1f5f9", margin:"4px 0" }} />
             <button onClick={() => { setMenuOpen(false); onImportFromFreight(); }}
                     style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13 }}>
               ⬇ Import drivers/trucks from Freight Board
@@ -2617,6 +2710,7 @@ function App() {
     try { return localStorage.getItem(STORAGE.access) || ""; } catch (e) { return ""; }
   });
   const [showPasscodeModal, setShowPasscodeModal] = useState(false);
+  const [showActivityModal, setShowActivityModal] = useState(false);
 
   const allDrivers = useMemo(() => {
     const set = new Set(DRIVERS);
@@ -2737,12 +2831,15 @@ function App() {
   // ---- Debounced save ----
   const saveTimerRef = useRef(null);
   const dataRef      = useRef(data);
+  const pendingLogRef = useRef([]);   // change entries queued for the next save
   dataRef.current = data;
 
   const persist = useCallback(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
+      const logs = pendingLogRef.current.splice(0);   // take and clear
       const snapshot = { ...dataRef.current, updatedAt: Date.now() };
+      if (logs.length) snapshot._log = logs;
       setSaveStatus("saving");
       try {
         const resp = await apiSave(snapshot);
@@ -2755,6 +2852,8 @@ function App() {
         setSaveStatus("saved");
         setLastSync(Date.now());
       } catch (e) {
+        // Re-queue the logs so a retried save still records them.
+        pendingLogRef.current.unshift(...logs);
         setSaveStatus("error");
         console.error("Save failed:", e);
       }
@@ -2766,22 +2865,63 @@ function App() {
     persist();
   }, [persist]);
 
+  // Helper: find a load anywhere in the data by id.
+  const findLoad = (data, id) => {
+    for (const w of (data.weeks || [])) {
+      const l = (w.loads || []).find(x => x.id === id);
+      if (l) return l;
+    }
+    return null;
+  };
+  // Helper: build audit-log entries from a load's diff.
+  const diffLoadForLog = (oldLoad, newLoad, by) => {
+    if (!oldLoad) return [];
+    const entries = [];
+    const ref = newLoad.loadNum || oldLoad.loadNum || "(no #)";
+    if (oldLoad.status !== newLoad.status) {
+      entries.push({ at: Date.now(), by, action: "status",  ref, details: `${oldLoad.status || "?"} → ${newLoad.status || "?"}` });
+    }
+    if ((oldLoad.claimedBy || "") !== (newLoad.claimedBy || "")) {
+      entries.push({ at: Date.now(), by, action: newLoad.claimedBy ? "claim" : "unclaim", ref,
+                     details: newLoad.claimedBy ? `claimed by ${newLoad.claimedBy}`
+                                                : `unclaimed (was ${oldLoad.claimedBy || "?"})` });
+    }
+    if (!!oldLoad.waitingUpdate !== !!newLoad.waitingUpdate) {
+      entries.push({ at: Date.now(), by, action: "waiting", ref,
+                     details: newLoad.waitingUpdate ? "marked waiting update" : "cleared waiting update" });
+    }
+    return entries;
+  };
+
   // ---- Load mutations (operate on the current week's loads array) ----
   const onLoadChange = useCallback((updatedLoad) => {
+    const oldLoad = findLoad(dataRef.current, updatedLoad.id);
+    const by = (session && session.name) || "unknown";
+    const entries = diffLoadForLog(oldLoad, updatedLoad, by);
+    if (entries.length) pendingLogRef.current.push(...entries);
     mutate(updateCurrentWeekLoads(dataRef.current, loads =>
       loads.map(l => l.id === updatedLoad.id ? { ...updatedLoad, updatedAt: Date.now() } : l)
     ));
-  }, [mutate]);
+  }, [mutate, session]);
 
   const onLoadDelete = useCallback((id) => {
     const cur = dataRef.current;
+    const oldLoad = findLoad(cur, id);
+    const by = (session && session.name) || "unknown";
+    if (oldLoad) {
+      pendingLogRef.current.push({
+        at: Date.now(), by, action: "delete",
+        ref: oldLoad.loadNum || "(no #)",
+        details: `deleted ${oldLoad.lane || ""}`.trim()
+      });
+    }
     const withoutLoad = updateCurrentWeekLoads(cur, loads => loads.filter(l => l.id !== id));
     // Record a tombstone — without it, another user's concurrent save (which
     // still has this load) would resurrect it on the next merge.
     const tombstones = (cur.tombstones || []).filter(t => t.id !== id)
       .concat([{ id, at: Date.now() }]);
     mutate({ ...withoutLoad, tombstones });
-  }, [mutate]);
+  }, [mutate, session]);
 
   const onAddLoad = useCallback(() => {
     const now = Date.now();
@@ -2809,13 +2949,17 @@ function App() {
       updatedAt: now
     };
     mutate(updateCurrentWeekLoads(dataRef.current, loads => [newLoad, ...loads]));
+    pendingLogRef.current.push({
+      at: now, by: (session && session.name) || "unknown",
+      action: "create", ref: "(new)", details: "added a load"
+    });
     setExpandedIds(prev => {
       const next = new Set(prev);
       next.add(newLoad.id);
       return next;
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
-  }, [mutate]);
+  }, [mutate, session]);
 
   // ---- Week mutations ----
   const switchWeek = useCallback((weekId) => {
@@ -3120,6 +3264,7 @@ function App() {
         onDeleteWeek={deleteCurrentWeek}
         onChangePasscode={() => setShowPasscodeModal(true)}
         hasAccessPasscode={!!boardPasscode}
+        onOpenActivity={() => setShowActivityModal(true)}
         storageSize={storageSize}
         online={online}
       />
@@ -3163,6 +3308,9 @@ function App() {
           onSave={changeBoardPasscode}
           onClose={() => setShowPasscodeModal(false)}
         />
+      )}
+      {showActivityModal && (
+        <ActivityModal onClose={() => setShowActivityModal(false)} />
       )}
     </div>
   );
