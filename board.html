@@ -54,6 +54,7 @@ input:disabled,select:disabled{opacity:0.72;cursor:not-allowed!important;}
 <!-- PDF.js — extracts text from rate-con PDFs locally, no API needed -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>if(window.pdfjsLib&&window.pdfjsLib.GlobalWorkerOptions)window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -3126,6 +3127,158 @@ function App(){
       weekLabel=fmt(mon)+" → "+fmt(sun);
     }
     return{ok:true,weekKey,weekLabel,dispatchers:dispatchersOut};
+  };
+
+  // ─── MAIN BOARD XLSX PARSER ──────────────────────────────────────────────
+  // Google Sheets can export the shared board as a single .xlsx workbook — one
+  // sheet per week. This parser reads the whole workbook and returns an ARRAY
+  // of weeks (one per detected week sheet). The layout differs from the HTML
+  // export: driver blocks and summary rows use different column positions.
+  //
+  // XLSX driver-block layout (4 rows):
+  //   r1: [position, "Name****Co driver", "", index, dispcolor, truck_meta, truck#, ...]
+  //   r2: [is_codriver, phone, home_city, index, dispcolor, ...]
+  //   r3: ["MILES", total_miles, "", index, dispcolor, ...]
+  //   r4: ["GROSS", total_gross, "", index, dispcolor, ...]
+  //
+  // XLSX summary-row layout:
+  //   ["", DispatcherName, RPM, index, dispcolor, ..., "Gross:", total_gross, "/truck", per_truck]
+  //
+  // Sheet names encode the week: "MMDDYYYY-MMDDYYYY" or "MDDYYYY-MDDYYYY".
+  // Non-week sheets (PORTALS, CONTACTS, "Copy of X", "Sheet13") are skipped by name.
+  //
+  // Returns: { ok, weeks: [{weekKey, weekLabel, dispatchers, sheetName}] }
+  const parseMainBoardXLSX=(arrayBuffer)=>{
+    if(!window.XLSX)return{ok:false,error:"XLSX library not loaded — check your internet connection."};
+    let wb;
+    try{wb=window.XLSX.read(arrayBuffer,{type:'array'});}
+    catch(e){return{ok:false,error:"Not a valid xlsx file: "+e.message};}
+    const parseSheetDate=(s)=>{
+      const m=String(s).match(/(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
+      if(!m)return null;
+      const mm=parseInt(m[1],10),dd=parseInt(m[2],10),yy=parseInt(m[3],10);
+      if(mm<1||mm>12||dd<1||dd>31)return null;
+      return new Date(yy,mm-1,dd);
+    };
+    // Sheet tab names look like "08032026-08092026" (MMDDYYYY-MMDDYYYY) or
+    // "4272026-5032026" (MDDYYYY-MDDYYYY, single-digit month). Some also have
+    // spaces: "01052026 - 01112026". Match both compact forms.
+    const parseSheetNameDates=(sheetName)=>{
+      const m=String(sheetName).match(/^\s*(\d{6,8})\s*-\s*(\d{6,8})\s*$/);
+      if(!m)return null;
+      const parseCompact=(s)=>{
+        if(s.length===8){
+          const mm=parseInt(s.slice(0,2),10),dd=parseInt(s.slice(2,4),10),yy=parseInt(s.slice(4),10);
+          if(mm<1||mm>12||dd<1||dd>31)return null;
+          return new Date(yy,mm-1,dd);
+        }
+        if(s.length===7){
+          const mm=parseInt(s.slice(0,1),10),dd=parseInt(s.slice(1,3),10),yy=parseInt(s.slice(3),10);
+          if(mm<1||mm>12||dd<1||dd>31)return null;
+          return new Date(yy,mm-1,dd);
+        }
+        return null;
+      };
+      const start=parseCompact(m[1]),end=parseCompact(m[2]);
+      if(!start||!end)return null;
+      return{start,end};
+    };
+    // Parse one sheet's dispatchers. Returns [] if it doesn't look like a week sheet.
+    const parseSheet=(sheet)=>{
+      const grid=window.XLSX.utils.sheet_to_json(sheet,{header:1,defval:""});
+      if(grid.length<20)return[];
+      const summaryIdxs=[];
+      grid.forEach((row,i)=>{
+        const rt=row.join(' ');
+        if(rt.includes('Gross:')&&rt.includes('/truck')){
+          if(rt.toLowerCase().includes('zygis/laura'))return;
+          summaryIdxs.push(i);
+        }
+      });
+      if(!summaryIdxs.length)return[];
+      const sections=[];
+      let prevEnd=0;
+      summaryIdxs.forEach(sumIdx=>{
+        const row=grid[sumIdx];
+        const dispName=String(row[1]||"").trim();
+        if(!dispName){prevEnd=sumIdx+1;return;}
+        if(sumIdx>=500){prevEnd=sumIdx+1;return;}
+        sections.push({dispName,startRow:prevEnd,endRow:sumIdx-1});
+        prevEnd=sumIdx+1;
+      });
+      const dispOut=[];
+      sections.forEach(sec=>{
+        const drivers=[];
+        let i=sec.startRow;
+        while(i<=sec.endRow-3){
+          const r1=grid[i]||[];
+          const r2=grid[i+1]||[];
+          const r3=grid[i+2]||[];
+          const r4=grid[i+3]||[];
+          const posStr=String(r1[0]||"").trim();
+          const isDriverHeader=/^\d{1,2}$/.test(posStr)&&String(r3[0]).trim()==='MILES'&&String(r4[0]).trim()==='GROSS';
+          if(!isDriverHeader){i++;continue;}
+          let rawName=String(r1[1]||"").trim();
+          // Strip trailing "**** Co driver" / "*** Co-Driver" / "**Solo" role markers
+          rawName=rawName.replace(/\*+\s*(Co[- ]?[Dd]river|Solo).*$/,"").replace(/\*+/g,"").trim();
+          const truck=String(r1[6]||"").trim();
+          const phone=String(r2[1]||"").trim();
+          const grossRaw=r4[1];
+          let gross=0;
+          if(typeof grossRaw==='number')gross=grossRaw;
+          else{
+            const grossStr=String(grossRaw).replace(/[$,\s]/g,'');
+            gross=parseFloat(grossStr);
+          }
+          if(rawName&&isFinite(gross)&&gross>0){
+            drivers.push({name:rawName,truck,phone,gross:Math.round(gross)});
+          }
+          i+=4;
+        }
+        if(drivers.length>0)dispOut.push({name:sec.dispName,drivers});
+      });
+      return dispOut;
+    };
+    const weeks=[];
+    wb.SheetNames.forEach(sheetName=>{
+      if(/portals|contacts|copy of|sheet\d/i.test(sheetName))return;
+      const sheet=wb.Sheets[sheetName];
+      if(!sheet||!sheet['!ref'])return;
+      const dispatchers=parseSheet(sheet);
+      if(!dispatchers.length)return;
+      // Derive week key + label from sheet name first, else scan cell dates
+      const nameDates=parseSheetNameDates(sheetName);
+      let weekKey='',weekLabel='';
+      if(nameDates){
+        const{start,end}=nameDates;
+        const fmt=d=>(d.getMonth()+1)+"-"+d.getDate()+"-"+d.getFullYear();
+        weekKey=start.getFullYear()+"-"+String(start.getMonth()+1).padStart(2,"0")+"-"+String(start.getDate()).padStart(2,"0");
+        weekLabel=fmt(start)+" → "+fmt(end);
+      } else {
+        const grid=window.XLSX.utils.sheet_to_json(sheet,{header:1,defval:""});
+        const foundDates=new Set();
+        for(let r=0;r<Math.min(10,grid.length);r++){
+          for(const cell of (grid[r]||[])){
+            const d=parseSheetDate(cell);
+            if(d)foundDates.add(d.getTime());
+          }
+        }
+        const sortedDates=Array.from(foundDates).sort((a,b)=>a-b).map(t=>new Date(t));
+        if(sortedDates.length>0){
+          const mon=sortedDates[0];
+          const sun=sortedDates[sortedDates.length-1];
+          const fmt=d=>(d.getMonth()+1)+"-"+d.getDate()+"-"+d.getFullYear();
+          weekKey=mon.getFullYear()+"-"+String(mon.getMonth()+1).padStart(2,"0")+"-"+String(mon.getDate()).padStart(2,"0");
+          weekLabel=fmt(mon)+" → "+fmt(sun);
+        } else {
+          weekKey='sheet-'+sheetName;
+          weekLabel=sheetName;
+        }
+      }
+      weeks.push({weekKey,weekLabel,dispatchers,sheetName});
+    });
+    if(!weeks.length)return{ok:false,error:"No week sheets found in workbook. Expected sheet names like '08032026-08092026'."};
+    return{ok:true,weeks};
   };
 
   // Bonus tier lookup: NET gross → dollar bonus. Rounds DOWN to nearest $1k.
@@ -7774,33 +7927,70 @@ ${accRows.length>0?`
           // File-drop handler for Main Board HTML import
           const handleMainBoardImport=async(files)=>{
             for(const file of files){
-              if(!file.name.endsWith(".html")&&!file.name.endsWith(".htm")){
-                alert("Please upload a .html or .htm file (Google Sheets export).");
+              const lower=file.name.toLowerCase();
+              const isXLSX=lower.endsWith(".xlsx");
+              const isHTML=lower.endsWith(".html")||lower.endsWith(".htm");
+              if(!isXLSX&&!isHTML){
+                alert("Please upload a .xlsx (Excel export) or .html file. Got: "+file.name);
                 continue;
               }
-              const text=await file.text();
-              const parsed=parseMainBoardHTML(text);
-              if(!parsed.ok){
-                alert("Failed to parse "+file.name+":\n"+parsed.error);
-                continue;
+              if(isXLSX){
+                // One xlsx contains all weeks — parse all sheets and import each as its own entry.
+                const buf=await file.arrayBuffer();
+                const parsed=parseMainBoardXLSX(buf);
+                if(!parsed.ok){
+                  alert("Failed to parse "+file.name+":\n"+parsed.error);
+                  continue;
+                }
+                // Merge all weeks into mainBoards in one setState so it's one save
+                let next={...mainBoards};
+                parsed.weeks.forEach(w=>{
+                  const key=w.weekKey||("sheet-"+w.sheetName);
+                  const existing=next[key];
+                  next[key]={
+                    label:w.weekLabel||w.sheetName,
+                    weekKey:key,
+                    originalFilename:file.name+" › "+w.sheetName,
+                    importedAt:new Date().toISOString(),
+                    previousImportAt:existing?existing.importedAt:null,
+                    importCount:(existing?.importCount||0)+1,
+                    dispatchers:w.dispatchers
+                  };
+                });
+                saveMainBoards(next);
+                // Select the most recent week (last one in the workbook, since they're
+                // usually listed newest first in Google Sheets)
+                const keys=Object.keys(next).sort().reverse();
+                setSelectedMainBoardKey(keys[0]||null);
+                // Give user visible confirmation for multi-week uploads
+                if(parsed.weeks.length>1){
+                  const total=parsed.weeks.length;
+                  const newest=parsed.weeks[0].weekLabel;
+                  setTimeout(()=>alert("Imported "+total+" weeks from "+file.name+".\nNewest: "+newest),0);
+                }
+              } else {
+                // HTML export — original single-week flow, unchanged.
+                const text=await file.text();
+                const parsed=parseMainBoardHTML(text);
+                if(!parsed.ok){
+                  alert("Failed to parse "+file.name+":\n"+parsed.error);
+                  continue;
+                }
+                const key=parsed.weekKey||file.name.replace(/\.html?$/i,"")||"unlabeled-"+Date.now();
+                const label=parsed.weekLabel||file.name.replace(/\.html?$/i,"")||"unlabeled";
+                const existing=mainBoards[key];
+                const next={...mainBoards,[key]:{
+                  label,
+                  weekKey:key,
+                  originalFilename:file.name,
+                  importedAt:new Date().toISOString(),
+                  previousImportAt:existing?existing.importedAt:null,
+                  importCount:(existing?.importCount||0)+1,
+                  dispatchers:parsed.dispatchers
+                }};
+                saveMainBoards(next);
+                setSelectedMainBoardKey(key);
               }
-              // Key = parsed weekKey (e.g. "2026-06-29" for Monday of that week).
-              // Falls back to filename if the parser couldn't find dates in the sheet.
-              // Label = human-friendly range like "6-29-2026 → 7-5-2026".
-              const key=parsed.weekKey||file.name.replace(/\.html?$/i,"")||"unlabeled-"+Date.now();
-              const label=parsed.weekLabel||file.name.replace(/\.html?$/i,"")||"unlabeled";
-              const existing=mainBoards[key];
-              const next={...mainBoards,[key]:{
-                label,
-                weekKey:key,
-                originalFilename:file.name,
-                importedAt:new Date().toISOString(),
-                previousImportAt:existing?existing.importedAt:null,
-                importCount:(existing?.importCount||0)+1,
-                dispatchers:parsed.dispatchers
-              }};
-              saveMainBoards(next);
-              setSelectedMainBoardKey(key);
             }
           };
 
@@ -7816,9 +8006,9 @@ ${accRows.length>0?`
             {/* Import + Board selector */}
             <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:"10px",marginBottom:"18px",padding:"12px",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:"8px"}}>
               {isAdmin&&<label style={{background:"#059669",color:"#fff",padding:"8px 14px",borderRadius:"6px",fontSize:"12px",fontWeight:"700",cursor:"pointer",display:"inline-flex",alignItems:"center",gap:"6px"}}>
-                <input type="file" accept=".html,.htm" multiple style={{display:"none"}}
+                <input type="file" accept=".xlsx,.html,.htm" multiple style={{display:"none"}}
                   onChange={e=>{if(e.target.files&&e.target.files.length){handleMainBoardImport(Array.from(e.target.files));e.target.value="";}}}/>
-                📥 Import Main Board (HTML)
+                📥 Import Main Board (Excel or HTML)
               </label>}
               {boardKeys.length>0&&(
                 <>
@@ -7852,7 +8042,7 @@ ${accRows.length>0?`
                 <div style={{fontSize:"40px",marginBottom:"10px"}}>📊</div>
                 <div style={{fontSize:"14px",fontWeight:"700",color:"#0f1f3d",marginBottom:"6px"}}>No Main Board imported yet</div>
                 <div style={{fontSize:"12px",color:"#64748b",maxWidth:"420px",margin:"0 auto",lineHeight:"1.5"}}>
-                  From Google Sheets: File → Download → Web Page (.html). Then click the green "Import Main Board" button above.
+                  From Google Sheets: <strong>File → Download → Microsoft Excel (.xlsx)</strong> to import all weeks at once, or <strong>Web Page (.html)</strong> for a single week. Then click the green "Import Main Board" button above.
                 </div>
               </div>
             )}
