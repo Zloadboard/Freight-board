@@ -142,7 +142,31 @@ function localCharge(m){if(m==null||m==="")return null;const v=parseFloat(m);if(
 // sees the same source of truth.
 const LOCAL_DRV=new Set(["Linas Greiciunas","Theron Mack","John Johnson","Douglas Russo","Emilis Ibianskas","Egidijus Matulis","Oleh Lashkevych"]);
 function parsePickupDate(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return null;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);d.setHours(0,0,0,0);return d;}
-function parseTS(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return Infinity;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);if(tm){let h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}else{d.setHours(0,0,0,0);}return d.getTime();}
+function parseTS(s=""){
+  const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if(!dm)return Infinity;
+  const d=new Date(+dm[3],+dm[1]-1,+dm[2]);
+  // Try 12-hour first: "3PM", "3:30 PM", "3:30PM"
+  const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);
+  if(tm){
+    let h=+tm[1],m=+(tm[2]||0);
+    if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;
+    if(tm[3].toUpperCase()==="AM"&&h===12)h=0;
+    d.setHours(h,m);
+  } else {
+    // Fall back to 24-hour: "15:00", "09:30". Rate-con parser writes this format.
+    // Guard invalid ranges (25:00, 08:99) — if bad, default to midnight.
+    const tm24=s.match(/(\d{1,2}):(\d{2})/);
+    if(tm24){
+      const h=+tm24[1],m=+tm24[2];
+      if(h>=0&&h<=23&&m>=0&&m<=59)d.setHours(h,m);
+      else d.setHours(0,0,0,0);
+    } else {
+      d.setHours(0,0,0,0);
+    }
+  }
+  return d.getTime();
+}
 function parseSR(t=""){const i=t.indexOf(" - ");return i<0?{s:t.trim(),r:""}:{s:t.slice(0,i).trim(),r:t.slice(i+3).trim()};}
 // ─── SHIPPER ADDRESS NORMALIZATION ──────────────────────────────────────
 // Normalize an address string into a canonical STREET-ONLY form for matching.
