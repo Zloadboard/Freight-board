@@ -7909,17 +7909,28 @@ ${accRows.length>0?`
           });
           const activeBoardKey=selectedMainBoardKey||boardKeys[0]||null;
           const activeBoard=activeBoardKey?mainBoards[activeBoardKey]:null;
-          // Match a Freight Board week for Zygis 10% math. Best-effort match by week label.
-          const freightWeekForBoard=activeBoard
+          // Match a Freight Board week for Zygis 10% math by parsing DATES out of both
+          // labels (Main Board xlsx uses "8-3-2026 → 8-9-2026" with dashes; Freight Board
+          // uses "8.11.2026 - 8.17.2026" with dots). String comparison across formats
+          // fails silently — always parse to real Date objects then compare by proximity.
+          //
+          // Match rule: same-week start (within 3 days). Returns null when no live week
+          // is close enough — the banner then honestly shows "no match" instead of
+          // pretending some other week matched.
+          const extractStartDate=(label)=>{
+            if(!label)return null;
+            const m=String(label).match(/(\d{1,2})[-.\/](\d{1,2})[-.\/](\d{4})/);
+            if(!m)return null;
+            return new Date(+m[3],+m[1]-1,+m[2]);
+          };
+          const boardStart=activeBoard?extractStartDate(activeBoard.label):null;
+          const freightWeekForBoard=boardStart
             ?(allTimeWeeks.find(w=>{
-              if(!w.label||!activeBoard.label)return false;
-              // Both contain date strings — try substring match
-              const wLabel=String(w.label).replace(/[_\s]/g,"-").toLowerCase();
-              const bLabel=String(activeBoard.label).replace(/[_\s]/g,"-").toLowerCase();
-              return wLabel.includes(bLabel.split("-").slice(0,3).join("-"))
-                  || bLabel.includes(wLabel.split("-").slice(0,3).join("-"));
-            })||weeks[0])
-            :weeks[0];
+              const wStart=extractStartDate(w.label);
+              if(!wStart)return false;
+              return Math.abs(wStart-boardStart)<3*24*60*60*1000;
+            })||null)
+            :null;
           const payroll=activeBoard?computePayroll(activeBoard,freightWeekForBoard):{dispatchers:[],combinedTrailers:[]};
           const grandTotal=payroll.dispatchers.reduce((s,d)=>s+d.total,0);
           const zygisEntry=payroll.dispatchers.find(d=>d.isZygis);
