@@ -2552,17 +2552,18 @@ function MarketStatsPanel({records,isAdmin}){
           const cities=Object.keys(byCity)
             .map(c=>{
               const g=byCity[c];
-              // On a backhaul the shipping town alone isn't the whole story —
-              // name the Illinois yard it actually delivered to.
-              let to="";
-              if(dir==="back"){
-                const dests={};
-                g.forEach(r=>{dests[r.d]=(dests[r.d]||0)+1;});
-                const best=Object.keys(dests).sort((x,y)=>dests[y]-dests[x])[0];
-                if(best)to=best.split(",")[0];
-              }
-              return{city:c.split(",")[0],to,n:g.length,
-                     now:avg(g.map(x=>x.rpm)),
+              // Name both ends. The town we group by is the out-of-state end;
+              // the other end is whichever Illinois town appears most for it.
+              const other={};
+              g.forEach(r=>{
+                const k=dir==="out"?r.o:r.d;
+                if(k)other[k]=(other[k]||0)+1;
+              });
+              const best=Object.keys(other).sort((x,y)=>other[y]-other[x])[0];
+              const il=best?best.split(",")[0]:"";
+              const town=c.split(",")[0];
+              return{from:dir==="out"?il:town, to:dir==="out"?town:il,
+                     n:g.length, now:avg(g.map(x=>x.rpm)),
                      gross:Math.round(avg(g.map(x=>x.rate)))};
             })
             .sort((a,b2)=>b2.n-a.n||b2.now-a.now)
@@ -2578,8 +2579,10 @@ function MarketStatsPanel({records,isAdmin}){
     return{last,curFrom,out:build("out"),back:build("back")};
   },[singles,days]);
 
+  // Two columns wide — the rows name both ends of a lane and need the room.
   const card={background:"#fff",borderRadius:"12px",padding:"18px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #e2e8f0",
-              display:"flex",flexDirection:"column",height:"100%",minHeight:"330px",boxSizing:"border-box"};
+              display:"flex",flexDirection:"column",height:"100%",minHeight:"330px",boxSizing:"border-box",
+              gridColumn:"span 2"};
 
   const Table=({title,rows,dirLabel})=>(
     <div style={{marginBottom:"14px"}}>
@@ -2598,9 +2601,9 @@ function MarketStatsPanel({records,isAdmin}){
               const c=(r.cities||[])[0];
               return(
                 <tr key={r.state} style={{background:i%2?"#f8fafc":"#fff"}}>
-                  <td style={{padding:"6px",fontSize:"12px",color:"#0f1f3d",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"170px"}}>
+                  <td style={{padding:"6px",fontSize:"12px",color:"#0f1f3d",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"320px"}}>
                     <strong style={{fontWeight:"800"}}>{r.state}</strong>
-                    {c?<span style={{color:"#64748b"}}> · {c.city}{c.to?" → "+c.to:""}</span>:null}
+                    {c&&(c.from||c.to)?<span style={{color:"#64748b"}}> · {c.from}{c.from&&c.to?" → ":""}{c.to}</span>:null}
                   </td>
                   <td style={{padding:"6px",fontSize:"12px",textAlign:"right",fontWeight:"800",color:"#0f1f3d"}}>${r.now.toFixed(2)}</td>
                   <td style={{padding:"6px",fontSize:"11px",textAlign:"right",fontWeight:"800",
