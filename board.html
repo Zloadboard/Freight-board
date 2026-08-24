@@ -9547,21 +9547,8 @@ ${accRows.length>0?`
           <MarketInfoSection weeks={weeks} canSeeDetail={isAdmin||isDispatcher||isViewer} isAdmin={isAdmin}/>
         </div>
 
-        {/* Sheet-backed sections. Signed out, no board data arrives, so
-            these collapse to a short prompt instead of rendering empty. */}
-        {(!weeks||weeks.length===0)&&appMode==="public"&&(
-          <div style={{maxWidth:"1400px",margin:"0 auto",padding:"16px"}}>
-            <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"12px",padding:"22px",textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}}>
-              <div style={{fontSize:"22px",marginBottom:"6px"}}>🔒</div>
-              <div style={{fontSize:"14px",fontWeight:"800",color:"#0f1f3d",marginBottom:"3px"}}>Board data is private</div>
-              <div style={{fontSize:"12px",color:"#64748b",lineHeight:"1.6",maxWidth:"420px",margin:"0 auto"}}>
-                Weekly loads, revenue and trailer detail are visible after sign-in.
-                Market rates, diesel and broker lookups above are open to everyone.
-              </div>
-            </div>
-          </div>
-        )}
-
+        {/* Sheet-backed sections. Signed out no board data arrives, so these
+            render nothing at all and the page ends with the market panels. */}
         {(weeks&&weeks.length>0)&&(()=>{
           const resolvedCurIdx=dashCurIdx<0?weeks.length+dashCurIdx:dashCurIdx;
           const resolvedPrevIdx=dashPrevIdx<0?weeks.length+dashPrevIdx:dashPrevIdx;
