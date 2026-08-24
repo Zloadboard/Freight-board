@@ -98,6 +98,25 @@ const XDOCK_ADDRESSES=[{city:"Jacksonville, FL",addr:"680 Edgewood Ave N Suite B
 // Override via localStorage "fcbv2_sheetsUrl" if you use a different deployment.
 var SHEETS_URL=localStorage.getItem("fcbv2_sheetsUrl")||"https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec";
 var SHEETS_TOKEN=localStorage.getItem("fcbv2_sheetsToken")||"";
+// ── Session token issued by Apps Script after it checks the PIN ──────
+// The PIN itself never lives in this file. Market endpoints (diesel,
+// carrier, lane rates) stay open; everything that touches the sheet
+// carries this token.
+const SESSION_KEY="fcbv2_session";
+function sessionToken(){try{return localStorage.getItem(SESSION_KEY)||"";}catch(e){return "";}}
+function setSessionToken(t){try{t?localStorage.setItem(SESSION_KEY,t):localStorage.removeItem(SESSION_KEY);}catch(e){}}
+function withTok(url){
+  const t=sessionToken();
+  if(!t)return url;
+  return url+(url.indexOf("?")>=0?"&":"?")+"tok="+encodeURIComponent(t);
+}
+function serverLogin(pin){
+  const base=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
+  return fetch(base+"?action=login&pin="+encodeURIComponent(pin),{redirect:"follow"})
+    .then(r=>r.json())
+    .then(j=>{if(j&&j.ok&&j.token)setSessionToken(j.token);return j;});
+}
+
 const ADMIN_PIN_KEY="fcbv2_adminPin";
 const VIEWER_PIN_KEY="fcbv2_viewerPin";
 const DISPATCHERS_KEY="fcbv2_dispatchers";
@@ -1186,7 +1205,7 @@ function sheetsLoad(role,sessToken){
   // Append role as query param so Apps Script can filter sensitive fields
   var sep=url.indexOf("?")>=0?"&":"?";
   var roleUrl=url+(role?sep+"role="+encodeURIComponent(role):"")+(sessToken?("&st="+encodeURIComponent(sessToken)):"");
-  return fetch(roleUrl,{redirect:"follow",headers:headers})
+  return fetch(withTok(roleUrl),{redirect:"follow",headers:headers})
     .then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});
 }
 function compressPhotoForCloud(photo){
@@ -1244,14 +1263,14 @@ function sheetsSave(data){
     if(saveToken)saveHeaders["X-App-Token"]=saveToken;
     // Use SHEETS_URL which has the hardcoded fallback
     var _url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
-    if(_url)fetch(_url,{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
+    if(_url)fetch(withTok(_url),{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
   }).catch(function(){
     var saveToken=localStorage.getItem("fcbv2_sheetsToken")||"";
     var saveHeaders={"Content-Type":"text/plain;charset=utf-8"};
     if(saveToken)saveHeaders["X-App-Token"]=saveToken;
     var payload=Object.assign({},data,{savedAt:savedAt});
     var _url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
-    if(_url)fetch(_url,{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
+    if(_url)fetch(withTok(_url),{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
   });
 }
 </script>
@@ -1287,6 +1306,20 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
       setErr("Board is loading — please wait a moment and try again");
       setPin("");return;
     }
+    // Ask the server first — it holds the real check and issues the token
+    // that unlocks board data. If the backend is unreachable or auth is not
+    // being enforced yet, fall through to the existing local comparison so
+    // the board keeps working.
+    serverLogin(pinStr).then(function(j){
+      if(j&&j.ok&&j.role){
+        onLogin(j.role,j.role==="dispatcher"?{name:j.name}:null);
+        return;
+      }
+      localPinCheck();
+    }).catch(localPinCheck);
+    return;
+
+    function localPinCheck(){
     if(adminPin&&pinStr===String(adminPin).trim()){onLogin("admin",null);return;}
     if(viewerPin&&pinStr===String(viewerPin).trim()){onLogin("viewer",null);return;}
     // Try dispatcher PIN (hashed or legacy plaintext)
@@ -1305,6 +1338,7 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
       if(matched){onLogin("dispatcher",matched);return;}
       setErr("Incorrect PIN — try again");setPin("");
     });
+    }
   };
   return(
     <div className="login-wrap">
@@ -3355,7 +3389,7 @@ function App(){
     try{
       const base64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=()=>rej(new Error("read failed"));r.readAsDataURL(file);});
       const url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
-      const resp=await fetch(url,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({data:{action:"uploadRateCon",mimeType:file.type||"application/pdf",filename:file.name||"ratecon.pdf",base64:base64}})});
+      const resp=await fetch(withTok(url),{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({data:{action:"uploadRateCon",mimeType:file.type||"application/pdf",filename:file.name||"ratecon.pdf",base64:base64}})});
       const j=await resp.json();
       if(!j||!j.ok||!j.file)throw new Error(j&&j.error||"upload rejected");
       // Attach the result to the load — quietly. No alerts on success.
@@ -3550,7 +3584,7 @@ function App(){
   useEffect(()=>{
     let cancelled=false;
     const fetchLive=async()=>{
-      const url=(localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL)+"?action=samsaraLocations";
+      const url=withTok((localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL)+"?action=samsaraLocations");
       setLiveStatus("loading");
       try{
         const r=await fetch(url,{redirect:"follow"});
@@ -7843,7 +7877,7 @@ ${accRows.length>0?`
                                   })
                                 }
                               };
-                              fetch(url,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify({data:payload})})
+                              fetch(withTok(url),{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify({data:payload})})
                                 .then(()=>alert("Email sent to "+emails.length+" dispatcher"+(emails.length>1?"s":"")+"!"))
                                 .catch(()=>alert("Email sent!")); // no-cors always throws but it works
                             }}
@@ -9508,7 +9542,22 @@ ${accRows.length>0?`
           <MarketInfoSection weeks={weeks} canSeeDetail={isAdmin||isDispatcher||isViewer} isAdmin={isAdmin}/>
         </div>
 
-        {(()=>{
+        {/* Sheet-backed sections. Signed out, no board data arrives, so
+            these collapse to a short prompt instead of rendering empty. */}
+        {(!weeks||weeks.length===0)&&appMode==="public"&&(
+          <div style={{maxWidth:"1400px",margin:"0 auto",padding:"16px"}}>
+            <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"12px",padding:"22px",textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}}>
+              <div style={{fontSize:"22px",marginBottom:"6px"}}>🔒</div>
+              <div style={{fontSize:"14px",fontWeight:"800",color:"#0f1f3d",marginBottom:"3px"}}>Board data is private</div>
+              <div style={{fontSize:"12px",color:"#64748b",lineHeight:"1.6",maxWidth:"420px",margin:"0 auto"}}>
+                Weekly loads, revenue and trailer detail are visible after sign-in.
+                Market rates, diesel and broker lookups above are open to everyone.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {(weeks&&weeks.length>0)&&(()=>{
           const resolvedCurIdx=dashCurIdx<0?weeks.length+dashCurIdx:dashCurIdx;
           const resolvedPrevIdx=dashPrevIdx<0?weeks.length+dashPrevIdx:dashPrevIdx;
           const safeCurIdx=Math.max(0,Math.min(resolvedCurIdx,weeks.length-1));
