@@ -1302,24 +1302,29 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
     const pinStr=String(pin).trim();
     if(!pinStr){setErr("Enter a PIN or Continue as Guest");return;}
     // If no PINs synced yet, guide user
-    if(!adminPin&&!viewerPin&&dispatchers.length===0){
-      setErr("Board is loading — please wait a moment and try again");
-      setPin("");return;
-    }
-    // Ask the server first — it holds the real check and issues the token
-    // that unlocks board data. If the backend is unreachable or auth is not
-    // being enforced yet, fall through to the existing local comparison so
-    // the board keeps working.
+    // Ask the server FIRST. On a fresh browser there is no cached board and
+    // therefore no local PIN to compare against — and once auth is enforced
+    // the board can't arrive until a token exists. So the server has to be
+    // the first thing asked, not the fallback.
+    setErr("Checking…");
     serverLogin(pinStr).then(function(j){
       if(j&&j.ok&&j.role){
+        setErr("");
         onLogin(j.role,j.role==="dispatcher"?{name:j.name}:null);
         return;
       }
+      // Server reachable and said no. If it is enforcing, that answer is
+      // final — a stale local PIN must not be able to override it.
+      if(j&&j.enforced){setErr("Incorrect PIN — try again");setPin("");return;}
       localPinCheck();
     }).catch(localPinCheck);
     return;
 
     function localPinCheck(){
+    if(!adminPin&&!viewerPin&&dispatchers.length===0){
+      setErr("Board is loading — please wait a moment and try again");
+      setPin("");return;
+    }
     if(adminPin&&pinStr===String(adminPin).trim()){onLogin("admin",null);return;}
     if(viewerPin&&pinStr===String(viewerPin).trim()){onLogin("viewer",null);return;}
     // Try dispatcher PIN (hashed or legacy plaintext)
