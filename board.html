@@ -123,7 +123,27 @@ const DISPATCHERS_KEY="fcbv2_dispatchers";
 // DEFAULT PINs removed — set on first run via setup wizard
 const HUB="Romeoville, IL";
 
-const LOAD_STATUSES=["Need to pickup","Dispatched","Dock","Yard","Delivered"];
+// "Waiting Appt" and "At Crossdock" are exception states: the load stopped
+// moving for a reason worth recording. At Crossdock also means the load has
+// physically left the trailer, so the driver is free to roll on.
+const LOAD_STATUSES=["Need to pickup","Dispatched","Dock","Yard","Waiting Appt","At Crossdock","Delivered"];
+const ST_WAITING_APPT="Waiting Appt";
+const ST_AT_XDOCK="At Crossdock";
+
+// A trailer shouldn't sit in the active list because one load went to a
+// crossdock — the driver is done with it either way.
+function loadClearsTrailer(l){
+  const st=(l&&l.status)||"";
+  return st==="Delivered"||st===ST_AT_XDOCK;
+}
+function loadStatusStyle(st){
+  switch(st){
+    case ST_WAITING_APPT: return{bg:"#fef3c7",c:"#92400e",bd:"#f59e0b"};
+    case ST_AT_XDOCK:     return{bg:"#f3e8ff",c:"#6b21a8",bd:"#a855f7"};
+    case "Delivered":     return{bg:"#dcfce7",c:"#166534",bd:"#22c55e"};
+    default:              return null;
+  }
+}
 const TRAILER_NUMBERS=["53113","5384","5378","5366","5381","53121","53104","5389","5315","5357","5379","53109","5344","5332","53100","5342","5392","5390","5369","53108","5337","5391","5348","53102","5307","5325","5327","53118","5329","5388","53122","5335","5368","5333","5314","53117","53112","5321","5351","5395","5355","5304","5345","53115","5396","5363","5386","5353","53106","5356","5370","5393","53114","5317","5310","5338","53124","53123","53116","5399","5362","5347","5371","5319","53103","53101","5324","5322","5352","5331","5346","5330","53107","5365","5376","5385","53120","5340","5343","53111","5334","5349","5375","5394","5358","5397","53","5350","5359","5305","5373","5374","53110","5361","5367","5364","5383","53119","5354","5312","53105","5323","5398","5387","5306","5336","5303","5326","5380","5313","53125","5372","5382"].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
 const TRUCK_NUMBERS=["13","15","29","029","407","408","414","422","432","444","445","446","447","449","452","454","455","456","457","458","459","460","461","462","463","464","466","467","468","469","470","471","472","473","474","475","476","477","478","479","480","481","482","483","484","485","486","487","488","489","490","491","492","493","494","495","496","497","498","499","500","501","502","503","504","505","506","507","508","509","510","511","512","514","515","516","517","518","519","520","521","522","523","524"].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
 const DRIVERS=["Linas Greiciunas","John Johnson","Douglas Russo","Ringo Brown","Theron Mack","Samwel Masamo","Dennis Onsomu","Moussa Sow","Twizere Brown","Kennedy Nyangena","Emilis Ibianskas","Egidijus Matulis","Edward Kirui","Teresia Mungai","Wycliff Osumo","Martin Kariuki","Leonard Zigirinshuti","Denis Ntore","Edwens Sykvestre","Alex Oyaro","Elhadji Sene","Seth Munyangeri","Erlandas Mastavicius","Jean Ndutiye","Oleh Lashkevych","Willy Rukundo","Paul Ngotho","Jackson Nshimiye","Sefu Mutabazi","Faustin Nkuriyingoma","Jusin Maniraguha","Jamil Hussaini","Badrudin Siraji","Fakhre Alam","Hassan Mupenzi","Simolien Etienne","Joshua Onditi","Bassirou Diouf","Elkanah Machuka","Palvinson Phizema","Claude Michael","Dominic Nyangau","Zach Barker","Evans Nyangechi","Khoda Nabizada","Nkurikiye Damascene","Taban Tor","Austen Powers","Ahmed Omar","Benard Nyamanya","Michael Mutua","Allan Zebron","Papy Gakona","Vincent Okero","Luc Mpangaje","Sumaile Abedi","Fred Nyangau","Ananias Lisimwege","Tiberius Mose","Elhadji Diagne","Gassendy Alcemora","Dominic Muchiri","Victor Machoka","Betwel Onchabo","Rudatinya Ganza","Daniel Mwangi","Mayom Akeeg","Gideon Githinji","Sterling Yves","Haron Ombui","Jeff Mecha","Baldwine Telfort"].sort();
@@ -1069,11 +1089,14 @@ const GSS={"Pending":{bg:"#f9fafb",fg:"#6b7280",br:"#d1d5db"},"Driver assigned":
 
 let _uid=Date.now();
 const uid=()=>++_uid;
-const mkLoad=(o={})=>({id:uid(),sr:"",broker:"",pickup:"",delivery:"",product:"",pallets:"",weight:"",rate:"",driver:"",truck:"",trailer:"",status:"",notes:"",manualPickupMi:"",manualLocalCharge:"",stopMiles:"",photos:[],shipperCo:"",shipperAddr:"",receiverCo:"",receiverAddr:"",...o});
+const mkLoad=(o={})=>({id:uid(),sr:"",broker:"",pickup:"",delivery:"",product:"",pallets:"",weight:"",rate:"",driver:"",truck:"",trailer:"",status:"",notes:"",xdockId:"",manualPickupMi:"",manualLocalCharge:"",stopMiles:"",photos:[],shipperCo:"",shipperAddr:"",receiverCo:"",receiverAddr:"",...o});
 const mkGroup=()=>({id:uid(),tripMiles:"",groupDriver:"",groupTruck:"",groupTrailer:"",groupStatus:"Pending",groupNotes:"",loads:[mkLoad()]});
 const mkWeek=(label)=>({id:uid(),label:label||"New Week",groups:[mkGroup()],localDeliveries:[],crossdockDrops:[],accessorials:[],openSections:{main:true,local:false,xdrop:false,acc:false,otr:true}});
 const mkLocal=()=>({id:uid(),destination:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",otrBroughtBy:"",notes:"",status:""});
-const mkXDrop=()=>({id:uid(),location:"",deliveryLocation:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",broughtByOtr:"",deliveringOtr:"",notes:"",status:"",manualStatus:"",createdAt:new Date().toISOString()});
+// srcLoadId / srcGroupId / srcWeekId point back at the planned load this row
+// came from. Rate, broker and receiver stay owned by that load — this row only
+// owns crossdock facts — so the two can never disagree.
+const mkXDrop=()=>({id:uid(),location:"",deliveryLocation:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",broughtByOtr:"",deliveringOtr:"",notes:"",status:"",manualStatus:"",createdAt:new Date().toISOString(),srcLoadId:"",srcGroupId:"",srcWeekId:""});
 
 // ─── CROSSDOCK STATUS SYSTEM ─────────────────────────────────────────────
 // Status is either MANUAL (user picked Issues / Dispatched / Delivered from the
@@ -4127,7 +4150,11 @@ function App(){
     const isDelivered=effStatus==="Delivered";
     const days=daysInCrossdock(row);
     // Update helper — writes to the row in the current week
-    const upd=(field,value)=>updSub("crossdockDrops",row.id,field,value);
+    const upd=(field,value)=>{
+      updSub("crossdockDrops",row.id,field,value);
+      // Marking the crossdock leg delivered closes the planned load it came from.
+      if((field==="status"||field==="manualStatus")&&row.srcLoadId)syncXdockCompletion(row.id,value);
+    };
     // Status dropdown handler: manual states get stored, auto states clear manualStatus
     const onStatusChange=(newStatus)=>{
       if(!newStatus){
@@ -4843,6 +4870,67 @@ function App(){
   const setW=(f,v)=>setWeeksAndSave(p=>p.map((w,i)=>i!==activeWeek?w:{...w,[f]:v}));
   const toggleSection=k=>setW("openSections",{...week.openSections,[k]:!week.openSections?.[k]});
   const setLoad=(gid,lid,f,v)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:g.loads.map(l=>l.id!==lid?l:{...l,[f]:v})}));
+
+  // ── Crossdock hand-off ────────────────────────────────────────────
+  // Creates a crossdock row LINKED to this load rather than a copy of it.
+  // Crossdock-only facts live on the row; rate, broker and receiver stay
+  // owned by the load, so the two can never disagree.
+  const sendLoadToCrossdock=(gid,lid)=>{
+    const g=(week.groups||[]).find(x=>x.id===gid);
+    const l=g&&(g.loads||[]).find(x=>x.id===lid);
+    if(!l){alert("Could not find that load.");return;}
+    if(l.xdockId){alert("This load is already at a crossdock.");return;}
+    const sr=parseSR(l.sr||"");
+    const row={...mkXDrop(),
+      location:sr.s||"", deliveryLocation:sr.r||"",
+      trailer:l.trailer||g.groupTrailer||"", truck:l.truck||g.groupTruck||"",
+      broker:l.broker||"", loadNum:l.loadNum||"",
+      broughtByOtr:l.driver||g.groupDriver||"",
+      datetime:l.delivery||"",
+      status:"Waiting Appointment",
+      notes:l.notes||"",
+      srcLoadId:l.id, srcGroupId:g.id, srcWeekId:week.id};
+    setWeeksAndSave(p2=>p2.map((w,i)=>i!==activeWeek?w:{
+      ...w,
+      crossdockDrops:[...(w.crossdockDrops||[]),row],
+      groups:(w.groups||[]).map(gg=>gg.id!==gid?gg:{
+        ...gg,
+        loads:(gg.loads||[]).map(ll=>ll.id!==lid?ll:{...ll,status:ST_AT_XDOCK,xdockId:row.id})
+      })
+    }));
+    alert("Sent to crossdock. The load stays linked — closing it there closes it here.");
+  };
+
+  // Picking "At Crossdock" from the status dropdown does the hand-off; every
+  // other value is an ordinary status change.
+  const changeLoadStatus=(gid,lid,val)=>{
+    if(val===ST_AT_XDOCK){sendLoadToCrossdock(gid,lid);return;}
+    setLoad(gid,lid,"status",val);
+    syncLoadCompletion(gid,lid,val);
+  };
+
+  // Completion syncs both ways so the two views can't disagree about whether
+  // the freight actually arrived.
+  const syncXdockCompletion=(rowId,newStatus)=>{
+    setWeeksAndSave(p2=>p2.map((w,i)=>{
+      if(i!==activeWeek)return w;
+      const row=(w.crossdockDrops||[]).find(r=>r.id===rowId);
+      if(!row||!row.srcLoadId)return w;
+      const done=newStatus==="Delivered";
+      return{...w,groups:(w.groups||[]).map(g=>g.id!==row.srcGroupId?g:{
+        ...g,
+        loads:(g.loads||[]).map(l=>l.id!==row.srcLoadId?l:{...l,status:done?"Delivered":ST_AT_XDOCK})
+      })};
+    }));
+  };
+
+  const syncLoadCompletion=(gid,lid,newStatus)=>{
+    if(newStatus!=="Delivered")return;
+    setWeeksAndSave(p2=>p2.map((w,i)=>i!==activeWeek?w:{
+      ...w,
+      crossdockDrops:(w.crossdockDrops||[]).map(r=>r.srcLoadId!==lid?r:{...r,status:"Delivered"})
+    }));
+  };
   // Upload photo to Supabase Storage, returns public URL or null
   const uploadPhotoToSupabase=async(file,loadId)=>{
     if(!supabaseUrl||!supabaseKey)return null;
@@ -6968,7 +7056,10 @@ ${accRows.length>0?`
             // header should disappear.")
             const pickedUpStatuses=["Dock","Yard","Picked Up","Loaded","In Transit","Delivered"];
             const isLoadPending=l=>(
-              !pickedUpStatuses.includes(l.status||"")
+              // Waiting Appt and At Crossdock are known, handled exceptions —
+              // they should not keep nagging as overdue pickups.
+              (l.status||"")!==ST_WAITING_APPT&&(l.status||"")!==ST_AT_XDOCK
+              &&!pickedUpStatuses.includes(l.status||"")
               &&!(l.localTruck&&String(l.localTruck).trim())
               &&!(l.localDriver&&String(l.localDriver).trim())
             );
@@ -7562,7 +7653,7 @@ ${accRows.length>0?`
                         <div style={{position:"relative",display:"flex",flexDirection:"column",alignItems:"center",gap:"2px"}} onClick={e=>e.stopPropagation()}>
                           {(()=>{const u=loadUrgency(load);return u?<span style={{fontSize:"8px",fontWeight:"800",color:"#fff",background:u.color,padding:"1px 5px",borderRadius:"3px",letterSpacing:".02em",pointerEvents:"none"}}>{u.label}</span>:null;})()}
                           <div style={{position:"relative",width:"100%",textAlign:"center"}}>
-                            <select value={load.status||""} onChange={e=>{setLoad(group.id,load.id,"status",e.target.value);trackField("status");}} style={{position:"absolute",inset:0,opacity:0,cursor:isAdmin?"pointer":"default",width:"100%",height:"100%",zIndex:2}} disabled={!isAdmin}>
+                            <select value={load.status||""} onChange={e=>{changeLoadStatus(group.id,load.id,e.target.value);trackField("status");}} style={{position:"absolute",inset:0,opacity:0,cursor:isAdmin?"pointer":"default",width:"100%",height:"100%",zIndex:2}} disabled={!isAdmin}>
                               <option value="">— Not set —</option>{LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}
                             </select>
                             <span style={{display:"inline-flex",alignItems:"center",gap:"4px",fontSize:"10px",fontWeight:"700",padding:"3px 7px",borderRadius:"4px",background:sp.bg,color:sp.c,border:`1.5px solid ${sp.bd}`,whiteSpace:"nowrap",userSelect:"none",pointerEvents:"none"}}>
@@ -8198,8 +8289,13 @@ ${accRows.length>0?`
                               return(<span title={"Load #"+ln} style={{fontSize:"10px",fontWeight:"700",color:"#5b21b6",background:"#ede9fe",border:"1px solid #c4b5fd",padding:"1px 6px",borderRadius:"4px",flexShrink:0,whiteSpace:"nowrap",fontFamily:"monospace"}}>#{ln}</span>);
                             })()}
                             {showBroker&&brokerName&&<span style={{fontSize:"9px",color:"#94a3b8",whiteSpace:"nowrap",flexShrink:0}}>{brokerName}</span>}
+                            {(()=>{const st=loadStatusStyle(load.status);
+                              if(!st||load.status==="Delivered")return null;
+                              return<span title={load.notes||""} style={{fontSize:"8px",fontWeight:"800",color:st.c,background:st.bg,border:"1px solid "+st.bd,padding:"1px 5px",borderRadius:"3px",whiteSpace:"nowrap",flexShrink:0}}>
+                                {load.status===ST_AT_XDOCK?"XDOCK":"WAITING APPT"}{load.notes?" *":""}
+                              </span>;})()}
                             {(parseFloat(load.rate)||0)>0&&<span style={{fontSize:"10px",fontWeight:"700",color:"#059669",whiteSpace:"nowrap",flexShrink:0}}>${(parseFloat(load.rate)||0).toLocaleString()}</span>}
-                            {isAdmin&&<select value={load.status||""} onChange={e=>setLoad(group.id,load.id,"status",e.target.value)} style={{fontSize:"9px",fontWeight:"600",color:lrc.tc,background:lrc.barBg,border:`1px solid ${lrc.bar}`,borderRadius:"4px",padding:"1px 3px",cursor:"pointer",outline:"none",flexShrink:0}} disabled={!isAdmin}>
+                            {isAdmin&&<select value={load.status||""} onChange={e=>changeLoadStatus(group.id,load.id,e.target.value)} style={{fontSize:"9px",fontWeight:"600",color:lrc.tc,background:lrc.barBg,border:`1px solid ${lrc.bar}`,borderRadius:"4px",padding:"1px 3px",cursor:"pointer",outline:"none",flexShrink:0}} disabled={!isAdmin}>
                               <option value="">— set —</option>
                               {LOAD_STATUSES.map(s=>(<option key={s}>{s}</option>))}
                             </select>}
