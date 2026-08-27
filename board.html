@@ -2819,7 +2819,101 @@ function MarketInfoSection({weeks,canSeeDetail,isAdmin}){
   );
 }
 
+// ─── CLAIM SCREEN ───────────────────────────────────────────────────
+// Reached from a one-time link in a load email. No PIN, no session: the
+// token in the URL is the authorisation, and it only ever unlocks the one
+// load it was minted for.
+function ClaimScreen({token}){
+  const[state,setState]=useState("loading"); // loading|ready|done|error
+  const[info,setInfo]=useState(null);
+  const[name,setName]=useState("");
+  const[err,setErr]=useState("");
+  const base=()=>localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
+
+  useEffect(()=>{
+    fetch(base()+"?action=claimInfo&claim="+encodeURIComponent(token),{redirect:"follow"})
+      .then(r=>r.json())
+      .then(j=>{
+        if(!j||!j.ok){
+          setErr(j&&j.error==="already_claimed"?("Already claimed"+(j.who?" by "+j.who:"")+".")
+               :j&&j.error==="expired"?"This link has expired."
+               :j&&j.error==="load_gone"?"This load is no longer on the board."
+               :"This link is not valid.");
+          setState("error");return;
+        }
+        setInfo(j); setName(j.who||""); setState("ready");
+      })
+      .catch(()=>{setErr("Could not reach the board. Check your connection.");setState("error");});
+  },[token]);
+
+  const claim=()=>{
+    if(!name.trim()){setErr("Enter your name first.");return;}
+    setState("loading");setErr("");
+    fetch(base()+"?claim="+encodeURIComponent(token),{
+      method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},
+      body:JSON.stringify({data:{action:"claimLoad",claimerName:name.trim()}})
+    }).then(r=>r.json())
+      .then(j=>{
+        if(j&&j.ok){setState("done");return;}
+        setErr(j&&j.error==="already_claimed"?("Already claimed"+(j.who?" by "+j.who:"")+"."):"Could not claim this load.");
+        setState("error");
+      })
+      .catch(()=>{setErr("Could not reach the board.");setState("error");});
+  };
+
+  const wrap={minHeight:"100vh",background:"#0f1f3d",display:"flex",alignItems:"center",justifyContent:"center",padding:"16px"};
+  const card={background:"#fff",borderRadius:"14px",padding:"22px",maxWidth:"460px",width:"100%",boxShadow:"0 10px 40px rgba(0,0,0,.35)"};
+
+  if(state==="loading")return(<div style={wrap}><div style={{...card,textAlign:"center"}}>
+    <div className="spinning" style={{fontSize:"26px"}}>↻</div>
+    <div style={{marginTop:"10px",fontSize:"13px",color:"#64748b"}}>One moment…</div></div></div>);
+
+  if(state==="error")return(<div style={wrap}><div style={{...card,textAlign:"center"}}>
+    <div style={{fontSize:"30px"}}>⚠️</div>
+    <div style={{fontSize:"15px",fontWeight:"800",color:"#0f1f3d",margin:"8px 0 4px"}}>{err}</div>
+    <div style={{fontSize:"12px",color:"#64748b",lineHeight:"1.6"}}>Open the board and sign in if you still need this load.</div>
+    <a href={window.location.pathname} style={{display:"inline-block",marginTop:"14px",background:"#2563eb",color:"#fff",textDecoration:"none",fontSize:"13px",fontWeight:"700",padding:"9px 22px",borderRadius:"8px"}}>Open the board</a>
+  </div></div>);
+
+  if(state==="done")return(<div style={wrap}><div style={{...card,textAlign:"center"}}>
+    <div style={{fontSize:"34px"}}>✅</div>
+    <div style={{fontSize:"17px",fontWeight:"900",color:"#166534",margin:"8px 0 4px"}}>Load claimed</div>
+    <div style={{fontSize:"12px",color:"#64748b",lineHeight:"1.6"}}>It's assigned to you and the office has been notified.</div>
+  </div></div>);
+
+  const g=(info&&info.group)||{};
+  const loads=g.loads||[];
+  return(<div style={wrap}><div style={card}>
+    <div style={{fontSize:"11px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".05em"}}>Load available</div>
+    <div style={{fontSize:"18px",fontWeight:"900",color:"#0f1f3d",margin:"2px 0 12px"}}>
+      {loads.length} stop{loads.length===1?"":"s"}{g.truck?" · Truck #"+g.truck:""}{g.trailer?" · T"+g.trailer:""}
+    </div>
+    {loads.map((l,i)=>(
+      <div key={i} style={{borderTop:"1px solid #f1f5f9",padding:"9px 0"}}>
+        <div style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d"}}>{l.sr||"—"}</div>
+        <div style={{fontSize:"11px",color:"#64748b",marginTop:"3px"}}>
+          {l.pickup?"🛫 "+l.pickup+"  ":""}{l.delivery?"📦 "+l.delivery:""}
+        </div>
+      </div>
+    ))}
+    <div style={{borderTop:"1px solid #e2e8f0",marginTop:"12px",paddingTop:"12px"}}>
+      <label style={{fontSize:"10px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",display:"block",marginBottom:"4px"}}>Your name</label>
+      <input value={name} onChange={e=>setName(e.target.value)} placeholder="Name"
+        style={{width:"100%",padding:"9px 10px",fontSize:"14px",fontWeight:"600",border:"1px solid #cbd5e1",borderRadius:"8px",outline:"none",color:"#0f1f3d",boxSizing:"border-box"}}/>
+      {err&&<div style={{fontSize:"11px",color:"#b91c1c",marginTop:"6px",fontWeight:"600"}}>{err}</div>}
+      <button onClick={claim} style={{width:"100%",marginTop:"10px",background:"#059669",color:"#fff",border:"none",borderRadius:"8px",padding:"12px",fontSize:"14px",fontWeight:"800",cursor:"pointer",outline:"none"}}>Claim this load</button>
+      <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"8px",textAlign:"center",lineHeight:"1.5"}}>This link works once and only for this load.</div>
+    </div>
+  </div></div>);
+}
+
 function App(){
+  // A claim link short-circuits the whole board: no sign-in, no board data,
+  // just the one load the token unlocks.
+  const claimToken=React.useMemo(()=>{
+    try{return new URLSearchParams(window.location.search).get("claim")||"";}catch(e){return "";}
+  },[]);
+
   const[appMode,setAppMode]=useState("public"); // default: everyone lands as public viewer (Dashboard only)
   const sessionToken=React.useRef(""); // role session token sent to Sheets
   const[weeks,setWeeks]=useState([]);
@@ -5506,6 +5600,8 @@ ${accRows.length>0?`
     const entry={name:mode==="dispatcher"&&disp?disp.name:mode==="admin"?"Admin":mode==="viewer"?"Viewer":"Public Viewer",role:mode,ts:new Date().toLocaleString("en-US",{month:"2-digit",day:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true})};
     setLoginLog(prev=>{const next=[entry,...prev].slice(0,200);localStorage.setItem("fcbv2_loginlog",JSON.stringify(next));return next;});
   }}/>;
+
+  if(claimToken)return <ClaimScreen token={claimToken}/>;
 
   if(loading)return(
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#0f1f3d",flexDirection:"column",gap:"16px"}}>
