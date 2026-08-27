@@ -2930,6 +2930,49 @@ function ClaimScreen({token}){
   </div></div>);
 }
 
+// ─── CROSSDOCK CITY PROMPT ──────────────────────────────────────────
+// Asked before the hand-off, because the crossdock is rarely the load's own
+// shipper city. Recently used docks are offered as one-tap buttons.
+function XdockCityModal({recent,onCancel,onConfirm}){
+  const[city,setCity]=useState("");
+  const[err,setErr]=useState("");
+  const go=()=>{
+    const v=city.trim();
+    if(!v){setErr("Enter the city where the load was dropped.");return;}
+    onConfirm(v);
+  };
+  return(
+    <div onClick={onCancel} style={{position:"fixed",inset:0,background:"rgba(15,31,61,.55)",zIndex:4000,display:"flex",alignItems:"center",justifyContent:"center",padding:"16px"}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:"14px",width:"100%",maxWidth:"380px",padding:"18px",boxShadow:"0 12px 44px rgba(0,0,0,.32)"}}>
+        <div style={{fontSize:"15px",fontWeight:"800",color:"#0f1f3d"}}>🔁 Send to crossdock</div>
+        <div style={{fontSize:"11px",color:"#64748b",margin:"2px 0 12px"}}>Which crossdock was it dropped at?</div>
+
+        <input autoFocus value={city} onChange={e=>{setCity(e.target.value);setErr("");}}
+          onKeyDown={e=>{if(e.key==="Enter")go();}}
+          list="xdockCityList" placeholder="City, ST"
+          style={{width:"100%",padding:"10px",fontSize:"14px",fontWeight:"600",border:"1px solid #cbd5e1",borderRadius:"8px",outline:"none",color:"#0f1f3d",boxSizing:"border-box"}}/>
+        <datalist id="xdockCityList">{recent.map(c=><option key={c} value={c}/>)}</datalist>
+
+        {recent.length>0&&(
+          <div style={{display:"flex",gap:"5px",flexWrap:"wrap",marginTop:"8px"}}>
+            {recent.slice(0,4).map(c=>(
+              <button key={c} onClick={()=>{setCity(c);setErr("");}}
+                style={{fontSize:"11px",fontWeight:"700",padding:"4px 9px",borderRadius:"999px",border:"1px solid "+(city===c?"#2563eb":"#e2e8f0"),background:city===c?"#eff6ff":"#fff",color:city===c?"#1d4ed8":"#64748b",cursor:"pointer",outline:"none"}}>{c}</button>
+            ))}
+          </div>
+        )}
+
+        {err&&<div style={{fontSize:"11px",color:"#b91c1c",marginTop:"8px",fontWeight:"600"}}>{err}</div>}
+
+        <div style={{display:"flex",gap:"8px",marginTop:"14px"}}>
+          <button onClick={onCancel} style={{flex:"0 0 auto",padding:"10px 16px",fontSize:"13px",fontWeight:"700",borderRadius:"8px",border:"1px solid #e2e8f0",background:"#f8fafc",color:"#64748b",cursor:"pointer",outline:"none"}}>Cancel</button>
+          <button onClick={go} style={{flex:1,padding:"10px",fontSize:"13px",fontWeight:"800",borderRadius:"8px",border:"none",background:"#7c3aed",color:"#fff",cursor:"pointer",outline:"none"}}>Send to crossdock</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── EMAIL RECIPIENT PICKER ─────────────────────────────────────────
 // Opened by Send Email. Everyone is ticked by default, so the fast path is
 // still one extra tap, but you can drop people before it goes out.
@@ -3092,6 +3135,7 @@ function App(){
   const[distMisses,setDistMisses]=useState({});
   const[distOverrides,setDistOverrides]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_distoverrides")||"{}");}catch(e){return{};}});
   const[emailPick,setEmailPick]=useState(null); // {group, emails} while the picker is open
+  const[xdockPrompt,setXdockPrompt]=useState(null); // {gid, lid} while asking for the crossdock city
 
   // Builds the payload and posts it. Recipients come from the picker, so the
   // same routine serves "everyone" and "just these two".
@@ -4875,14 +4919,16 @@ function App(){
   // Creates a crossdock row LINKED to this load rather than a copy of it.
   // Crossdock-only facts live on the row; rate, broker and receiver stay
   // owned by the load, so the two can never disagree.
-  const sendLoadToCrossdock=(gid,lid)=>{
+  const sendLoadToCrossdock=(gid,lid,xdockCity)=>{
     const g=(week.groups||[]).find(x=>x.id===gid);
     const l=g&&(g.loads||[]).find(x=>x.id===lid);
     if(!l){alert("Could not find that load.");return;}
     if(l.xdockId){alert("This load is already at a crossdock.");return;}
     const sr=parseSR(l.sr||"");
     const row={...mkXDrop(),
-      location:sr.s||"", deliveryLocation:sr.r||"",
+      // Where it was physically dropped — not the load's shipper, which is
+      // usually the yard and was what this used to default to.
+      location:(xdockCity||"").trim(), deliveryLocation:sr.r||"",
       trailer:l.trailer||g.groupTrailer||"", truck:l.truck||g.groupTruck||"",
       broker:l.broker||"", loadNum:l.loadNum||"",
       broughtByOtr:l.driver||g.groupDriver||"",
@@ -4904,7 +4950,7 @@ function App(){
   // Picking "At Crossdock" from the status dropdown does the hand-off; every
   // other value is an ordinary status change.
   const changeLoadStatus=(gid,lid,val)=>{
-    if(val===ST_AT_XDOCK){sendLoadToCrossdock(gid,lid);return;}
+    if(val===ST_AT_XDOCK){setXdockPrompt({gid:gid,lid:lid});return;}
     setLoad(gid,lid,"status",val);
     syncLoadCompletion(gid,lid,val);
   };
@@ -6547,6 +6593,21 @@ ${accRows.length>0?`
     
 
     {/* SEARCH BAR */}
+    {xdockPrompt&&(
+      <XdockCityModal
+        recent={(()=>{
+          // Docks used before, most recent first — usually the same few.
+          const seen=[];
+          [...weeks].reverse().forEach(w=>(w.crossdockDrops||[]).forEach(r=>{
+            const c=(r.location||"").trim();
+            if(c&&seen.indexOf(c)<0)seen.push(c);
+          }));
+          return seen.slice(0,8);
+        })()}
+        onCancel={()=>setXdockPrompt(null)}
+        onConfirm={city=>{const q=xdockPrompt;setXdockPrompt(null);sendLoadToCrossdock(q.gid,q.lid,city);}}/>
+    )}
+
     {emailPick&&(
       <EmailRecipientModal
         emails={emailPick.emails}
