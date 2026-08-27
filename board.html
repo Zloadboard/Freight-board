@@ -2907,6 +2907,73 @@ function ClaimScreen({token}){
   </div></div>);
 }
 
+// ─── EMAIL RECIPIENT PICKER ─────────────────────────────────────────
+// Opened by Send Email. Everyone is ticked by default, so the fast path is
+// still one extra tap, but you can drop people before it goes out.
+function EmailRecipientModal({emails,group,onCancel,onSend}){
+  const[sel,setSel]=useState(()=>{
+    // Remember the last selection — most sends go to the same few people.
+    try{
+      const prev=JSON.parse(localStorage.getItem("fcbv2_lastEmailPick")||"null");
+      if(Array.isArray(prev)&&prev.length){
+        const keep=emails.filter(e=>prev.indexOf(e)>=0);
+        if(keep.length)return keep;
+      }
+    }catch(e){}
+    return emails.slice();
+  });
+  const toggle=e=>setSel(s2=>s2.indexOf(e)>=0?s2.filter(x=>x!==e):s2.concat([e]));
+  const all=sel.length===emails.length;
+  const stops=(group&&group.loads&&group.loads.length)||0;
+
+  const send=()=>{
+    if(!sel.length)return;
+    try{localStorage.setItem("fcbv2_lastEmailPick",JSON.stringify(sel));}catch(e){}
+    onSend(sel);
+  };
+
+  return(
+    <div onClick={onCancel} style={{position:"fixed",inset:0,background:"rgba(15,31,61,.55)",zIndex:4000,display:"flex",alignItems:"center",justifyContent:"center",padding:"16px"}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:"14px",width:"100%",maxWidth:"420px",maxHeight:"84vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 44px rgba(0,0,0,.32)"}}>
+        <div style={{padding:"16px 18px 10px",borderBottom:"1px solid #f1f5f9"}}>
+          <div style={{fontSize:"15px",fontWeight:"800",color:"#0f1f3d"}}>📧 Send load to</div>
+          <div style={{fontSize:"11px",color:"#64748b",marginTop:"2px"}}>
+            {stops} stop{stops===1?"":"s"}{group&&group.groupTruck?" · Truck #"+group.groupTruck:""}{group&&group.groupTrailer?" · T"+group.groupTrailer:""}
+          </div>
+        </div>
+
+        <div style={{padding:"8px 18px",borderBottom:"1px solid #f1f5f9",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <button onClick={()=>setSel(all?[]:emails.slice())}
+            style={{background:"none",border:"none",fontSize:"11px",fontWeight:"700",color:"#2563eb",cursor:"pointer",padding:0,outline:"none"}}>
+            {all?"Clear all":"Select all"}
+          </button>
+          <span style={{fontSize:"11px",color:"#64748b",fontWeight:"600"}}>{sel.length} of {emails.length}</span>
+        </div>
+
+        <div style={{overflowY:"auto",padding:"6px 8px",flex:1}}>
+          {emails.map(e=>{
+            const on=sel.indexOf(e)>=0;
+            return(
+              <label key={e} style={{display:"flex",alignItems:"center",gap:"10px",padding:"9px 10px",borderRadius:"8px",cursor:"pointer",background:on?"#eff6ff":"transparent"}}>
+                <input type="checkbox" checked={on} onChange={()=>toggle(e)} style={{cursor:"pointer",width:"16px",height:"16px",flexShrink:0}}/>
+                <span style={{fontSize:"13px",color:on?"#0f1f3d":"#64748b",fontWeight:on?"600":"500",wordBreak:"break-all"}}>{e}</span>
+              </label>
+            );
+          })}
+        </div>
+
+        <div style={{padding:"12px 18px",borderTop:"1px solid #f1f5f9",display:"flex",gap:"8px"}}>
+          <button onClick={onCancel} style={{flex:"0 0 auto",padding:"10px 16px",fontSize:"13px",fontWeight:"700",borderRadius:"8px",border:"1px solid #e2e8f0",background:"#f8fafc",color:"#64748b",cursor:"pointer",outline:"none"}}>Cancel</button>
+          <button onClick={send} disabled={!sel.length}
+            style={{flex:1,padding:"10px",fontSize:"13px",fontWeight:"800",borderRadius:"8px",border:"none",background:sel.length?"#059669":"#cbd5e1",color:"#fff",cursor:sel.length?"pointer":"default",outline:"none"}}>
+            {sel.length?("Send to "+sel.length):"Pick at least one"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App(){
   // A claim link short-circuits the whole board: no sign-in, no board data,
   // just the one load the token unlocks.
@@ -3001,6 +3068,53 @@ function App(){
   const[showDistModal,setShowDistModal]=useState(false);
   const[distMisses,setDistMisses]=useState({});
   const[distOverrides,setDistOverrides]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_distoverrides")||"{}");}catch(e){return{};}});
+  const[emailPick,setEmailPick]=useState(null); // {group, emails} while the picker is open
+
+  // Builds the payload and posts it. Recipients come from the picker, so the
+  // same routine serves "everyone" and "just these two".
+  const sendLoadEmail=(group,chosen)=>{
+    const loads=group.loads||[];
+    const gross=loads.reduce((s2,l)=>s2+(parseFloat(l.rate)||0),0);
+    const locCost=loads.reduce((s2,l)=>{
+      if(l.manualLocalCharge!==""&&l.manualLocalCharge!=null)return s2+(parseFloat(l.manualLocalCharge)||0);
+      const sr=parseSR(l.sr||"");
+      const am=cityMiles(sr.s);
+      const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
+      return s2+(um!=null?localCharge(um)||0:0);
+    },0);
+    const net=Math.round(gross-locCost);
+    const url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
+    const payload={
+      action:"sendEmail",
+      emails:chosen,
+      // Apps Script mints one claim token per recipient and uses these to
+      // record who clicked, so the order must match emails exactly.
+      names:chosen.slice(),
+      subject:(loads.length)+"-Stop Load Available - No Driver Assigned",
+      group:{
+        id:group.id,
+        truck:group.groupTruck||"",
+        trailer:group.groupTrailer||"",
+        driver:group.groupDriver||"",
+        status:group.combinedStatus||"Preplanned",
+        readyTime:group.readyTime||"",
+        stopCount:loads.length,
+        gross:Math.round(gross),
+        locCost:Math.round(locCost),
+        netRate:net,
+        stops:loads.map((l,li)=>{
+          const sr=parseSR(l.sr||"");
+          const am=cityMiles(sr.s);
+          const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
+          const lc=l.manualLocalCharge!==""&&l.manualLocalCharge!=null?parseFloat(l.manualLocalCharge)||0:localCharge(um)||0;
+          return{num:li+1,shipper:sr.s||"",receiver:sr.r||"",delivery:l.delivery||"",rate:parseFloat(l.rate)||0,localCharge:lc};
+        })
+      }
+    };
+    fetch(withTok(url),{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify({data:payload})})
+      .then(()=>alert("Email sent to "+chosen.length+" dispatcher"+(chosen.length>1?"s":"")+"!"))
+      .catch(()=>alert("Email sent to "+chosen.length+" dispatcher"+(chosen.length>1?"s":"")+"!")); // no-cors always throws
+  };
   const[dispatcherEmails,setDispatcherEmails]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch{return[];}});
   const[adminEmail,setAdminEmail]=useState(()=>localStorage.getItem("fcbv2_adminEmail")||"");
   const[activeSideTab,setActiveSideTab]=useState(null);
@@ -6345,6 +6459,14 @@ ${accRows.length>0?`
     
 
     {/* SEARCH BAR */}
+    {emailPick&&(
+      <EmailRecipientModal
+        emails={emailPick.emails}
+        group={emailPick.group}
+        onCancel={()=>setEmailPick(null)}
+        onSend={chosen=>{const g=emailPick.group;setEmailPick(null);sendLoadEmail(g,chosen);}}/>
+    )}
+
     {showSearch&&(<div style={{position:"fixed",top:"60px",left:"50%",transform:"translateX(-50%)",zIndex:2000,background:"#fff",borderRadius:"12px",boxShadow:"0 8px 40px rgba(0,0,0,0.25)",border:"1px solid #e2e8f0",padding:"12px 16px",width:"min(600px,95vw)"}}><div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:searchResults.length>0?"10px":"0"}}><span style={{fontSize:"14px"}}>🔍</span><input ref={searchRef} value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&searchResults.length>0)setSearchIdx(i=>(i+1)%searchResults.length);if(e.key==="Escape"){setShowSearch(false);setSearchQuery("");}}} placeholder="Search routes, drivers, dates, status... (Ctrl+F)" style={{flex:1,border:"none",outline:"none",fontSize:"14px",color:"#1a2e50",fontFamily:"inherit"}}/>{searchQuery&&<span style={{fontSize:"11px",color:"#94a3b8",whiteSpace:"nowrap",fontWeight:"600"}}>{searchResults.length} result{searchResults.length!==1?"s":""}</span>}{searchResults.length>1&&<div style={{display:"flex",gap:"4px"}}><button onClick={()=>setSearchIdx(i=>(i-1+searchResults.length)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↑</button><button onClick={()=>setSearchIdx(i=>(i+1)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↓</button></div>}<button onClick={()=>{setShowSearch(false);setSearchQuery("");}} style={{background:"#fee2e2",border:"none",borderRadius:"6px",padding:"4px 10px",cursor:"pointer",fontSize:"11px",color:"#dc2626",fontWeight:"700"}}>✕ Close</button></div>{searchResults.length>0&&(<div style={{maxHeight:"320px",overflowY:"auto",borderTop:"1px solid #f1f5f9",paddingTop:"8px"}}>{searchResults.map((r,i)=>(<div key={i} onClick={()=>{const wId=weeks[r.weekIdx]?.id;setSearchIdx(i);setShowSearch(false);setSearchQuery("");if(wId&&r.loadId)setLoadDetailId({loadId:r.loadId,weekId:wId});goToLoad(wId,r.loadId);}} style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 10px",borderRadius:"8px",cursor:"pointer",background:i===searchIdx?"#eff6ff":"transparent",border:i===searchIdx?"1px solid #bfdbfe":"1px solid transparent",marginBottom:"3px"}}><div style={{flex:1,minWidth:0}}><div style={{fontSize:"12px",fontWeight:"700",color:"#1a2e50",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r.sr||"—"}</div><div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"2px"}}>{r.broker&&isAdmin&&(<span style={{fontSize:"10px",color:"#2563eb",fontWeight:"600"}}>{r.broker}</span>)}{r.pickup&&<span style={{fontSize:"10px",color:"#64748b"}}>🛫 {r.pickup}</span>}{r.driver&&<span style={{fontSize:"10px",color:"#059669",fontWeight:"600"}}>🧑 {r.driver}</span>}{r.status&&<span style={{fontSize:"10px",color:"#7c3aed",fontWeight:"600"}}>{r.status}</span>}</div></div><div style={{textAlign:"right",flexShrink:0}}><div style={{fontSize:"10px",fontWeight:"700",color:"#1a2e50",background:"#dbeafe",padding:"1px 7px",borderRadius:"8px"}}>{r.weekLabel}</div><div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>{r.delivery}</div></div></div>))}</div>)}{searchQuery&&searchResults.length===0&&(<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"12px 0"}}>No results found across {weeks.length} week{weeks.length!==1?"s":""}</div>)}<div style={{fontSize:"10px",color:"#cbd5e1",marginTop:searchResults.length>0?"8px":"0",textAlign:"center"}}>Press Enter to cycle · Esc to close · Click a result to jump to it</div></div>)}
 
     {/* SAVE INDICATOR */}
@@ -7936,54 +8058,16 @@ ${accRows.length>0?`
                       </div>
                       {isAdmin&&(
                         <div style={{display:"flex",gap:"6px",marginTop:"7px"}}>
-                          {/* Send Email button — triggers instant email to dispatchers */}
+                          {/* Send Email — opens the recipient picker first */}
                           <button
                             onClick={e=>{
                               e.stopPropagation();
-                              const emails=dispatcherEmails&&dispatcherEmails.length?dispatcherEmails:(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch(ex){return[];}})();
+                              const emails=dispatcherEmails&&dispatcherEmails.length?dispatcherEmails:(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch(err){return [];}})();
                               if(!emails.length){alert("No dispatcher emails configured.\nGo to Menu → Dispatcher Emails to add them.");return;}
-                              const loads=group.loads||[];
-                              const gross=loads.reduce((s,l)=>s+(parseFloat(l.rate)||0),0);
-                              const locCost=loads.reduce((s,l)=>{
-                                if(l.manualLocalCharge!==""&&l.manualLocalCharge!=null)return s+(parseFloat(l.manualLocalCharge)||0);
-                                const sr=parseSR(l.sr||"");
-                                const am=cityMiles(sr.s);
-                                const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
-                                return s+(um!=null?localCharge(um)||0:0);
-                              },0);
-                              const net=Math.round(gross-locCost);
-                              // Send via Apps Script with action=sendEmail
-                              const url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
-                              const payload={
-                                action:"sendEmail",
-                                emails:emails,
-                                subject:(loads.length)+"-Stop Load Available - No Driver Assigned",
-                                group:{
-                                  id:group.id,
-                                  truck:group.groupTruck||"",
-                                  trailer:group.groupTrailer||"",
-                                  driver:group.groupDriver||"",
-                                  status:group.combinedStatus||"Preplanned",
-                                  readyTime:group.readyTime||"",
-                                  stopCount:loads.length,
-                                  gross:Math.round(gross),
-                                  locCost:Math.round(locCost),
-                                  netRate:net,
-                                  stops:loads.map((l,li)=>{
-                                    const sr=parseSR(l.sr||"");
-                                    const am=cityMiles(sr.s);
-                                    const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
-                                    const lc=l.manualLocalCharge!==""&&l.manualLocalCharge!=null?parseFloat(l.manualLocalCharge)||0:localCharge(um)||0;
-                                    return{num:li+1,shipper:sr.s||"",receiver:sr.r||"",delivery:l.delivery||"",rate:parseFloat(l.rate)||0,localCharge:Math.round(lc)};
-                                  })
-                                }
-                              };
-                              fetch(withTok(url),{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify({data:payload})})
-                                .then(()=>alert("Email sent to "+emails.length+" dispatcher"+(emails.length>1?"s":"")+"!"))
-                                .catch(()=>alert("Email sent!")); // no-cors always throws but it works
+                              setEmailPick({group:group,emails:emails});
                             }}
-                            style={{flex:1,background:"#059669",color:"#fff",border:"none",borderRadius:"5px",padding:"5px",fontSize:"9px",fontWeight:"700",cursor:canEdit?"pointer":"not-allowed",opacity:canEdit?1:.5}}
-                          disabled={!canEdit}
+                            style={{flex:1,background:"#059669",color:"#fff",border:"none",borderRadius:"5px",padding:"5px",fontSize:"9px",fontWeight:"700",cursor:"pointer"}}
+                            disabled={!canEdit}
                           >📧 Send Email</button>
                           <button onClick={()=>{if(canEdit)setGroup(group.id,"isCombined",false);}} style={{flex:1,background:"transparent",border:"1px solid #e2e8f0",borderRadius:"5px",padding:"5px",fontSize:"9px",fontWeight:"600",color:canEdit?"#64748b":"#d1d5db",cursor:canEdit?"pointer":"not-allowed"}} disabled={!canEdit}>← Return to Planned</button>
                         </div>
