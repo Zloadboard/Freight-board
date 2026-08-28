@@ -504,7 +504,7 @@ function _parseEcho(text){
         if(/^(Pickup|Drop|Pieces|Pallets|Item|Weight|Appointment|INSTRUCTIONS|PKU#|DELV#)/i.test(t))break;
         got.push(t);
       }
-      const co=got[0]||"";
+      const co=_rcFirstCell(got[0]||"");
       // Clean each line individually with _rcFirstCell (strip PDF column tails),
       // then build the full address as "street, city state zip". This gives
       // Insights a complete, unique identity per shipper — a "500 Main St"
