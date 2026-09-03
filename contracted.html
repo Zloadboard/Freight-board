@@ -1037,10 +1037,10 @@ function mergeClientData(serverRaw, localRaw) {
   const server = normalizeData(serverRaw);
   const local  = normalizeData(localRaw);
 
-  // Tombstones — union by id, keep the latest 'at'. Load tombstones expire
-  // after 30 min (so the list doesn't grow forever); WEEK tombstones live
-  // forever so an idle tab can't resurrect a deleted week on its next save.
-  const TOMB_TTL = 30 * 60 * 1000;
+  // Tombstones — union by id, keep the latest 'at'. PERMANENT: once a load
+  // (or week) is deleted, its tombstone stays forever so no cached copy on
+  // any device can ever resurrect it. Storage cost is negligible (~40 bytes
+  // per delete).
   const now = Date.now();
   const tombAt = {};
   [].concat(server.tombstones, local.tombstones).forEach(t => {
@@ -1052,11 +1052,8 @@ function mergeClientData(serverRaw, localRaw) {
   const tombstones = [];
   const tombSet = {};
   Object.keys(tombAt).forEach(id => {
-    const isWeekTomb = id.indexOf("wk_") === 0;
-    if (isWeekTomb || (now - tombAt[id] < TOMB_TTL)) {
-      tombstones.push({ id, at: tombAt[id] });
-      tombSet[id] = true;
-    }
+    tombstones.push({ id, at: tombAt[id] });
+    tombSet[id] = true;
   });
 
   // Config — take whichever side was updated more recently
