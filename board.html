@@ -5028,16 +5028,39 @@ function App(){
     const parseSheetNameDates=(sheetName)=>{
       const m=String(sheetName).match(/^\s*(\d{6,8})\s*-\s*(\d{6,8})\s*$/);
       if(!m)return null;
+      // Sheet tabs are typed by hand, so the month and day may or may not be
+      // zero-padded: MMDDYYYY (8), MDDYYYY (7) and MDYYYY (6) all occur.
+      // The 6-character form was NOT handled and returned null, which silently
+      // knocked the whole sheet onto the fallback path. It only bites when BOTH
+      // the month and the day are single digits — which is exactly what
+      // "8312026-962026" (ends 9/6/2026) and "972026-9132026" (starts 9/7/2026)
+      // are, so the first two weeks of September broke while every earlier week
+      // kept working.
+      //
+      // Take the last four characters as the year and split what is left; that
+      // covers all three widths without special cases. If those four characters
+      // aren't a plausible year, fall back to the old two-digit-year tabs
+      // ("122925-010426" = 12/29/25).
       const parseCompact=(s)=>{
-        if(s.length===8){
-          const mm=parseInt(s.slice(0,2),10),dd=parseInt(s.slice(2,4),10),yy=parseInt(s.slice(4),10);
+        const build=(mm,dd,yy)=>{
+          if(!(yy>=2000&&yy<=2100))return null;
           if(mm<1||mm>12||dd<1||dd>31)return null;
-          return new Date(yy,mm-1,dd);
+          const d=new Date(yy,mm-1,dd);
+          // Reject dates the calendar rolled over (e.g. 2/31 becoming 3/3).
+          if(d.getMonth()!==mm-1||d.getDate()!==dd)return null;
+          return d;
+        };
+        if(s.length>=6&&s.length<=8){
+          const yy=parseInt(s.slice(-4),10),md=s.slice(0,-4);
+          let out=null;
+          if(md.length===2)out=build(+md[0],+md[1],yy);              // MDYYYY
+          else if(md.length===3)out=build(+md[0],+md.slice(1),yy);   // MDDYYYY
+          else if(md.length===4)out=build(+md.slice(0,2),+md.slice(2),yy); // MMDDYYYY
+          if(out)return out;
         }
-        if(s.length===7){
-          const mm=parseInt(s.slice(0,1),10),dd=parseInt(s.slice(1,3),10),yy=parseInt(s.slice(3),10);
-          if(mm<1||mm>12||dd<1||dd>31)return null;
-          return new Date(yy,mm-1,dd);
+        if(s.length===6){                                            // MMDDYY
+          const yy=2000+parseInt(s.slice(4),10);
+          return build(parseInt(s.slice(0,2),10),parseInt(s.slice(2,4),10),yy);
         }
         return null;
       };
@@ -10049,11 +10072,18 @@ ${accRows.length>0?`
           // Pick which Main Board import to use. Sort newest week first — prefers
           // the parsed weekKey (ISO date "2026-06-29"); falls back to importedAt
           // for entries created before we tracked weekKey.
-          const boardKeys=Object.keys(mainBoards).sort((a,b)=>{
-            const ka=mainBoards[a].weekKey||mainBoards[a].importedAt||a;
-            const kb=mainBoards[b].weekKey||mainBoards[b].importedAt||b;
-            return kb.localeCompare(ka); // desc
-          });
+          // Sort newest first. A key that never resolved to a date ("sheet-<tab>")
+          // used to sort ABOVE every real "2026-.." key because "s" > "2", so the
+          // Payroll tab opened on an unparsed week by default — which is how a
+          // broken week became the first thing anyone saw. Datable keys first,
+          // undated ones last.
+          const sortKey=(k)=>{
+            const b=mainBoards[k]||{};
+            const wk=String(b.weekKey||"");
+            if(/^\d{4}-\d{2}-\d{2}$/.test(wk))return "1"+wk;
+            return "0"+String(b.importedAt||k);
+          };
+          const boardKeys=Object.keys(mainBoards).sort((a,b)=>sortKey(b).localeCompare(sortKey(a)));
           const activeBoardKey=selectedMainBoardKey||boardKeys[0]||null;
           const activeBoard=activeBoardKey?mainBoards[activeBoardKey]:null;
           // Match a Freight Board week for Zygis 10% math by parsing DATES out of both
@@ -10070,7 +10100,18 @@ ${accRows.length>0?`
             if(!m)return null;
             return new Date(+m[3],+m[1]-1,+m[2]);
           };
-          const boardStart=activeBoard?extractStartDate(activeBoard.label):null;
+          // Prefer the board's weekKey — it is already a normalised ISO date
+          // ("2026-08-31") written at import time. Re-parsing the human label was
+          // fragile: when the sheet tab failed to parse, the label fell back to
+          // the raw tab name ("8312026-962026"), which has no date separators, so
+          // this returned null, no Freight Board week matched, and Zygis's 10% on
+          // combined trailers silently became $0 for that week.
+          const keyStart=(b)=>{
+            const k=b&&b.weekKey;
+            const m=k&&String(k).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            return m?new Date(+m[1],+m[2]-1,+m[3]):null;
+          };
+          const boardStart=activeBoard?(keyStart(activeBoard)||extractStartDate(activeBoard.label)):null;
           const freightWeekForBoard=boardStart
             ?(allTimeWeeks.find(w=>{
               const wStart=extractStartDate(w.label);
@@ -10104,6 +10145,11 @@ ${accRows.length>0?`
                 let next={...mainBoards};
                 parsed.weeks.forEach(w=>{
                   const key=w.weekKey||("sheet-"+w.sheetName);
+                  // A tab that previously failed to parse was stored under
+                  // "sheet-<tab>". Now that it resolves to a real week key, retire
+                  // the old record instead of leaving two entries for one week.
+                  const legacyKey="sheet-"+w.sheetName;
+                  if(key!==legacyKey&&next[legacyKey])delete next[legacyKey];
                   const existing=next[key];
                   next[key]={
                     label:w.weekLabel||w.sheetName,
@@ -10137,7 +10183,10 @@ ${accRows.length>0?`
                 }catch(le){console.warn("Lane rate refresh failed:",le);}
                 // Select the most recent week (last one in the workbook, since they're
                 // usually listed newest first in Google Sheets)
-                const keys=Object.keys(next).sort().reverse();
+                // Pick the newest week by DATE. A raw string sort put any
+                // "sheet-<tab>" key first, so an unparsed week was auto-selected.
+                const rank=k=>/^\d{4}-\d{2}-\d{2}$/.test(String(next[k].weekKey||""))?"1"+next[k].weekKey:"0"+k;
+                const keys=Object.keys(next).sort((a,b)=>rank(b).localeCompare(rank(a)));
                 setSelectedMainBoardKey(keys[0]||null);
                 // Give user visible confirmation for multi-week uploads
                 if(parsed.weeks.length>1){
