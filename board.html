@@ -5,8 +5,11 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Freight Board v2</title>
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<!-- Production React builds: the development builds shipped here previously ran
+     every prop-type / dev-warning path on each render and roughly doubled the
+     bundle. Same 18.3.1 pin, same API. -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js" crossorigin="anonymous"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -38,7 +41,13 @@ button:hover{opacity:0.85;}
 .login-btn:hover{background:#1d4ed8;}
 .viewer-badge{background:#dc2626;color:#fff;font-size:10px;font-weight:700;padding:3px 10px;border-radius:5px;letter-spacing:.06em;text-transform:uppercase;}
 input:disabled,select:disabled{opacity:0.72;cursor:not-allowed!important;}
-@media print{body{display:none!important;}}
+/* Printing used to be `body{display:none}`, which produced a blank page. Hide
+   only the interactive chrome so a trailer list can actually be printed. */
+@media print{
+  .no-print,.hdr-menu-drop,.save-indicator,.tab-btn,button{display:none!important;}
+  body{background:#fff!important;}
+  .modal-bg{position:static!important;background:none!important;}
+}
 .save-indicator{position:fixed;bottom:16px;right:16px;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:700;z-index:999;transition:all .3s;box-shadow:0 4px 12px rgba(0,0,0,0.2);}
 .save-ok{background:#064e3b;color:#34d399;border:1px solid #34d399;}
 .save-saving{background:#1e3a5f;color:#93c5fd;border:1px solid #93c5fd;}
@@ -61,12 +70,44 @@ input:disabled,select:disabled{opacity:0.72;cursor:not-allowed!important;}
 
 
 <script>
-const DIST={"romeoville":0,"lockport":5,"joliet":8,"bolingbrook":5,"woodridge":8,"darien":15,"burr ridge":12,"willowbrook":10,"hodgkins":18,"bedford park":20,"bridgeview":20,"oak lawn":22,"evergreen park":24,"alsip":18,"blue island":20,"country club hills":20,"markham":22,"harvey":22,"naperville":15,"aurora":20,"batavia":25,"geneva":28,"st. charles":28,"saint charles":28,"north aurora":20,"n aurora":20,"sugar grove":22,"oswego":12,"montgomery":905,"yorkville":15,"plano":22,"sandwich":28,"west chicago":25,"w chicago":25,"carol stream":20,"glendale heights":22,"addison":22,"elmhurst":22,"villa park":22,"lombard":20,"downers grove":15,"westmont":15,"lisle":15,"itasca":22,"wood dale":22,"bensenville":25,"elk grove village":25,"elk grove vlg":25,"bloomingdale":22,"roselle":25,"hanover park":28,"streamwood":28,"bartlett":30,"schaumburg":28,"elgin":35,"hoffman estates":30,"barrington":40,"crystal lake":45,"mchenry":50,"wauconda":48,"lake zurich":45,"mundelein":48,"libertyville":50,"gurnee":52,"waukegan":55,"north chicago":55,"zion":58,"chicago":30,"chicago hts":25,"chicago heights":25,"cicero":22,"berwyn":22,"oak park":25,"melrose park":25,"franklin park":25,"northlake":23,"bellwood":23,"broadview":22,"berkeley":22,"hillside":20,"la grange":18,"la grange park":18,"mccook":20,"forest park":24,"maywood":25,"stone park":25,"rosemont":27,"des plaines":28,"park ridge":28,"niles":28,"skokie":30,"evanston":32,"wheeling":33,"buffalo grove":38,"palatine":35,"arlington heights":33,"mount prospect":30,"rolling meadows":30,"willow springs":12,"palos heights":12,"orland park":15,"tinley park":18,"oak forest":15,"midlothian":22,"homewood":22,"flossmoor":22,"matteson":20,"park forest":22,"crete":25,"sauk village":28,"calumet city":28,"lansing":28,"south holland":25,"dolton":26,"monee":22,"university park":22,"beecher":28,"peotone":20,"channahon":10,"minooka":12,"elwood":10,"manhattan":12,"mokena":14,"new lenox":14,"frankfort":16,"steger":22,"wilmington":892,"braidwood":22,"coal city":20,"diamond":22,"seneca":30,"marseilles":40,"ottawa":62,"la salle":65,"peru":65,"streator":50,"pontiac":70,"bloomington":90,"normal":90,"decatur":628,"springfield":100,"peoria":120,"bartonville":120,"east peoria":120,"morton":120,"mackinaw":110,"goodfield":115,"minonk":100,"kankakee":35,"bourbonnais":35,"bradley":32,"manteno":30,"momence":45,"hoopeston":80,"danville":100,"champaign":110,"urbana":110,"lemont":12,"homer glen":12,"orland hills":15,"carpentersville":38,"dundee":40,"west dundee":40,"hampshire":42,"genoa":50,"dekalb":50,"sycamore":52,"rochelle":65,"dixon":75,"sterling":95,"rock falls":95,"rockford":78,"loves park":80,"machesney park":82,"roscoe":82,"belvidere":60,"marengo":52,"woodstock":55,"antioch":60,"fox lake":58,"round lake":52,"hammond":28,"east chicago":28,"gary":32,"portage":40,"chesterton":50,"valparaiso":45,"hobart":35,"merrillville":35,"merrilville":35,"crown point":32,"dyer":28,"st. john":28,"schererville":30,"munster":28,"highland":30,"michigan city":60,"la porte":65,"laporte":65,"south bend":95,"mishawaka":95,"elkhart":110,"goshen":115,"warsaw":862,"bremen":100,"plymouth":95,"rochester":95,"north judson":65,"knox":85,"logansport":105,"kokomo":120,"indianapolis":175,"anderson":155,"fort wayne":155,"auburn":710,"remington":80,"rensselaer":70,"temperance":55,"kenosha":52,"pleasant prairie":50,"racine":58,"sturtevant":58,"oak creek":65,"franksville":62,"caledonia":62,"milwaukee":70,"west allis":72,"greenfield":72,"new berlin":74,"muskego":70,"franklin":68,"glendale":74,"wauwatosa":72,"butler":72,"menomonee falls":78,"waukesha":78,"brookfield":76,"pewaukee":78,"delafield":85,"oconomowoc":90,"watertown":100,"germantown":78,"sussex":82,"hartland":85,"east troy":70,"elkhorn":75,"lake geneva":80,"delavan":82,"beloit":78,"janesville":85,"edgerton":90,"whitewater":90,"fort atkinson":110,"jefferson":730,"madison":95,"middleton":98,"stoughton":98,"verona":97,"baraboo":140,"beaver dam":115,"fond du lac":125,"oshkosh":130,"appleton":135,"neenah":135,"green bay":155,"sheboygan":130,"brillion":160,"manitowoc":150,"wausau":190,"eau claire":250,"la crosse":250,"hudson":310,"kalamazoo":115,"battle creek":125,"grand rapids":130,"lansing":155,"detroit":290,"ann arbor":280,"davenport":170,"des moines":290,"st. louis":285,"kansas city":480,"fountain inn":840,"spartanburg":782,"rock hill":880,"charlotte":872,"matthews":858,"lugoff":845,"jacksonville":1215,"deltona":1215,"orlando":1270,"tampa":1320,"dothan":985,"birmingham":658,"huntsville":625,"nashville":495,"memphis":545,"knoxville":565,"chattanooga":605,"louisville":330,"lexington":425,"hammond la":950,"baton rouge":1000,"new orleans":1050,"dallas":980,"fort worth":985,"houston":1110,"san antonio":1200,"oklahoma city":720,"tulsa":700,"atlanta":745,"mcdonough":738,"douglasville":730,"college park":748,"alabaster":660,"longwood":1270,"haines city":1295,"lakeland":1295,"ocala":1255,"palm bay":1290,"jupiter":1365,"pensacola":972,"tallahassee":1150,"gainesville":1230,"kissimmee":1300,"sanford":1280,"leesburg":1290,"deland":1270,"daytona beach":1260,"fort lauderdale":1400,"miami":1420,"west palm beach":1380,"port st lucie":1360,"fort myers":1380,"cape coral":1390,"naples":1410,"clearwater":1340,"st petersburg":1345,"sarasota":1360,"bradenton":1355,"punta gorda":1375,"kernersville":825,"lenoir":880,"durham":860,"greensboro":830,"rocky mount":858,"mebane":845,"henderson":858,"faison":855,"jonesville":780,"dudley":852,"winston salem":820,"winston-salem":820,"hickory":865,"concord":860,"gastonia":878,"burlington":840,"high point":832,"goldsboro":855,"wilson":852,"fayetteville":855,"raleigh":858,"cary":840,"asheville":878,"statesville":855,"salisbury":845,"charleston":938,"n charleston":935,"north charleston":935,"greenville":775,"beech island":828,"columbia":840,"florence":878,"myrtle beach":930,"hilton head":960,"gaffney":778,"union":870,"athens":760,"braselton":748,"calhoun":685,"doraville":748,"duluth":745,"griffin":768,"suwanee":740,"gainesville ga":740,"cartersville":730,"conyers":736,"stockbridge":738,"macon":785,"savannah":850,"columbus":790,"albany":860,"valdosta":890,"brunswick":870,"warner robins":810,"kennesaw":712,"smyrna":718,"marietta":716,"roswell":722,"mechanicsville":840,"richmond":840,"norfolk":900,"virginia beach":905,"roanoke":808,"charlottesville":832,"hattiesburg":900,"jackson ms":870,"gulfport":958,"biloxi":962,"murfreesboro":500,"franklin tn":498,"clarksville":530,"cookeville":530,"johnson city":590,"kingsport":590,"bristol":600,"smyrna tn":492,"la vergne":490,"columbus oh":350,"cincinnati":340,"cleveland oh":390,"toledo":310,"akron":400,"dayton":340,"youngstown":430,"philadelphia":780,"pittsburgh":460,"allentown":800,"harrisburg":750,"new york":840,"bronx":845,"brooklyn":850,"buffalo ny":500,"rochester ny":570,"baltimore":760,"hagerstown":730,"newark":820,"jersey city":825,"camden":790,"elizabeth":820,"trenton":800,"flint":310,"warren":295,"sterling heights":295,"dearborn":290,"grand rapids mi":130,"chicago ridge":22,"bridgeview il":20,"justice":18,"lyons":18,"stickney":22,"summit":20,"countryside":15,"fort payne":810,"gadsden":820,"anniston":840,"oxford":675,"talladega":685,"pelham":662,"trussville":835,"pell city":860,"rainbow city":845,"boaz":850,"albertville":848,"centre":830,"rome ga":700,"calhoun ga":670,"dalton":690,"chattanooga tn":620,"lebanon tn":520,"gallatin":525,"hendersonville tn":520,"columbia tn":520,"brentwood":497,"crossville":555,"jackson tn":548,"dyersburg":580,"clarksville tn":530,"paris tn":565,"millington":565,"memphis tn":560,"olive branch":570,"southaven":568,"horn lake":568,"corinth":600,"tupelo":650,"columbus ms":690,"meridian":750,"laurel":900,"hattiesburg ms":960,"picayune":990,"gulfport ms":1000,"biloxi ms":1005,"ocean springs":1010,"pascagoula":1020,"mobile":975,"tillmans corner":975,"theodore":975,"daphne":980,"fairhope":985,"foley":990,"pensacola fl":1020,"pace":1025,"milton fl":1030,"tallahassee fl":1150,"quincy fl":1145,"marianna":1100,"panama city":1060,"destin":1050,"fort walton beach":1048,"niceville":1052,"crestview":1042,"dothan al":1000,"enterprise":825,"ozark":990,"troy al":960,"montgomery al":940,"prattville":940,"millbrook":942,"wetumpka":938,"auburn al":910,"opelika":712,"phenix city":720,"valley al":895,"rome":715,"cleveland":718,"summerville":940,"chapel hill":834,"smithfield nc":850,"morganton":870,"jonesville nc":850,"cleveland tn":600};
+const DIST={"romeoville":0,"lockport":5,"joliet":8,"bolingbrook":5,"woodridge":8,"darien":15,"burr ridge":12,"willowbrook":10,"hodgkins":18,"bedford park":20,"bridgeview":20,"oak lawn":22,"evergreen park":24,"alsip":18,"blue island":20,"country club hills":20,"markham":22,"harvey":22,"naperville":15,"aurora":20,"batavia":25,"geneva":28,"st. charles":28,"saint charles":28,"north aurora":20,"n aurora":20,"sugar grove":22,"oswego":12,"montgomery":905,"yorkville":15,"plano":22,"sandwich":28,"west chicago":25,"w chicago":25,"carol stream":20,"glendale heights":22,"addison":22,"elmhurst":22,"villa park":22,"lombard":20,"downers grove":15,"westmont":15,"lisle":15,"itasca":22,"wood dale":22,"bensenville":25,"elk grove village":25,"elk grove vlg":25,"bloomingdale":22,"roselle":25,"hanover park":28,"streamwood":28,"bartlett":30,"schaumburg":28,"elgin":35,"hoffman estates":30,"barrington":40,"crystal lake":45,"mchenry":50,"wauconda":48,"lake zurich":45,"mundelein":48,"libertyville":50,"gurnee":52,"waukegan":55,"north chicago":55,"zion":58,"chicago":30,"chicago hts":25,"chicago heights":25,"cicero":22,"berwyn":22,"oak park":25,"melrose park":25,"franklin park":25,"northlake":23,"bellwood":23,"broadview":22,"berkeley":22,"hillside":20,"la grange":18,"la grange park":18,"mccook":20,"forest park":24,"maywood":25,"stone park":25,"rosemont":27,"des plaines":28,"park ridge":28,"niles":28,"skokie":30,"evanston":32,"wheeling":33,"buffalo grove":38,"palatine":35,"arlington heights":33,"mount prospect":30,"rolling meadows":30,"willow springs":12,"palos heights":12,"orland park":15,"tinley park":18,"oak forest":15,"midlothian":22,"homewood":22,"flossmoor":22,"matteson":20,"park forest":22,"crete":25,"sauk village":28,"calumet city":28,"lansing":28,"south holland":25,"dolton":26,"monee":22,"university park":22,"beecher":28,"peotone":20,"channahon":10,"minooka":12,"elwood":10,"manhattan":12,"mokena":14,"new lenox":14,"frankfort":16,"steger":22,"wilmington":892,"braidwood":22,"coal city":20,"diamond":22,"seneca":30,"marseilles":40,"ottawa":62,"la salle":65,"peru":65,"streator":50,"pontiac":70,"bloomington":90,"normal":90,"decatur":628,"springfield":100,"peoria":120,"bartonville":120,"east peoria":120,"morton":120,"mackinaw":110,"goodfield":115,"minonk":100,"kankakee":35,"bourbonnais":35,"bradley":32,"manteno":30,"momence":45,"hoopeston":80,"danville":100,"champaign":110,"urbana":110,"lemont":12,"homer glen":12,"orland hills":15,"carpentersville":38,"dundee":40,"west dundee":40,"hampshire":42,"genoa":50,"dekalb":50,"sycamore":52,"rochelle":65,"dixon":75,"sterling":95,"rock falls":95,"rockford":78,"loves park":80,"machesney park":82,"roscoe":82,"belvidere":60,"marengo":52,"woodstock":55,"antioch":60,"fox lake":58,"round lake":52,"hammond":28,"east chicago":28,"gary":32,"portage":40,"chesterton":50,"valparaiso":45,"hobart":35,"merrillville":35,"merrilville":35,"crown point":32,"dyer":28,"st. john":28,"schererville":30,"munster":28,"highland":30,"michigan city":60,"la porte":65,"laporte":65,"south bend":95,"mishawaka":95,"elkhart":110,"goshen":115,"warsaw":862,"bremen":100,"plymouth":95,"rochester":95,"north judson":65,"knox":85,"logansport":105,"kokomo":120,"indianapolis":175,"anderson":155,"fort wayne":155,"auburn":710,"remington":80,"rensselaer":70,"temperance":55,"kenosha":52,"pleasant prairie":50,"racine":58,"sturtevant":58,"oak creek":65,"franksville":62,"caledonia":62,"milwaukee":70,"west allis":72,"greenfield":72,"new berlin":74,"muskego":70,"franklin":68,"glendale":74,"wauwatosa":72,"butler":72,"menomonee falls":78,"waukesha":78,"brookfield":76,"pewaukee":78,"delafield":85,"oconomowoc":90,"watertown":100,"germantown":78,"sussex":82,"hartland":85,"east troy":70,"elkhorn":75,"lake geneva":80,"delavan":82,"beloit":78,"janesville":85,"edgerton":90,"whitewater":90,"fort atkinson":110,"jefferson":730,"madison":95,"middleton":98,"stoughton":98,"verona":97,"baraboo":140,"beaver dam":115,"fond du lac":125,"oshkosh":130,"appleton":135,"neenah":135,"green bay":155,"sheboygan":130,"brillion":160,"manitowoc":150,"wausau":190,"eau claire":250,"la crosse":250,"hudson":310,"kalamazoo":115,"battle creek":125,"grand rapids":130,"lansing mi":155,"detroit":290,"ann arbor":280,"davenport":170,"des moines":290,"st. louis":285,"kansas city":480,"fountain inn":840,"spartanburg":782,"rock hill":880,"charlotte":872,"matthews":858,"lugoff":845,"jacksonville":1215,"deltona":1215,"orlando":1270,"tampa":1320,"dothan":985,"birmingham":658,"huntsville":625,"nashville":495,"memphis":545,"knoxville":565,"chattanooga":605,"louisville":330,"lexington":425,"hammond la":950,"baton rouge":1000,"new orleans":1050,"dallas":980,"fort worth":985,"houston":1110,"san antonio":1200,"oklahoma city":720,"tulsa":700,"atlanta":745,"mcdonough":738,"douglasville":730,"college park":748,"alabaster":660,"longwood":1270,"haines city":1295,"lakeland":1295,"ocala":1255,"palm bay":1290,"jupiter":1365,"pensacola":972,"tallahassee":1150,"gainesville":1230,"kissimmee":1300,"sanford":1280,"leesburg":1290,"deland":1270,"daytona beach":1260,"fort lauderdale":1400,"miami":1420,"west palm beach":1380,"port st lucie":1360,"fort myers":1380,"cape coral":1390,"naples":1410,"clearwater":1340,"st petersburg":1345,"sarasota":1360,"bradenton":1355,"punta gorda":1375,"kernersville":825,"lenoir":880,"durham":860,"greensboro":830,"rocky mount":858,"mebane":845,"henderson":858,"faison":855,"jonesville":780,"dudley":852,"winston salem":820,"winston-salem":820,"hickory":865,"concord":860,"gastonia":878,"burlington":840,"high point":832,"goldsboro":855,"wilson":852,"fayetteville":855,"raleigh":858,"cary":840,"asheville":878,"statesville":855,"salisbury":845,"charleston":938,"n charleston":935,"north charleston":935,"greenville":775,"beech island":828,"columbia":840,"florence":878,"myrtle beach":930,"hilton head":960,"gaffney":778,"union":870,"athens":760,"braselton":748,"calhoun":685,"doraville":748,"duluth":745,"griffin":768,"suwanee":740,"gainesville ga":740,"cartersville":730,"conyers":736,"stockbridge":738,"macon":785,"savannah":850,"columbus":790,"albany":860,"valdosta":890,"brunswick":870,"warner robins":810,"kennesaw":712,"smyrna":718,"marietta":716,"roswell":722,"mechanicsville":840,"richmond":840,"norfolk":900,"virginia beach":905,"roanoke":808,"charlottesville":832,"hattiesburg":900,"jackson ms":870,"gulfport":958,"biloxi":962,"murfreesboro":500,"franklin tn":498,"clarksville":530,"cookeville":530,"johnson city":590,"kingsport":590,"bristol":600,"smyrna tn":492,"la vergne":490,"columbus oh":350,"cincinnati":340,"cleveland oh":390,"toledo":310,"akron":400,"dayton":340,"youngstown":430,"philadelphia":780,"pittsburgh":460,"allentown":800,"harrisburg":750,"new york":840,"bronx":845,"brooklyn":850,"buffalo ny":500,"rochester ny":570,"baltimore":760,"hagerstown":730,"newark":820,"jersey city":825,"camden":790,"elizabeth":820,"trenton":800,"flint":310,"warren":295,"sterling heights":295,"dearborn":290,"grand rapids mi":130,"chicago ridge":22,"bridgeview il":20,"justice":18,"lyons":18,"stickney":22,"summit":20,"countryside":15,"fort payne":810,"gadsden":820,"anniston":840,"oxford":675,"talladega":685,"pelham":662,"trussville":835,"pell city":860,"rainbow city":845,"boaz":850,"albertville":848,"centre":830,"rome ga":700,"calhoun ga":670,"dalton":690,"chattanooga tn":620,"lebanon tn":520,"gallatin":525,"hendersonville tn":520,"columbia tn":520,"brentwood":497,"crossville":555,"jackson tn":548,"dyersburg":580,"clarksville tn":530,"paris tn":565,"millington":565,"memphis tn":560,"olive branch":570,"southaven":568,"horn lake":568,"corinth":600,"tupelo":650,"columbus ms":690,"meridian":750,"laurel":900,"hattiesburg ms":960,"picayune":990,"gulfport ms":1000,"biloxi ms":1005,"ocean springs":1010,"pascagoula":1020,"mobile":975,"tillmans corner":975,"theodore":975,"daphne":980,"fairhope":985,"foley":990,"pensacola fl":1020,"pace":1025,"milton fl":1030,"tallahassee fl":1150,"quincy fl":1145,"marianna":1100,"panama city":1060,"destin":1050,"fort walton beach":1048,"niceville":1052,"crestview":1042,"dothan al":1000,"enterprise":825,"ozark":990,"troy al":960,"montgomery al":940,"prattville":940,"millbrook":942,"wetumpka":938,"auburn al":910,"opelika":712,"phenix city":720,"valley al":895,"rome":715,"cleveland":718,"summerville":940,"chapel hill":834,"smithfield nc":850,"morganton":870,"jonesville nc":850,"cleveland tn":600};
 const CITYLL={"romeoville":[41.627,-88.089],"kernersville":[36.119,-80.069],"lenoir":[35.913,-81.540],"winston salem":[36.099,-80.244],"winston-salem":[36.099,-80.244],"greensboro":[36.073,-79.792],"high point":[35.955,-80.005],"durham":[35.994,-78.899],"raleigh":[35.779,-78.638],"cary":[35.791,-78.781],"chapel hill":[35.913,-79.056],"charlotte":[35.227,-80.843],"gastonia":[35.262,-81.187],"hickory":[35.733,-81.344],"statesville":[35.783,-80.887],"salisbury":[35.671,-80.474],"concord":[35.409,-80.580],"mooresville":[35.574,-80.810],"asheville":[35.595,-82.551],"morganton":[35.745,-81.685],"fayetteville":[35.053,-78.878],"wilmington":[34.226,-77.945],"rocky mount":[35.938,-77.790],"henderson":[36.330,-78.400],"mebane":[36.096,-79.267],"burlington":[36.096,-79.438],"faison":[35.125,-78.128],"jonesville":[36.238,-80.840],"dudley":[35.267,-78.017],"goldsboro":[35.385,-78.007],"wilson":[35.721,-77.916],"kinston":[35.262,-77.581],"jacksonville nc":[34.754,-77.430],"mechanicsville":[37.604,-77.356],"richmond":[37.541,-77.434],"norfolk":[36.851,-76.286],"roanoke":[37.271,-79.942],"rock hill":[34.925,-81.025],"spartanburg":[34.950,-81.932],"greenville sc":[34.852,-82.394],"beech island":[33.465,-81.840],"lugoff":[34.196,-80.670],"charleston":[32.776,-79.931],"columbia":[34.000,-81.035],"florence":[34.198,-79.761],"myrtle beach":[33.689,-78.887],"atlanta":[33.749,-84.388],"college park":[33.653,-84.449],"braselton":[34.113,-83.808],"athens":[33.961,-83.378],"calhoun":[34.503,-84.951],"rome":[34.257,-85.165],"cartersville":[34.166,-84.800],"duluth":[34.003,-84.145],"doraville":[33.900,-84.283],"suwanee":[34.052,-84.066],"kennesaw":[34.023,-84.615],"marietta":[33.953,-84.551],"smyrna":[33.884,-84.514],"roswell":[34.023,-84.362],"douglasville":[33.750,-84.748],"griffin":[33.247,-84.261],"conyers":[33.668,-84.018],"stockbridge":[33.538,-84.234],"mcdonough":[33.446,-84.147],"macon":[32.840,-83.633],"savannah":[32.076,-81.089],"valdosta":[30.833,-83.279],"columbus":[32.461,-84.989],"albany":[31.578,-84.156],"fort payne":[34.444,-85.720],"gadsden":[34.014,-85.989],"anniston":[33.659,-85.832],"oxford":[33.614,-85.836],"talladega":[33.436,-86.104],"montgomery":[32.361,-86.279],"dothan":[31.223,-85.390],"mobile":[30.695,-88.043],"huntsville":[34.730,-86.586],"decatur":[34.606,-86.983],"pelham":[33.297,-86.793],"birmingham":[33.521,-86.803],"nashville":[36.162,-86.782],"murfreesboro":[35.845,-86.390],"franklin tn":[35.925,-86.869],"brentwood":[35.998,-86.783],"smyrna tn":[36.004,-86.519],"la vergne":[36.018,-86.582],"cookeville":[36.163,-85.501],"chattanooga":[35.046,-85.309],"knoxville":[35.961,-83.921],"memphis":[35.149,-90.052],"jackson tn":[35.615,-88.814],"clarksville":[36.532,-87.359],"jacksonville":[30.332,-81.656],"orlando":[28.538,-81.379],"tampa":[27.947,-82.458],"longwood":[28.703,-81.339],"haines city":[28.114,-81.629],"lakeland":[28.039,-81.950],"ocala":[29.188,-82.130],"palm bay":[28.034,-80.589],"jupiter":[26.934,-80.096],"pensacola":[30.421,-87.217],"tallahassee":[30.438,-84.281],"deltona":[28.900,-81.264],"gainesville":[29.652,-82.325],"sarasota":[27.336,-82.531],"clearwater":[27.966,-82.800],"st petersburg":[27.773,-82.640],"bradenton":[27.499,-82.575],"fort lauderdale":[26.122,-80.143],"miami":[25.774,-80.194],"west palm beach":[26.715,-80.053],"port st lucie":[27.293,-80.351],"hattiesburg":[31.327,-89.290],"gulfport":[30.367,-89.092],"biloxi":[30.396,-88.886],"mobile al":[30.695,-88.043],"milwaukee":[43.049,-87.906],"germantown":[43.226,-88.111],"beloit":[42.508,-89.032],"pleasant prairie":[42.526,-87.903],"kenosha":[42.585,-87.823],"new berlin":[43.038,-88.108],"oak creek":[42.886,-87.907],"racine":[42.726,-87.783],"sturtevant":[42.699,-87.893],"franksville":[42.678,-87.905],"east troy":[42.780,-88.402]};
 function haversineRd(ll1,ll2){var R=3959,dLat=(ll2[0]-ll1[0])*Math.PI/180,dLon=(ll2[1]-ll1[1])*Math.PI/180,a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(ll1[0]*Math.PI/180)*Math.cos(ll2[0]*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2),d=R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));return Math.round(d*(d<100?1.12:d<300?1.18:1.22));}
 function interCityMi(city1,city2){var c1=(city1||"").toLowerCase().split(",")[0].trim(),c2=(city2||"").toLowerCase().split(",")[0].trim(),ll1=CITYLL[c1],ll2=CITYLL[c2];if(ll1&&ll2)return haversineRd(ll1,ll2);return null;}
 
 const ZIPDIST={"60446":{"city":"Romeoville","state":"IL","miles":0},"60441":{"city":"Lockport","state":"IL","miles":5},"60432":{"city":"Joliet","state":"IL","miles":8},"60490":{"city":"Bolingbrook","state":"IL","miles":5},"60517":{"city":"Woodridge","state":"IL","miles":8},"60514":{"city":"Clarendon Hills","state":"IL","miles":12},"60527":{"city":"Burr Ridge","state":"IL","miles":12},"60521":{"city":"Hodgkins","state":"IL","miles":18},"60501":{"city":"Summit","state":"IL","miles":20},"60499":{"city":"Bedford Park","state":"IL","miles":22},"60455":{"city":"Bridgeview","state":"IL","miles":20},"60638":{"city":"Bedford Park","state":"IL","miles":22},"60630":{"city":"Chicago","state":"IL","miles":28},"60612":{"city":"Chicago","state":"IL","miles":30},"60601":{"city":"Chicago","state":"IL","miles":30},"60007":{"city":"Elk Grove Village","state":"IL","miles":25},"60126":{"city":"Elmhurst","state":"IL","miles":22},"60181":{"city":"Villa Park","state":"IL","miles":22},"60148":{"city":"Lombard","state":"IL","miles":20},"60515":{"city":"Downers Grove","state":"IL","miles":15},"60532":{"city":"Lisle","state":"IL","miles":15},"60188":{"city":"Carol Stream","state":"IL","miles":20},"60108":{"city":"Bloomingdale","state":"IL","miles":22},"60172":{"city":"Roselle","state":"IL","miles":25},"60133":{"city":"Hanover Park","state":"IL","miles":28},"60103":{"city":"Bartlett","state":"IL","miles":30},"60173":{"city":"Schaumburg","state":"IL","miles":28},"60120":{"city":"Elgin","state":"IL","miles":35},"60169":{"city":"Hoffman Estates","state":"IL","miles":30},"60010":{"city":"Barrington","state":"IL","miles":40},"60014":{"city":"Crystal Lake","state":"IL","miles":45},"60050":{"city":"McHenry","state":"IL","miles":50},"60084":{"city":"Wauconda","state":"IL","miles":48},"60047":{"city":"Lake Zurich","state":"IL","miles":45},"60048":{"city":"Libertyville","state":"IL","miles":50},"60031":{"city":"Gurnee","state":"IL","miles":52},"60085":{"city":"Waukegan","state":"IL","miles":55},"60088":{"city":"North Chicago","state":"IL","miles":55},"60099":{"city":"Zion","state":"IL","miles":58},"60543":{"city":"Oswego","state":"IL","miles":12},"60538":{"city":"Montgomery","state":"IL","miles":14},"60560":{"city":"Yorkville","state":"IL","miles":15},"60545":{"city":"Plano","state":"IL","miles":22},"60139":{"city":"Glendale Heights","state":"IL","miles":22},"60137":{"city":"Glen Ellyn","state":"IL","miles":20},"60189":{"city":"Wheaton","state":"IL","miles":20},"60187":{"city":"Wheaton","state":"IL","miles":20},"60563":{"city":"Naperville","state":"IL","miles":15},"60564":{"city":"Naperville","state":"IL","miles":15},"60565":{"city":"Naperville","state":"IL","miles":15},"60502":{"city":"Aurora","state":"IL","miles":20},"60505":{"city":"Aurora","state":"IL","miles":20},"60510":{"city":"Batavia","state":"IL","miles":25},"60134":{"city":"Geneva","state":"IL","miles":28},"60174":{"city":"St. Charles","state":"IL","miles":28},"60542":{"city":"North Aurora","state":"IL","miles":20},"60506":{"city":"Aurora","state":"IL","miles":20},"60554":{"city":"Sugar Grove","state":"IL","miles":22},"60481":{"city":"Wilmington","state":"IL","miles":18},"60915":{"city":"Bradley","state":"IL","miles":32},"60914":{"city":"Bourbonnais","state":"IL","miles":35},"60901":{"city":"Kankakee","state":"IL","miles":35},"60940":{"city":"Manteno","state":"IL","miles":30},"60419":{"city":"Dolton","state":"IL","miles":26},"60411":{"city":"Chicago Heights","state":"IL","miles":25},"60417":{"city":"Crete","state":"IL","miles":25},"60443":{"city":"Matteson","state":"IL","miles":20},"60452":{"city":"Oak Forest","state":"IL","miles":15},"60453":{"city":"Oak Lawn","state":"IL","miles":22},"60803":{"city":"Alsip","state":"IL","miles":18},"60130":{"city":"Forest Park","state":"IL","miles":24},"60153":{"city":"Maywood","state":"IL","miles":25},"60160":{"city":"Melrose Park","state":"IL","miles":25},"60131":{"city":"Franklin Park","state":"IL","miles":25},"60164":{"city":"Northlake","state":"IL","miles":23},"60163":{"city":"Berkeley","state":"IL","miles":22},"60162":{"city":"Hillside","state":"IL","miles":20},"60534":{"city":"Lyons","state":"IL","miles":18},"60526":{"city":"La Grange Park","state":"IL","miles":18},"60525":{"city":"La Grange","state":"IL","miles":18},"60513":{"city":"Brookfield","state":"IL","miles":20},"60402":{"city":"Berwyn","state":"IL","miles":22},"60304":{"city":"Oak Park","state":"IL","miles":25},"60018":{"city":"Des Plaines","state":"IL","miles":28},"60068":{"city":"Park Ridge","state":"IL","miles":28},"60714":{"city":"Niles","state":"IL","miles":28},"60076":{"city":"Skokie","state":"IL","miles":30},"60201":{"city":"Evanston","state":"IL","miles":32},"60090":{"city":"Wheeling","state":"IL","miles":33},"60089":{"city":"Buffalo Grove","state":"IL","miles":38},"60067":{"city":"Palatine","state":"IL","miles":35},"60004":{"city":"Arlington Heights","state":"IL","miles":33},"60056":{"city":"Mount Prospect","state":"IL","miles":30},"60008":{"city":"Rolling Meadows","state":"IL","miles":30},"60480":{"city":"Willow Springs","state":"IL","miles":12},"60463":{"city":"Palos Heights","state":"IL","miles":12},"60462":{"city":"Orland Park","state":"IL","miles":15},"60477":{"city":"Tinley Park","state":"IL","miles":18},"60423":{"city":"Frankfort","state":"IL","miles":16},"60435":{"city":"Joliet","state":"IL","miles":8},"60436":{"city":"Joliet","state":"IL","miles":8},"60431":{"city":"Joliet","state":"IL","miles":8},"60433":{"city":"Joliet","state":"IL","miles":8},"60404":{"city":"Shorewood","state":"IL","miles":6},"60586":{"city":"Plainfield","state":"IL","miles":8},"60585":{"city":"Plainfield","state":"IL","miles":8},"60439":{"city":"Lemont","state":"IL","miles":12},"60487":{"city":"Tinley Park","state":"IL","miles":18},"60406":{"city":"Blue Island","state":"IL","miles":20},"60409":{"city":"Calumet City","state":"IL","miles":28},"60438":{"city":"Lansing","state":"IL","miles":28},"60473":{"city":"South Holland","state":"IL","miles":25},"60430":{"city":"Homewood","state":"IL","miles":22},"60422":{"city":"Flossmoor","state":"IL","miles":22},"60428":{"city":"Markham","state":"IL","miles":22},"60426":{"city":"Harvey","state":"IL","miles":22},"60478":{"city":"Country Club Hills","state":"IL","miles":20},"60461":{"city":"Olympia Fields","state":"IL","miles":22},"60466":{"city":"Park Forest","state":"IL","miles":22},"60475":{"city":"Steger","state":"IL","miles":22},"60468":{"city":"Peotone","state":"IL","miles":20},"60467":{"city":"Orland Hills","state":"IL","miles":15},"60484":{"city":"University Park","state":"IL","miles":22},"60449":{"city":"Monee","state":"IL","miles":22},"46320":{"city":"Hammond","state":"IN","miles":28},"46401":{"city":"Gary","state":"IN","miles":32},"46405":{"city":"Gary","state":"IN","miles":32},"46373":{"city":"St. John","state":"IN","miles":28},"46340":{"city":"Griffith","state":"IN","miles":30},"46410":{"city":"Merrillville","state":"IN","miles":35},"46304":{"city":"Chesterton","state":"IN","miles":50},"46323":{"city":"Hammond","state":"IN","miles":28},"46324":{"city":"Hammond","state":"IN","miles":28},"46325":{"city":"Hammond","state":"IN","miles":28},"46327":{"city":"Hammond","state":"IN","miles":28},"46375":{"city":"Schererville","state":"IN","miles":30},"46386":{"city":"Portage","state":"IN","miles":40},"46343":{"city":"Highland","state":"IN","miles":30},"46356":{"city":"Lowell","state":"IN","miles":35},"46365":{"city":"Michigan City","state":"IN","miles":60},"46360":{"city":"Michigan City","state":"IN","miles":60},"46350":{"city":"La Porte","state":"IN","miles":65},"46614":{"city":"South Bend","state":"IN","miles":95},"46601":{"city":"South Bend","state":"IN","miles":95},"46628":{"city":"South Bend","state":"IN","miles":95},"46545":{"city":"Mishawaka","state":"IN","miles":95},"46516":{"city":"Elkhart","state":"IN","miles":110},"46526":{"city":"Goshen","state":"IN","miles":115},"46706":{"city":"Auburn","state":"IN","miles":150},"46802":{"city":"Fort Wayne","state":"IN","miles":155},"46804":{"city":"Fort Wayne","state":"IN","miles":155},"46825":{"city":"Fort Wayne","state":"IN","miles":155},"46902":{"city":"Kokomo","state":"IN","miles":120},"46901":{"city":"Kokomo","state":"IN","miles":120},"46201":{"city":"Indianapolis","state":"IN","miles":175},"46219":{"city":"Indianapolis","state":"IN","miles":175},"46227":{"city":"Indianapolis","state":"IN","miles":175},"46241":{"city":"Indianapolis","state":"IN","miles":175},"53140":{"city":"Kenosha","state":"WI","miles":52},"53142":{"city":"Kenosha","state":"WI","miles":52},"53143":{"city":"Kenosha","state":"WI","miles":52},"53144":{"city":"Kenosha","state":"WI","miles":52},"53402":{"city":"Racine","state":"WI","miles":58},"53403":{"city":"Racine","state":"WI","miles":58},"53404":{"city":"Racine","state":"WI","miles":58},"53406":{"city":"Racine","state":"WI","miles":58},"53177":{"city":"Sturtevant","state":"WI","miles":58},"53126":{"city":"Franksville","state":"WI","miles":62},"53154":{"city":"Oak Creek","state":"WI","miles":62},"53221":{"city":"Milwaukee","state":"WI","miles":68},"53204":{"city":"Milwaukee","state":"WI","miles":68},"53207":{"city":"Milwaukee","state":"WI","miles":68},"53214":{"city":"Milwaukee","state":"WI","miles":68},"53218":{"city":"Milwaukee","state":"WI","miles":68},"53219":{"city":"Milwaukee","state":"WI","miles":68},"53151":{"city":"New Berlin","state":"WI","miles":72},"53149":{"city":"Muskego","state":"WI","miles":70},"53132":{"city":"Franklin","state":"WI","miles":68},"53202":{"city":"Milwaukee","state":"WI","miles":70},"53226":{"city":"Wauwatosa","state":"WI","miles":72},"53212":{"city":"Milwaukee","state":"WI","miles":70},"53209":{"city":"Milwaukee","state":"WI","miles":70},"53222":{"city":"Milwaukee","state":"WI","miles":68},"53005":{"city":"Brookfield","state":"WI","miles":74},"53186":{"city":"Waukesha","state":"WI","miles":75},"53188":{"city":"Waukesha","state":"WI","miles":75},"53095":{"city":"West Bend","state":"WI","miles":80},"53051":{"city":"Menomonee Falls","state":"WI","miles":78},"53022":{"city":"Germantown","state":"WI","miles":78},"53089":{"city":"Sussex","state":"WI","miles":82},"53029":{"city":"Hartland","state":"WI","miles":85},"53066":{"city":"Oconomowoc","state":"WI","miles":90},"53094":{"city":"Watertown","state":"WI","miles":100},"53108":{"city":"Caledonia","state":"WI","miles":62},"53017":{"city":"Butler","state":"WI","miles":72},"53072":{"city":"Pewaukee","state":"WI","miles":78},"53511":{"city":"Beloit","state":"WI","miles":78},"53545":{"city":"Janesville","state":"WI","miles":82},"53546":{"city":"Janesville","state":"WI","miles":82},"53548":{"city":"Janesville","state":"WI","miles":82},"53534":{"city":"Edgerton","state":"WI","miles":90},"53190":{"city":"Whitewater","state":"WI","miles":90},"53538":{"city":"Fort Atkinson","state":"WI","miles":110},"53549":{"city":"Jefferson","state":"WI","miles":100},"53704":{"city":"Madison","state":"WI","miles":95},"53711":{"city":"Madison","state":"WI","miles":95},"53719":{"city":"Madison","state":"WI","miles":95},"53562":{"city":"Middleton","state":"WI","miles":98},"53593":{"city":"Verona","state":"WI","miles":97},"53589":{"city":"Stoughton","state":"WI","miles":98},"53913":{"city":"Baraboo","state":"WI","miles":140},"53916":{"city":"Beaver Dam","state":"WI","miles":115},"54937":{"city":"Fond du Lac","state":"WI","miles":125},"54901":{"city":"Oshkosh","state":"WI","miles":130},"54911":{"city":"Appleton","state":"WI","miles":135},"54914":{"city":"Appleton","state":"WI","miles":135},"54301":{"city":"Green Bay","state":"WI","miles":155},"54302":{"city":"Green Bay","state":"WI","miles":155},"53081":{"city":"Sheboygan","state":"WI","miles":130},"53083":{"city":"Sheboygan","state":"WI","miles":130},"54220":{"city":"Manitowoc","state":"WI","miles":150},"54401":{"city":"Wausau","state":"WI","miles":190},"27284":{"city":"Kernersville","state":"NC","miles":825},"27285":{"city":"Kernersville","state":"NC","miles":825},"27103":{"city":"Winston-Salem","state":"NC","miles":820},"27105":{"city":"Winston-Salem","state":"NC","miles":820},"27127":{"city":"Winston-Salem","state":"NC","miles":820},"27101":{"city":"Winston-Salem","state":"NC","miles":820},"27401":{"city":"Greensboro","state":"NC","miles":830},"27403":{"city":"Greensboro","state":"NC","miles":830},"27407":{"city":"Greensboro","state":"NC","miles":830},"27409":{"city":"Greensboro","state":"NC","miles":830},"27410":{"city":"Greensboro","state":"NC","miles":830},"27265":{"city":"High Point","state":"NC","miles":832},"27260":{"city":"High Point","state":"NC","miles":832},"27215":{"city":"Burlington","state":"NC","miles":840},"27302":{"city":"Mebane","state":"NC","miles":845},"27701":{"city":"Durham","state":"NC","miles":860},"27703":{"city":"Durham","state":"NC","miles":860},"27707":{"city":"Durham","state":"NC","miles":860},"27601":{"city":"Raleigh","state":"NC","miles":858},"27604":{"city":"Raleigh","state":"NC","miles":858},"27609":{"city":"Raleigh","state":"NC","miles":858},"28645":{"city":"Lenoir","state":"NC","miles":880},"28630":{"city":"Granite Falls","state":"NC","miles":875},"28601":{"city":"Hickory","state":"NC","miles":865},"28602":{"city":"Hickory","state":"NC","miles":865},"28025":{"city":"Concord","state":"NC","miles":860},"28027":{"city":"Concord","state":"NC","miles":860},"28205":{"city":"Charlotte","state":"NC","miles":872},"28206":{"city":"Charlotte","state":"NC","miles":872},"28217":{"city":"Charlotte","state":"NC","miles":872},"28269":{"city":"Charlotte","state":"NC","miles":872},"28273":{"city":"Charlotte","state":"NC","miles":872},"28277":{"city":"Charlotte","state":"NC","miles":872},"28105":{"city":"Matthews","state":"NC","miles":870},"28006":{"city":"Advance","state":"NC","miles":822},"28334":{"city":"Dunn","state":"NC","miles":855},"28301":{"city":"Fayetteville","state":"NC","miles":862},"28304":{"city":"Fayetteville","state":"NC","miles":862},"28314":{"city":"Fayetteville","state":"NC","miles":862},"28306":{"city":"Fayetteville","state":"NC","miles":862},"28401":{"city":"Wilmington","state":"NC","miles":890},"28403":{"city":"Wilmington","state":"NC","miles":890},"28405":{"city":"Wilmington","state":"NC","miles":890},"27896":{"city":"Wilson","state":"NC","miles":848},"27893":{"city":"Wilson","state":"NC","miles":848},"27801":{"city":"Rocky Mount","state":"NC","miles":850},"27804":{"city":"Rocky Mount","state":"NC","miles":850},"28144":{"city":"Salisbury","state":"NC","miles":845},"28150":{"city":"Shelby","state":"NC","miles":885},"27360":{"city":"Thomasville","state":"NC","miles":835},"27320":{"city":"Reidsville","state":"NC","miles":840},"27030":{"city":"Mount Airy","state":"NC","miles":835},"28540":{"city":"Jacksonville","state":"NC","miles":878},"27382":{"city":"Roseboro","state":"NC","miles":862},"29349":{"city":"Inman","state":"SC","miles":858},"29483":{"city":"Summerville","state":"SC","miles":955},"29405":{"city":"North Charleston","state":"SC","miles":960},"29406":{"city":"North Charleston","state":"SC","miles":960},"29301":{"city":"Spartanburg","state":"SC","miles":860},"29303":{"city":"Spartanburg","state":"SC","miles":860},"29401":{"city":"Charleston","state":"SC","miles":960},"29414":{"city":"Charleston","state":"SC","miles":960},"29501":{"city":"Florence","state":"SC","miles":910},"29505":{"city":"Florence","state":"SC","miles":910},"29201":{"city":"Columbia","state":"SC","miles":890},"29203":{"city":"Columbia","state":"SC","miles":890},"29210":{"city":"Columbia","state":"SC","miles":890},"29072":{"city":"Lexington","state":"SC","miles":890},"29801":{"city":"Aiken","state":"SC","miles":888},"29841":{"city":"North Augusta","state":"SC","miles":885},"29611":{"city":"Greenville","state":"SC","miles":852},"29615":{"city":"Greenville","state":"SC","miles":852},"29062":{"city":"Lugoff","state":"SC","miles":895},"29063":{"city":"Irmo","state":"SC","miles":892},"30303":{"city":"Atlanta","state":"GA","miles":745},"30318":{"city":"Atlanta","state":"GA","miles":745},"30328":{"city":"Atlanta","state":"GA","miles":748},"30340":{"city":"Doraville","state":"GA","miles":748},"30341":{"city":"Chamblee","state":"GA","miles":748},"30349":{"city":"College Park","state":"GA","miles":748},"30337":{"city":"Atlanta","state":"GA","miles":748},"30260":{"city":"Morrow","state":"GA","miles":755},"30253":{"city":"McDonough","state":"GA","miles":760},"30252":{"city":"McDonough","state":"GA","miles":760},"30135":{"city":"Douglasville","state":"GA","miles":755},"30134":{"city":"Douglasville","state":"GA","miles":755},"30080":{"city":"Smyrna","state":"GA","miles":745},"30060":{"city":"Marietta","state":"GA","miles":742},"30068":{"city":"Marietta","state":"GA","miles":742},"30066":{"city":"Marietta","state":"GA","miles":742},"30075":{"city":"Roswell","state":"GA","miles":748},"30004":{"city":"Alpharetta","state":"GA","miles":748},"30024":{"city":"Suwanee","state":"GA","miles":742},"30518":{"city":"Buford","state":"GA","miles":745},"30701":{"city":"Calhoun","state":"GA","miles":685},"30120":{"city":"Cartersville","state":"GA","miles":730},"30144":{"city":"Kennesaw","state":"GA","miles":740},"30736":{"city":"Dalton","state":"GA","miles":690},"30720":{"city":"Dalton","state":"GA","miles":690},"30161":{"city":"Rome","state":"GA","miles":715},"30165":{"city":"Rome","state":"GA","miles":715},"30241":{"city":"LaGrange","state":"GA","miles":778},"31201":{"city":"Macon","state":"GA","miles":820},"31204":{"city":"Macon","state":"GA","miles":820},"31210":{"city":"Macon","state":"GA","miles":820},"35967":{"city":"Fort Payne","state":"AL","miles":810},"35968":{"city":"Fort Payne","state":"AL","miles":810},"35901":{"city":"Gadsden","state":"AL","miles":820},"35903":{"city":"Gadsden","state":"AL","miles":820},"36201":{"city":"Anniston","state":"AL","miles":840},"36203":{"city":"Oxford","state":"AL","miles":842},"35007":{"city":"Alabaster","state":"AL","miles":875},"35173":{"city":"Trussville","state":"AL","miles":835},"35022":{"city":"Bessemer","state":"AL","miles":868},"35124":{"city":"Pelham","state":"AL","miles":885},"35215":{"city":"Birmingham","state":"AL","miles":870},"35233":{"city":"Birmingham","state":"AL","miles":870},"35244":{"city":"Birmingham","state":"AL","miles":872},"35824":{"city":"Huntsville","state":"AL","miles":820},"35806":{"city":"Huntsville","state":"AL","miles":820},"35801":{"city":"Huntsville","state":"AL","miles":820},"35802":{"city":"Huntsville","state":"AL","miles":820},"35811":{"city":"Huntsville","state":"AL","miles":820},"35630":{"city":"Florence","state":"AL","miles":760},"35611":{"city":"Athens","state":"AL","miles":798},"35601":{"city":"Decatur","state":"AL","miles":825},"35603":{"city":"Decatur","state":"AL","miles":825},"36801":{"city":"Opelika","state":"AL","miles":912},"36830":{"city":"Auburn","state":"AL","miles":910},"36303":{"city":"Dothan","state":"AL","miles":985},"36301":{"city":"Dothan","state":"AL","miles":985},"36604":{"city":"Mobile","state":"AL","miles":975},"36606":{"city":"Mobile","state":"AL","miles":975},"36695":{"city":"Mobile","state":"AL","miles":975},"37601":{"city":"Johnson City","state":"TN","miles":590},"37604":{"city":"Johnson City","state":"TN","miles":590},"37660":{"city":"Kingsport","state":"TN","miles":590},"37663":{"city":"Kingsport","state":"TN","miles":590},"37664":{"city":"Kingsport","state":"TN","miles":590},"37920":{"city":"Knoxville","state":"TN","miles":565},"37917":{"city":"Knoxville","state":"TN","miles":565},"37931":{"city":"Knoxville","state":"TN","miles":565},"37922":{"city":"Knoxville","state":"TN","miles":565},"37912":{"city":"Knoxville","state":"TN","miles":565},"37914":{"city":"Knoxville","state":"TN","miles":565},"37902":{"city":"Knoxville","state":"TN","miles":565},"37421":{"city":"Chattanooga","state":"TN","miles":605},"37411":{"city":"Chattanooga","state":"TN","miles":605},"37406":{"city":"Chattanooga","state":"TN","miles":605},"37402":{"city":"Chattanooga","state":"TN","miles":605},"37404":{"city":"Chattanooga","state":"TN","miles":605},"38104":{"city":"Memphis","state":"TN","miles":545},"38109":{"city":"Memphis","state":"TN","miles":545},"38116":{"city":"Memphis","state":"TN","miles":545},"38118":{"city":"Memphis","state":"TN","miles":545},"38125":{"city":"Memphis","state":"TN","miles":545},"37201":{"city":"Nashville","state":"TN","miles":495},"37203":{"city":"Nashville","state":"TN","miles":495},"37207":{"city":"Nashville","state":"TN","miles":495},"37211":{"city":"Nashville","state":"TN","miles":495},"37214":{"city":"Nashville","state":"TN","miles":495},"37217":{"city":"Nashville","state":"TN","miles":495},"37086":{"city":"La Vergne","state":"TN","miles":500},"37130":{"city":"Murfreesboro","state":"TN","miles":500},"37127":{"city":"Murfreesboro","state":"TN","miles":500},"37067":{"city":"Franklin","state":"TN","miles":498},"37064":{"city":"Franklin","state":"TN","miles":498},"37027":{"city":"Brentwood","state":"TN","miles":497},"37075":{"city":"Hendersonville","state":"TN","miles":498},"37066":{"city":"Gallatin","state":"TN","miles":502},"37090":{"city":"Lebanon","state":"TN","miles":505},"37040":{"city":"Clarksville","state":"TN","miles":530},"37042":{"city":"Clarksville","state":"TN","miles":530},"38501":{"city":"Cookeville","state":"TN","miles":540},"38506":{"city":"Cookeville","state":"TN","miles":540},"32254":{"city":"Jacksonville","state":"FL","miles":1218},"32207":{"city":"Jacksonville","state":"FL","miles":1215},"32210":{"city":"Jacksonville","state":"FL","miles":1215},"32218":{"city":"Jacksonville","state":"FL","miles":1218},"32219":{"city":"Jacksonville","state":"FL","miles":1218},"32220":{"city":"Jacksonville","state":"FL","miles":1218},"32725":{"city":"Deltona","state":"FL","miles":1255},"32801":{"city":"Orlando","state":"FL","miles":1272},"32804":{"city":"Orlando","state":"FL","miles":1272},"32808":{"city":"Orlando","state":"FL","miles":1272},"32811":{"city":"Orlando","state":"FL","miles":1272},"32822":{"city":"Orlando","state":"FL","miles":1272},"32837":{"city":"Orlando","state":"FL","miles":1270},"32835":{"city":"Orlando","state":"FL","miles":1270},"34741":{"city":"Kissimmee","state":"FL","miles":1280},"34744":{"city":"Kissimmee","state":"FL","miles":1280},"32750":{"city":"Longwood","state":"FL","miles":1272},"32779":{"city":"Longwood","state":"FL","miles":1272},"32771":{"city":"Sanford","state":"FL","miles":1268},"33619":{"city":"Tampa","state":"FL","miles":1322},"33634":{"city":"Tampa","state":"FL","miles":1322},"33647":{"city":"Tampa","state":"FL","miles":1322},"33612":{"city":"Tampa","state":"FL","miles":1322},"33614":{"city":"Tampa","state":"FL","miles":1322},"33602":{"city":"Tampa","state":"FL","miles":1322},"33604":{"city":"Tampa","state":"FL","miles":1322},"33605":{"city":"Tampa","state":"FL","miles":1322},"33607":{"city":"Tampa","state":"FL","miles":1322},"33610":{"city":"Tampa","state":"FL","miles":1322},"33611":{"city":"Tampa","state":"FL","miles":1322},"33637":{"city":"Tampa","state":"FL","miles":1322},"33702":{"city":"St. Petersburg","state":"FL","miles":1335},"33705":{"city":"St. Petersburg","state":"FL","miles":1335},"33756":{"city":"Clearwater","state":"FL","miles":1332},"33759":{"city":"Clearwater","state":"FL","miles":1332},"33760":{"city":"Clearwater","state":"FL","miles":1332},"33762":{"city":"Clearwater","state":"FL","miles":1332},"33763":{"city":"Clearwater","state":"FL","miles":1332},"33844":{"city":"Haines City","state":"FL","miles":1295},"33801":{"city":"Lakeland","state":"FL","miles":1295},"33803":{"city":"Lakeland","state":"FL","miles":1295},"33811":{"city":"Lakeland","state":"FL","miles":1298},"33812":{"city":"Lakeland","state":"FL","miles":1298},"33901":{"city":"Fort Myers","state":"FL","miles":1378},"33905":{"city":"Fort Myers","state":"FL","miles":1378},"34102":{"city":"Naples","state":"FL","miles":1402},"34103":{"city":"Naples","state":"FL","miles":1402},"34119":{"city":"Naples","state":"FL","miles":1408},"33458":{"city":"Jupiter","state":"FL","miles":1362},"33411":{"city":"West Palm Beach","state":"FL","miles":1368},"33415":{"city":"West Palm Beach","state":"FL","miles":1368},"33301":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33311":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33312":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33315":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33317":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33319":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33166":{"city":"Miami","state":"FL","miles":1410},"33169":{"city":"Miami","state":"FL","miles":1410},"33179":{"city":"Miami","state":"FL","miles":1412},"33186":{"city":"Miami","state":"FL","miles":1418},"33193":{"city":"Miami","state":"FL","miles":1420},"23220":{"city":"Richmond","state":"VA","miles":840},"23224":{"city":"Richmond","state":"VA","miles":840},"23231":{"city":"Richmond","state":"VA","miles":840},"23234":{"city":"Richmond","state":"VA","miles":840},"21201":{"city":"Baltimore","state":"MD","miles":760},"21215":{"city":"Baltimore","state":"MD","miles":760},"21222":{"city":"Baltimore","state":"MD","miles":760},"21224":{"city":"Baltimore","state":"MD","miles":760},"45402":{"city":"Dayton","state":"OH","miles":340},"44114":{"city":"Cleveland","state":"OH","miles":390},"43215":{"city":"Columbus","state":"OH","miles":350},"43228":{"city":"Columbus","state":"OH","miles":350},"45202":{"city":"Cincinnati","state":"OH","miles":340},"45211":{"city":"Cincinnati","state":"OH","miles":340},"40202":{"city":"Louisville","state":"KY","miles":330},"40213":{"city":"Louisville","state":"KY","miles":330},"40219":{"city":"Louisville","state":"KY","miles":330},"40291":{"city":"Louisville","state":"KY","miles":330},"40509":{"city":"Lexington","state":"KY","miles":425},"39401":{"city":"Hattiesburg","state":"MS","miles":960},"39402":{"city":"Hattiesburg","state":"MS","miles":960},"39501":{"city":"Gulfport","state":"MS","miles":1000},"39503":{"city":"Gulfport","state":"MS","miles":1000},"39531":{"city":"Biloxi","state":"MS","miles":1005},"75201":{"city":"Dallas","state":"TX","miles":980},"75217":{"city":"Dallas","state":"TX","miles":980},"76102":{"city":"Fort Worth","state":"TX","miles":985},"77002":{"city":"Houston","state":"TX","miles":1110},"77041":{"city":"Houston","state":"TX","miles":1110},"77060":{"city":"Houston","state":"TX","miles":1112},"70801":{"city":"Baton Rouge","state":"LA","miles":1000},"70808":{"city":"Baton Rouge","state":"LA","miles":1000},"70814":{"city":"Baton Rouge","state":"LA","miles":1000},"70820":{"city":"Baton Rouge","state":"LA","miles":1000},"70119":{"city":"New Orleans","state":"LA","miles":1050},"70127":{"city":"New Orleans","state":"LA","miles":1050},"70131":{"city":"New Orleans","state":"LA","miles":1050},"49501":{"city":"Grand Rapids","state":"MI","miles":130},"49504":{"city":"Grand Rapids","state":"MI","miles":130},"49505":{"city":"Grand Rapids","state":"MI","miles":130},"49507":{"city":"Grand Rapids","state":"MI","miles":130},"49508":{"city":"Grand Rapids","state":"MI","miles":130},"49512":{"city":"Grand Rapids","state":"MI","miles":130},"49001":{"city":"Kalamazoo","state":"MI","miles":115},"49009":{"city":"Kalamazoo","state":"MI","miles":115},"48126":{"city":"Dearborn","state":"MI","miles":290},"48202":{"city":"Detroit","state":"MI","miles":295},"48207":{"city":"Detroit","state":"MI","miles":295},"48228":{"city":"Detroit","state":"MI","miles":295},"48313":{"city":"Sterling Heights","state":"MI","miles":298},"48314":{"city":"Sterling Heights","state":"MI","miles":298},"48374":{"city":"Novi","state":"MI","miles":302},"48375":{"city":"Novi","state":"MI","miles":302},"48502":{"city":"Flint","state":"MI","miles":310},"48503":{"city":"Flint","state":"MI","miles":310},"48601":{"city":"Saginaw","state":"MI","miles":335}};
+// ─── STATE DISAMBIGUATION ───────────────────────────────────────────────
+// Several city names above exist in more than one state and the bare key can
+// only hold one of them. Montgomery IL is 14 mi from the yard; Montgomery AL is
+// 940. Lansing IL is 28; Lansing MI is 155. Before this, a load's state was
+// thrown away during lookup, so roughly half of these priced off the wrong
+// city — and a 14-mile run billed at 905 miles also fell out of the local-charge
+// band entirely (localCharge returns null above LOCAL_MAX_MI), so no local
+// charge was deducted and the trailer's RPM was divided by a 65x-too-large
+// denominator.
+//
+// These are "city st" keys. cityMiles() tries the state-qualified key first and
+// only falls back to the bare name when there is no qualified entry, so nothing
+// that resolved correctly before changes.
+Object.assign(DIST,{
+  "montgomery il":14,"montgomery al":940,
+  "wilmington il":18,"wilmington nc":890,"wilmington de":800,
+  "lansing il":28,
+  "brookfield il":20,"brookfield wi":76,
+  "jefferson wi":100,"jefferson ga":730,
+  "aurora il":20,
+  "peru il":65,"peru in":140,
+  "warsaw in":145,
+  "auburn in":150,
+  "columbus in":195,"columbus ga":790,
+  "decatur il":180,
+  "cleveland oh":390,
+  "greenville nc":900,"greenville ms":610,
+  "richmond in":230,
+  "springfield mo":430,"springfield oh":330,
+  "charleston wv":530,
+  "franklin wi":68
+});
 
 function zipLookup(z){const e=ZIPDIST[z.trim()];if(!e)return null;return {city:e.city+", "+e.state, miles:e.miles};}
 function expandZips(sr){
@@ -90,7 +131,20 @@ function zipMiles(sr){
 
 
 const XDOCK_ADDRESSES=[{city:"Jacksonville, FL",addr:"680 Edgewood Ave N Suite B, Jacksonville, FL 32254",contact:"Tom / 904-870-3566",price:"$8.50/pallet + $100 afterhours"},{city:"Orlando, FL",addr:"9633 Oak Crossing Road #400, Orlando, FL 32837",contact:"Tom / 904-870-3566",price:"$8.50/pallet + $100 afterhours"},{city:"Savannah, GA",addr:"780 King George Blvd Unit 3, Savannah, GA 31419",contact:"Tom / 904-870-3566",price:"$8.50/pallet + $100 afterhours"},{city:"Suwanee, GA",addr:"Rick Cargo, 300 Brogdon Rd STE 110, Suwanee, GA 30024",contact:"Dalton 949-444-3804 / Steven 949-309-0938",price:"$10/pallet + $100 afterhours"},{city:"Albany, GA",addr:"1901 Krug Street, Albany, GA 31705",contact:"229-888-7980",price:"$250/trailer — cash only"},{city:"East Point, GA",addr:"2251 Sylvan Road Suite 500, East Point, GA 30344",contact:"404-607-8457",price:"$450/trailer"},{city:"Birmingham, AL",addr:"Axis Warehousing, 4280 Pinson Valley Pkwy, Birmingham, AL 35215",contact:"205-263-0473",price:"$10/pallet"},{city:"Decatur, AL",addr:"KMS Express, 41 Ipsco Street, Decatur, AL 35601",contact:"Mike / 256-213-1919",price:"$8/pallet, $100 afterhours, no long forks"},{city:"Decatur, AL (State Bonded)",addr:"State Bonded Warehouse, 26 2nd St SW, Decatur, AL 35601",contact:"Jerry / 256-353-9361",price:"$20/pallet — long forks"},{city:"Chattanooga, TN",addr:"3500 North Hawthorne St Suite 161, Chattanooga, TN 37406",contact:"Serge / 423-310-0487",price:"$6/pallet, $150 afterhours"},{city:"Summerville, SC",addr:"168 Portside Park Dr Suite #300, Summerville, SC 29483",contact:"843-203-9200",price:""},{city:"Mebane, NC",addr:"Superior Logistics, 2267 US-70, Mebane, NC 27302",contact:"John / 336-269-8339",price:"$10/pallet, $100 afterhours"},{city:"Inman, SC",addr:"Z Brothers, 60 Indy Lane, Inman, SC 29349",contact:"Vasili / 716-308-8841",price:"$8/pallet, $50 afterhours"},{city:"Hartford, CT",addr:"RJ Morris, 1 Fairfield Street, E Hartford, CT 06108",contact:"Jeff / 860-841-2923",price:"$10/pallet, $100 afterhours"},{city:"Grand Prairie, TX",addr:"JTS, 2555 114th Street, Grand Prairie, TX",contact:"469-916-4480",price:"$10/pallet, $100 afterhours"},{city:"Richmond, VA",addr:"Dominion, 1501 Carter Creek Road, Richmond, VA 23224",contact:"Travis / 804-335-4562",price:"$125 minimum"},{city:"Knoxville, TN",addr:"Warehouse Foothills Brokerage, 2301 Texas Ave, Knoxville, TN 37921",contact:"Kenny / 865-585-5457",price:""},{city:"Glen Burnie, MD",addr:"806 Cromwell Park Drive, Glen Burnie, MD 21061",contact:"Shawn / 443-546-7264",price:"$10/pallet"},{city:"Baton Rouge, LA",addr:"TTH Warehouse, 2276 N 3rd Street, Baton Rouge, LA 70802",contact:"Nancy 225-772-2931",price:"~$160 for 25 pallets"},{city:"Sturtevant, WI",addr:"11201 Enterprise Way, Sturtevant, WI",contact:"Joe 414-534-0610",price:"$14/pallet"},{city:"Crossville, TN",addr:"228 Interstate Drive, Crossville, TN 38555",contact:"Oliver 931-839-2220",price:"$250 whole trailer — open 5:30AM"}];
-(function(){try{var stored=localStorage.getItem("fcbv2_xdrop_partners");if(stored){XDOCK_ADDRESSES=JSON.parse(stored);}}catch(e){}})();
+// This used to assign to XDOCK_ADDRESSES, which is a const — the TypeError was
+// swallowed by the bare catch and the saved partner list was silently ignored,
+// so edits to the crossdock list never survived a reload. Mutate in place.
+(function(){
+  try{
+    var stored=localStorage.getItem("fcbv2_xdrop_partners");
+    if(!stored)return;
+    var parsed=JSON.parse(stored);
+    if(Array.isArray(parsed)&&parsed.length){
+      XDOCK_ADDRESSES.length=0;
+      Array.prototype.push.apply(XDOCK_ADDRESSES,parsed);
+    }
+  }catch(e){console.warn("Saved crossdock partner list is unreadable; using the built-in list.",e);}
+})();
 
 
 
@@ -150,29 +204,90 @@ const DRIVERS=["Linas Greiciunas","John Johnson","Douglas Russo","Ringo Brown","
 
 var DIST_OVERRIDES={};try{DIST_OVERRIDES=JSON.parse(localStorage.getItem("fcbv2_distoverrides")||"{}");}catch(e){}
 var DIST_MISS_LOG={};
+// Split "Kernersville, NC" into {city:"kernersville", st:"NC"}. The state is the
+// half the old lookup discarded.
+function distKeyParts(s){
+  var parts=String(s||"").split(",");
+  var city=(parts[0]||"").trim().toLowerCase();
+  var st=(parts[1]||"").trim().toUpperCase().replace(/[^A-Z]/g,"").slice(0,2);
+  return {city:city,st:st};
+}
+// Exact lookup, state-qualified first. Overrides win at each level so an admin
+// can correct either "joliet" or "joliet il".
+function distLookup(city,st){
+  if(!city)return undefined;
+  if(st){
+    var q=city+" "+st.toLowerCase();
+    if(DIST_OVERRIDES[q]!==undefined)return DIST_OVERRIDES[q];
+    if(DIST[q]!==undefined)return DIST[q];
+  }
+  if(DIST_OVERRIDES[city]!==undefined)return DIST_OVERRIDES[city];
+  if(DIST[city]!==undefined)return DIST[city];
+  return undefined;
+}
+// Trailing 2-letter token on a DIST key is its state ("rome ga" -> GA).
+function distKeyState(k){
+  var t=k.split(" ");
+  var last=t[t.length-1];
+  return (t.length>1&&last.length===2)?last.toUpperCase():"";
+}
 function cityMiles(s){
   if(!s)return null;
-  // ZIP lookup
+  // ZIP lookup — a ZIP is unambiguous, so it always wins.
   var zm=s.match(/\b(\d{5})\b/);if(zm&&ZIPDIST[zm[1]])return ZIPDIST[zm[1]].miles;
-  var c=s.split(",")[0].trim().toLowerCase();
-  // Admin override
-  if(DIST_OVERRIDES[c]!==undefined)return DIST_OVERRIDES[c];
-  // Exact DIST table
-  if(DIST[c]!==undefined)return DIST[c];
-  // Fuzzy match
-  for(var k of Object.keys(DIST))if((c.includes(k)||k.includes(c))&&k.length>4)return DIST[k];
-  // Cache miss — log it with haversine estimate
-  if(c&&!DIST_MISS_LOG[c]){
+  var kp=distKeyParts(s);
+  var exact=distLookup(kp.city,kp.st);
+  if(exact!==undefined)return exact;
+  // Fuzzy match — LONGEST overlapping key wins. The old loop returned the first
+  // key in insertion order that overlapped at all, so "Hendersonville, TN"
+  // (498 mi) matched the earlier "henderson" and came back 858.
+  var bestKey="",bestLen=0;
+  for(var k of Object.keys(DIST)){
+    if(k.length<=4)continue;
+    if(k.length>bestLen&&(kp.city.includes(k)||k.includes(kp.city))){bestKey=k;bestLen=k.length;}
+  }
+  if(bestKey){
+    // A fuzzy match must never cross a state line — "springfield" lives in a
+    // dozen states and they are not 100 miles apart.
+    var bkSt=distKeyState(bestKey);
+    if(!kp.st||!bkSt||bkSt===kp.st)return DIST[bestKey];
+  }
+  // Cache miss — log it with a haversine estimate so it can be reviewed.
+  if(kp.city&&!DIST_MISS_LOG[kp.city]){
     var hub=CITYLL["romeoville"]||[41.648,-88.089];
-    var parts=s.split(",");
-    var cityName=parts[0].trim().toLowerCase();
-    var stAbbr=(parts[1]||"").trim().toUpperCase().slice(0,2);
-    var ll=CITYLL[cityName];
+    var ll=CITYLL[kp.city];
     var est=ll?Math.round(haversineRd(hub,ll)*1.15):null; // road factor ~1.15
-    DIST_MISS_LOG[c]={city:s,estimated:est,ts:Date.now()};
+    DIST_MISS_LOG[kp.city]={city:s,state:kp.st,estimated:est,ts:Date.now()};
     if(typeof window!=="undefined")window.__distMissUpdated=(window.__distMissUpdated||0)+1;
   }
   return null;
+}
+// ─── MILEAGE DATA HEALTH ────────────────────────────────────────────────
+// DIST (city name) and ZIPDIST (ZIP code) are two independent hand-built tables
+// covering many of the same places, and they disagree on a number of cities —
+// so the same load prices differently depending on whether the dispatcher typed
+// a ZIP or a city name. Rather than pick a winner blind, this reports the
+// disagreements so they can be settled with DIST_OVERRIDES by someone who runs
+// the lanes. Surfaced under Menu -> Mileage data check.
+function distDisagreements(tolPct){
+  var tol=tolPct==null?0.15:tolPct, byCity={}, out=[];
+  for(var z in ZIPDIST){
+    var e=ZIPDIST[z];
+    var key=e.city.toLowerCase()+", "+e.state;
+    if(!byCity[key])byCity[key]={city:e.city,state:e.state,zipMiles:e.miles,zips:[]};
+    byCity[key].zips.push(z);
+  }
+  for(var k in byCity){
+    var rec=byCity[k];
+    var named=distLookup(rec.city.toLowerCase(),rec.state);
+    if(named==null)continue;
+    var hi=Math.max(named,rec.zipMiles),lo=Math.min(named,rec.zipMiles);
+    if(hi<=0)continue;
+    var diff=(hi-lo)/hi;
+    if(diff>tol)out.push({city:rec.city,state:rec.state,byName:named,byZip:rec.zipMiles,
+                          deltaMi:Math.round(hi-lo),deltaPct:Math.round(diff*100),zips:rec.zips});
+  }
+  return out.sort(function(a,b){return b.deltaMi-a.deltaMi;});
 }
 const TIERS=[[10,200],[25,250],[50,300],[75,350],[100,400],[125,500],[150,550],[175,600],[200,650],[225,700]];
 // Loads beyond LOCAL_MAX_MI from the Romeoville hub are not local runs, so no
@@ -347,9 +462,23 @@ function extractTime(text){
   if(m1){const h=m1[1],mm=m1[2]||"",ap=m1[3].toUpperCase();return h+(mm?":"+mm:"")+ap;}
   const m2=text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
   if(m2)return m2[1]+":"+m2[2];
-  const m3=text.match(/(?:^|\s|[-,;:])([01]\d|2[0-3])([0-5]\d)(?=\s|$|[-,;])/);
-  if(m3)return m3[1]+":"+m3[2];
-  return null;
+  // Bare 4-digit military time. This branch used to fire on weights and piece
+  // counts too — "Weight 2350 lbs" came back as an appointment at 23:50, and
+  // "1800 LBS" as 18:00 — so a fabricated appointment time landed on the load.
+  // Require the number not to be followed by a unit word, and prefer a match
+  // that is introduced by an appointment-ish label when one is present.
+  const RC_UNIT=/^\s*(?:lbs?|pounds?|kg|kgs|plt|plts|pallets?|pcs?|pieces?|cases?|ctns?|cartons?|units?|mi|miles?|ft|lf|cu|cft|%|\$)/i;
+  const re4=/(?:^|\s|[-,;:])([01]\d|2[0-3])([0-5]\d)(?=\s|$|[-,;])/g;
+  let m3,fallback=null;
+  while((m3=re4.exec(text))!==null){
+    const tail=text.slice(m3.index+m3[0].length);
+    if(RC_UNIT.test(tail))continue;                 // "1800 LBS" is not a time
+    const head=text.slice(Math.max(0,m3.index-40),m3.index);
+    const labeled=/(appt|appointment|arrival|arrive|scheduled|pickup|pick\s*up|delivery|deliver|ready|due|window|time|by|at)\s*[:\-]?\s*$/i.test(head);
+    if(labeled)return m3[1]+":"+m3[2];              // labeled beats positional
+    if(fallback===null)fallback=m3[1]+":"+m3[2];
+  }
+  return fallback;
 }
 
 function extractStopFromSection(section){
@@ -366,7 +495,18 @@ function extractStopFromSection(section){
   const tStr=extractTime(section);
   if(dM||tStr){
     let dt="";
-    if(dM)dt+=dM[1]+"/"+dM[2];
+    if(dM){
+      // Keep the YEAR. RC_DATE captures it as group 3 but this builder dropped
+      // it, producing "06/12 14:30". parsePickupDate and parseTS both require
+      // M/D/YYYY, so every load imported through the generic (unknown-broker)
+      // path came back with no date at all: no colour tint on the row and it
+      // sorted to the end of its trailer. _rcFmtDT already carries a comment
+      // saying the year has to stay; this path never got the fix.
+      let yr=dM[3];
+      if(yr==null||yr===""){yr=String(new Date().getFullYear());}
+      else if(String(yr).length===2){yr="20"+yr;}
+      dt+=dM[1]+"/"+dM[2]+"/"+yr;
+    }
     if(tStr)dt+=(dt?" ":"")+tStr;
     out.datetime=dt.trim();
   }
@@ -1066,12 +1206,18 @@ function hashPin(pin){
   return Promise.resolve("fallback_"+h.toString(16).padStart(8,"0"));
 }
 
+// Colours are keyed to LOAD_STATUSES. The old version tested "Loaded",
+// "In Transit" and "Picked Up" — none of which are in LOAD_STATUSES, so those
+// three branches were unreachable — while the two exception states that ARE in
+// the list, Waiting Appt and At Crossdock, had no case and fell through to
+// date-based colouring. A load parked at a crossdock was tinted as though it
+// were a pickup due today.
 function rowColor(load,today,tomorrow){
   if(load.status==="Delivered")return{bar:"#86efac",barBg:"#dcfce7",tc:"#166534"};
-  if(load.status==="Loaded")return{bar:"#22c55e",barBg:"#dcfce7",tc:"#166534"};
-  if(load.status==="In Transit"||load.status==="Dispatched")return{bar:"#fb923c",barBg:"#ffedd5",tc:"#c2410c"};
+  if(load.status===ST_AT_XDOCK)return{bar:"#a855f7",barBg:"#f3e8ff",tc:"#6b21a8"};
+  if(load.status===ST_WAITING_APPT)return{bar:"#f59e0b",barBg:"#fef3c7",tc:"#92400e"};
+  if(load.status==="Dispatched")return{bar:"#fb923c",barBg:"#ffedd5",tc:"#c2410c"};
   if(load.status==="Dock"||load.status==="Yard")return{bar:"#c4b5fd",barBg:"#ede9fe",tc:"#6d28d9"};
-  if(load.status==="Picked Up")return{bar:"#fde047",barBg:"#fef9c3",tc:"#92400e"};
   const pd=parsePickupDate(load.pickup);
   if(!pd)return{bar:"#93c5fd",barBg:"#dbeafe",tc:"#1e40af"};
   const pt=pd.getTime(),t=today.getTime(),tm=tomorrow?tomorrow.getTime():t+86400000;
@@ -1194,7 +1340,15 @@ function calcGroup(g){
     const um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
     return{...l,shipper:s,receiver:r,pickupMiAuto:am,pickupMiUsed:um,rcvMiAuto:rm,localCharge:l.manualLocalCharge!==""&&l.manualLocalCharge!=null?parseFloat(l.manualLocalCharge):localCharge(um),tripPrice:parseFloat(l.rate)||0};
   });
-  const sd=[...loads].sort((a,b)=>parseTS(a.delivery)-parseTS(b.delivery));
+  // parseTS returns Infinity for an unparseable date, and Infinity-Infinity is
+  // NaN — a NaN comparator makes sort order implementation-defined, so a trailer
+  // with two undated loads could renumber its own stops between renders. Compare
+  // explicitly and break ties on id so the order is stable.
+  const sd=[...loads].sort((a,b)=>{
+    const ta=parseTS(a.delivery),tb=parseTS(b.delivery);
+    if(ta!==tb)return ta<tb?-1:1;
+    return String(a.id).localeCompare(String(b.id),undefined,{numeric:true});
+  });
   const so={};sd.forEach((l,i)=>{so[l.id]=i+1;});
   const rcvrs=sd.map(l=>l.receiver).filter(Boolean);
   const tm=g.tripMiles?parseFloat(g.tripMiles):null;
@@ -1213,10 +1367,29 @@ function calcGroup(g){
     const leg=ic!=null?ic:(l.rcvMiAuto&&prev.rcvMiAuto&&l.rcvMiAuto>prev.rcvMiAuto?l.rcvMiAuto-prev.rcvMiAuto:null);
     return {...l,stop:so[l.id]??null,legMiAuto:leg};
   });
-  const autoMi=sdFinal.reduce((s,l)=>{const leg=l.stopMiles?parseFloat(l.stopMiles):(l.legMiAuto||0);return s+leg;},0);
-  const bestAutoMi=autoMi>0?autoMi:(rcvrs.reduce((mx,r)=>{const m=cityMiles(r);return(m&&m>mx)?m:mx;},0)||null);
+  // Summing the legs used to silently treat an unknown leg as 0 miles. Only 130
+  // of the 500+ cities in DIST have coordinates, so on a multi-stop trailer a
+  // missing leg shrank the denominator and the RPM shown to the dispatcher came
+  // out high — the direction that loses money. Track completeness: if any leg is
+  // unknown, fall back to the farthest-receiver estimate for the whole trailer
+  // rather than reporting a total we know is short, and flag it as an estimate.
+  let autoMi=0,legsComplete=true;
+  sdFinal.forEach(l=>{
+    if(l.stopMiles!==""&&l.stopMiles!=null){
+      const manual=parseFloat(l.stopMiles);
+      if(!isNaN(manual)){autoMi+=manual;return;}
+    }
+    if(l.legMiAuto==null){legsComplete=false;return;}
+    autoMi+=l.legMiAuto;
+  });
+  const farthest=rcvrs.reduce((mx,r)=>{const m=cityMiles(r);return(m&&m>mx)?m:mx;},0)||null;
+  const milesEstimated=!legsComplete;
+  // A partial leg sum is still a lower bound, so take whichever is larger.
+  const bestAutoMi=legsComplete
+    ? (autoMi>0?autoMi:farthest)
+    : (farthest!=null?Math.max(farthest,autoMi||0):(autoMi>0?autoMi:null));
   const rpm=(tm&&tm>0)?+((gross-loc)/tm).toFixed(2):(bestAutoMi&&bestAutoMi>0)?+((gross-loc)/bestAutoMi).toFixed(2):null;
-  return{...g,calcTripMi:tm,autoTripMi:bestAutoMi||null,rcvrs,rpm,gross,loc,loads:sdFinal};
+  return{...g,calcTripMi:tm,autoTripMi:bestAutoMi||null,milesEstimated,rcvrs,rpm,gross,loc,loads:sdFinal};
 }
 function sheetsLoad(role,sessToken){
   var headers={};
@@ -1225,9 +1398,15 @@ function sheetsLoad(role,sessToken){
   // Re-read from localStorage each time (user may have updated URL in setup wizard)
   var url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
   if(!url)return Promise.resolve([]);
-  // Append role as query param so Apps Script can filter sensitive fields
-  var sep=url.indexOf("?")>=0?"&":"?";
-  var roleUrl=url+(role?sep+"role="+encodeURIComponent(role):"")+(sessToken?("&st="+encodeURIComponent(sessToken)):"");
+  // Append role as query param so Apps Script can filter sensitive fields.
+  // The old version computed `sep` but only used it inside the role branch, so
+  // when role was empty the token was appended as "...exec&st=TOK" with no "?" —
+  // the token became part of the path, Apps Script saw no st parameter, and the
+  // request loaded unauthenticated. Build the query string properly instead.
+  var qs=[];
+  if(role)qs.push("role="+encodeURIComponent(role));
+  if(sessToken)qs.push("st="+encodeURIComponent(sessToken));
+  var roleUrl=qs.length?url+(url.indexOf("?")>=0?"&":"?")+qs.join("&"):url;
   return fetch(withTok(roleUrl),{redirect:"follow",headers:headers})
     .then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});
 }
@@ -1249,6 +1428,52 @@ function compressPhotoForCloud(photo){
     img.onerror=function(){res(photo);};
     img.src=photo.data;
   });
+}
+
+// ─── SAVE TRANSPORT ─────────────────────────────────────────────────────
+// The POST goes out with mode:"no-cors" because Apps Script's redirect chain
+// breaks a normal CORS POST. Two consequences the old code did not handle:
+//
+//  1. In no-cors mode the browser silently DROPS any header that is not
+//     CORS-safelisted, so "X-App-Token" never reached Apps Script on save (it
+//     did on load, which is a plain CORS request). The token now also rides in
+//     the query string, where it survives.
+//  2. The response is opaque, so an HTTP 401/500 is indistinguishable from
+//     success. What we CAN still detect is a request that never left — offline,
+//     DNS failure, blocked host — because fetch rejects. That is the common
+//     failure in a truck yard with patchy wifi, and it is what the board now
+//     reports and retries.
+function saveUrlWithToken(){
+  var u=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
+  if(!u)return "";
+  var t=localStorage.getItem("fcbv2_sheetsToken")||"";
+  if(t)u=u+(u.indexOf("?")>=0?"&":"?")+"appToken="+encodeURIComponent(t);
+  return withTok(u);
+}
+function postToSheets(payload){
+  var url=saveUrlWithToken();
+  if(!url)return Promise.reject(new Error("No Sheets URL configured"));
+  var headers={"Content-Type":"text/plain;charset=utf-8"};
+  var t=localStorage.getItem("fcbv2_sheetsToken")||"";
+  if(t)headers["X-App-Token"]=t;
+  return fetch(url,{method:"POST",mode:"no-cors",headers:headers,body:JSON.stringify({data:payload})});
+}
+
+// ─── OUTBOX ─────────────────────────────────────────────────────────────
+// A save that never left the browser used to vanish silently while the UI said
+// "✓ Saved". Failed payloads are now parked here and flushed on the next
+// successful save or when the browser comes back online.
+const OUTBOX_KEY="fcbv2_outbox";
+function outboxPeek(){try{var v=localStorage.getItem(OUTBOX_KEY);return v?JSON.parse(v):null;}catch(e){return null;}}
+function outboxPut(payload){try{localStorage.setItem(OUTBOX_KEY,JSON.stringify(payload));}catch(e){/* quota — nothing more we can do here */}}
+function outboxClear(){try{localStorage.removeItem(OUTBOX_KEY);}catch(e){}}
+function outboxFlush(){
+  var p=outboxPeek();
+  if(!p)return Promise.resolve(false);
+  return postToSheets(p).then(function(){outboxClear();return true;}).catch(function(){return false;});
+}
+if(typeof window!=="undefined"){
+  window.addEventListener("online",function(){outboxFlush();});
 }
 
 function sheetsSave(data){
@@ -1273,28 +1498,37 @@ function sheetsSave(data){
       });
     });
   });
-  Promise.all(photoPromises).then(function(results){
-    // Deep clone weeks and inject compressed photos
-    var weeksCopy=JSON.parse(JSON.stringify(weeks));
-    results.forEach(function(compressed,idx){
-      var ref=loadRefs[idx];
-      weeksCopy[ref.wi].groups[ref.gi].loads[ref.li].photos=compressed;
+  // RETURN the promise. Without it this function returned undefined, so the
+  // `await sheetsSave(...)` in saveToSheets resolved on the next microtask —
+  // before photo compression had even started and long before the POST was
+  // issued. The board showed "✓ Saved" for writes that never happened, and its
+  // catch block was unreachable.
+  return Promise.all(photoPromises)
+    .then(function(results){
+      // Deep clone weeks and inject compressed photos
+      var weeksCopy=JSON.parse(JSON.stringify(weeks));
+      results.forEach(function(compressed,idx){
+        var ref=loadRefs[idx];
+        weeksCopy[ref.wi].groups[ref.gi].loads[ref.li].photos=compressed;
+      });
+      return Object.assign({},data,{weeks:weeksCopy,savedAt:savedAt});
+    })
+    .catch(function(){
+      // Photo compression failed (canvas blocked, image decode error). Still
+      // save the board itself — the text is what matters.
+      return Object.assign({},data,{savedAt:savedAt});
+    })
+    .then(function(payload){
+      return postToSheets(payload)
+        .then(function(){
+          // Our write landed; anything parked earlier can go out behind it.
+          return outboxFlush().then(function(){return {ok:true,savedAt:savedAt};});
+        })
+        .catch(function(err){
+          outboxPut(payload);
+          throw err;
+        });
     });
-    var payload=Object.assign({},data,{weeks:weeksCopy,savedAt:savedAt});
-    var saveToken=localStorage.getItem("fcbv2_sheetsToken")||"";
-    var saveHeaders={"Content-Type":"text/plain;charset=utf-8"};
-    if(saveToken)saveHeaders["X-App-Token"]=saveToken;
-    // Use SHEETS_URL which has the hardcoded fallback
-    var _url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
-    if(_url)fetch(withTok(_url),{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
-  }).catch(function(){
-    var saveToken=localStorage.getItem("fcbv2_sheetsToken")||"";
-    var saveHeaders={"Content-Type":"text/plain;charset=utf-8"};
-    if(saveToken)saveHeaders["X-App-Token"]=saveToken;
-    var payload=Object.assign({},data,{savedAt:savedAt});
-    var _url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
-    if(_url)fetch(withTok(_url),{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
-  });
 }
 </script>
 
@@ -1313,7 +1547,21 @@ var MKT_GEO={"AL":"abbeville,3158,-8528|abernant,3329,-8720|adamsville,3359,-869
 function LoginScreen({onLogin,dispatchers:dispProp}){
   const adminPin=localStorage.getItem(ADMIN_PIN_KEY)||"";
   const viewerPin=localStorage.getItem(VIEWER_PIN_KEY)||"";
-  const dispatchers=dispProp&&dispProp.length>0?dispProp:JSON.parse(localStorage.getItem(DISPATCHERS_KEY)||"[]");
+  // Unguarded JSON.parse during render used to take the whole app down: a
+  // truncated fcbv2_dispatchers value (interrupted write) threw inside
+  // LoginScreen, and the only error boundary in the file wraps the load-detail
+  // panel, so the user got a white screen with no way back but clearing site
+  // data. The identical parse further down was already wrapped.
+  const dispatchers=React.useMemo(()=>{
+    if(dispProp&&dispProp.length>0)return dispProp;
+    try{
+      const parsed=JSON.parse(localStorage.getItem(DISPATCHERS_KEY)||"[]");
+      return Array.isArray(parsed)?parsed:[];
+    }catch(e){
+      console.warn("Saved dispatcher list is unreadable; starting from empty.",e);
+      return [];
+    }
+  },[dispProp]);
   const[pin,setPin]=useState("");
   const[err,setErr]=useState("");
   const inputRef=useRef(null);
@@ -1339,11 +1587,20 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
       // Server reachable and said no. If it is enforcing, that answer is
       // final — a stale local PIN must not be able to override it.
       if(j&&j.enforced){setErr("Incorrect PIN — try again");setPin("");return;}
-      localPinCheck();
-    }).catch(localPinCheck);
+      localPinCheck(false);
+    }).catch(function(){
+      // Server unreachable. The cached-PIN path below is a genuine offline
+      // convenience, but it is NOT authentication: the admin PIN sits in
+      // localStorage in plain text, so anyone at this browser can read it, and
+      // anyone who can block the Apps Script host can force this branch. Role
+      // here is a UI state only. The board is safe only to the extent Apps
+      // Script enforces the token server-side (j.enforced) — see SECURITY NOTES
+      // at the top of the App component.
+      localPinCheck(true);
+    });
     return;
 
-    function localPinCheck(){
+    function localPinCheck(offline){
     if(!adminPin&&!viewerPin&&dispatchers.length===0){
       setErr("Board is loading — please wait a moment and try again");
       setPin("");return;
@@ -1364,7 +1621,14 @@ function LoginScreen({onLogin,dispatchers:dispProp}){
         return String(d.pin).trim()===pinStr;
       });
       if(matched){onLogin("dispatcher",matched);return;}
-      setErr("Incorrect PIN — try again");setPin("");
+      setErr(offline?"Incorrect PIN (offline — using the last synced list)":"Incorrect PIN — try again");setPin("");
+    }).catch(function(e){
+      // hashPin rejects wherever WebCrypto is blocked by policy. Without this
+      // catch the button stayed live and the message read "Checking…" forever,
+      // with no error ever shown.
+      console.warn("PIN hashing unavailable",e);
+      setErr("Could not verify the PIN in this browser. Try again over https, or use a different browser.");
+      setPin("");
     });
     }
   };
@@ -1401,11 +1665,17 @@ function SetupWizardForm({onDone}){
   const[sheetsUrl,setSheetsUrl]=React.useState(()=>localStorage.getItem("fcbv2_sheetsUrl")||"");
   const[sheetsToken,setSheetsToken]=React.useState(()=>localStorage.getItem("fcbv2_sheetsToken")||"");
   const[err,setErr]=React.useState("");
+  // `extra` used to be spread into the style object, so the onKeyDown passed for
+  // the last field became style.onKeyDown and was discarded — pressing Enter in
+  // the wizard did nothing and only a mouse click could finish first-run setup.
+  // Spread it onto the input instead. Enter now submits from any of the fields.
   const inp=(label,val,set,extra={})=>(
     <div style={{marginBottom:"14px"}}>
       <label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"5px"}}>{label}</label>
       <input type="password" value={val} onChange={e=>set(e.target.value)}
-        style={{width:"100%",padding:"10px",border:"1px solid #d1d5db",borderRadius:"8px",fontSize:"14px",letterSpacing:"4px",boxSizing:"border-box",...extra}}/>
+        onKeyDown={e=>{if(e.key==="Enter")finish();}}
+        style={{width:"100%",padding:"10px",border:"1px solid #d1d5db",borderRadius:"8px",fontSize:"14px",letterSpacing:"4px",boxSizing:"border-box"}}
+        {...extra}/>
     </div>
   );
   const finish=()=>{
@@ -1425,7 +1695,7 @@ function SetupWizardForm({onDone}){
       {inp("🔐 Admin PIN (full access)",w1,setW1)}
       {inp("Confirm Admin PIN",w2,setW2)}
       {inp("👁 Viewer PIN (read-only)",w3,setW3)}
-      {inp("Confirm Viewer PIN",w4,setW4,{onKeyDown:e=>e.key==="Enter"&&finish()})}
+      {inp("Confirm Viewer PIN",w4,setW4)}
       <div style={{borderTop:"1px solid #e2e8f0",margin:"16px 0 14px"}}/>
       <div style={{marginBottom:"14px"}}>
         <label style={{fontSize:"11px",fontWeight:"700",color:"#374151",display:"block",marginBottom:"5px"}}>📋 Google Sheets URL <span style={{color:"#94a3b8",fontWeight:"400"}}>(optional)</span></label>
@@ -1510,6 +1780,17 @@ class DetailErrorBoundary extends React.Component{
 }
 
 function LoadDetailPanel({loadDetailId,weeks,isAdmin,isDispatcher,canSeeBroker,setLoadDetailId,setPhotoModal,setPhotoViewer,goToLoad}){
+  const close=React.useCallback(()=>setLoadDetailId(null),[setLoadDetailId]);
+  // Escape now closes the panel. Previously the "×" button was the only way out
+  // and its handler also called setShowSectionNav, which is declared inside App
+  // and was never passed down — so every close threw ReferenceError and the
+  // panel became unclosable. There is no backdrop either, so add one below.
+  // (Hook stays above the early return so the hook order never changes.)
+  React.useEffect(()=>{
+    const onKey=e=>{if(e.key==="Escape")close();};
+    window.addEventListener("keydown",onKey);
+    return()=>window.removeEventListener("keydown",onKey);
+  },[close]);
   const detWk=weeks.find(w=>w.id===loadDetailId.weekId);
   const detGrp=detWk&&(detWk.groups||[]).find(g=>(g.loads||[]).some(l=>l.id===loadDetailId.loadId));
   const detLoad=detGrp&&(detGrp.loads||[]).find(l=>l.id===loadDetailId.loadId);
@@ -1517,8 +1798,12 @@ function LoadDetailPanel({loadDetailId,weeks,isAdmin,isDispatcher,canSeeBroker,s
   const sr=parseSR(detLoad.sr||"");
   const shipper=sr.s||"";
   const receiver=sr.r||"";
-  const stopNum=(detGrp.loads||[]).findIndex(l=>l.id===loadDetailId.loadId)+1;
-  const totalStops=(detGrp.loads||[]).length;
+  // Stop number must match the board, which renders calcGroup's delivery-sorted
+  // order. Raw array order made the row badge and this header disagree whenever
+  // loads were entered out of delivery sequence.
+  const detOrdered=(calcGroup(detGrp).loads||[]);
+  const stopNum=(detOrdered.findIndex(l=>l.id===loadDetailId.loadId)+1)||1;
+  const totalStops=detOrdered.length;
   // Photos are stored as {data, name} objects OR as plain strings (legacy/placeholder)
   const realPhotos=(detLoad.photos||[]).filter(p=>p&&typeof p==="object"&&(p.data||p.url));
   const hasPhotos=realPhotos.length>0;
@@ -1539,14 +1824,17 @@ function LoadDetailPanel({loadDetailId,weeks,isAdmin,isDispatcher,canSeeBroker,s
     (detLoad.trailer||detGrp.groupTrailer)?["Trailer","#"+(detLoad.trailer||detGrp.groupTrailer)]:null,
   ].filter(Boolean);
   return(
+   <React.Fragment>
+    {/* Backdrop: click-outside to dismiss, which the panel previously had no way to do. */}
+    <div onClick={close} style={{position:"fixed",inset:0,background:"rgba(15,31,61,0.25)",zIndex:2999}}/>
     <div onClick={e=>e.stopPropagation()} style={{position:"fixed",top:0,right:0,bottom:0,width:"380px",background:"#fff",boxShadow:"-4px 0 32px rgba(0,0,0,0.2)",zIndex:3000,display:"flex",flexDirection:"column"}}>
       <div style={{background:"#0f1f3d",padding:"14px 16px",display:"flex",alignItems:"center",gap:"10px",flexShrink:0}}>
         <div style={{flex:1}}>
           <div style={{color:"#fff",fontWeight:"800",fontSize:"13px"}}>📋 Load Detail</div>
           <div style={{color:"#93c5fd",fontSize:"11px",marginTop:"2px"}}>{detWk.label||""} · Stop {stopNum}/{totalStops}</div>
         </div>
-        <button onClick={()=>goToLoad(loadDetailId.weekId,loadDetailId.loadId)} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:"7px",padding:"6px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>→ Go to Load</button>
-        <button onClick={()=>{setLoadDetailId(null);setShowSectionNav(false);}} style={{background:"rgba(255,255,255,0.12)",color:"#fff",border:"none",borderRadius:"7px",width:"30px",height:"30px",cursor:"pointer",fontSize:"18px",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+        <button onClick={()=>{goToLoad(loadDetailId.weekId,loadDetailId.loadId);close();}} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:"7px",padding:"6px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>→ Go to Load</button>
+        <button onClick={close} title="Close (Esc)" style={{background:"rgba(255,255,255,0.12)",color:"#fff",border:"none",borderRadius:"7px",width:"30px",height:"30px",cursor:"pointer",fontSize:"18px",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
       </div>
       <div style={{flex:1,overflowY:"auto",padding:"14px",display:"flex",flexDirection:"column",gap:"12px"}}>
         <div style={{background:"#f8fafc",borderRadius:"10px",padding:"12px",border:"1px solid #e2e8f0"}}>
@@ -1618,6 +1906,7 @@ function LoadDetailPanel({loadDetailId,weeks,isAdmin,isDispatcher,canSeeBroker,s
         </div>
       </div>
     </div>
+   </React.Fragment>
   );
 }
 
@@ -1955,10 +2244,21 @@ function MarketDieselPanel({data,status,err,load,regionCode,setRegionCode,sel,av
   const FSC_PRESETS=["1.20","1.25","2.00"];
   const baseN=parseFloat(baseline),mpgN=parseFloat(mpg);
   const fscValid=isFinite(baseN)&&isFinite(mpgN)&&mpgN>0&&sel&&isFinite(sel.price);
+  // A feed row can come back with price:null. Format once, defensively, and use
+  // this everywhere instead of calling .toFixed on a value that may be null.
+  const priceOk=!!sel&&typeof sel.price==="number"&&isFinite(sel.price);
+  const priceTxt=priceOk?sel.price.toFixed(3):"—";
+  // The selected region may not be in what the feed actually returned; `sel`
+  // silently falls back to the national average. Say so rather than printing the
+  // national number under a state label — a dispatcher quoting a California
+  // surcharge off the U.S. average is a real money error.
+  const regionMeta=(MKT_REGIONS.find(r=>r.code===regionCode)||{});
+  const regionFellBack=!!sel&&sel.code!==regionCode;
+  const shownRegion=regionFellBack?"U.S. average":(regionMeta.short||regionMeta.name||"");
   const fsc=fscValid?Math.max(0,(sel.price-baseN)/mpgN):null;
   const card={background:"#fff",borderRadius:"12px",padding:"18px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #e2e8f0"};
   return(
-    <div style={card}>
+    <div style={{...card,...fill}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"8px",flexWrap:"wrap",marginBottom:"14px"}}>
         <div>
           <div style={{fontSize:"16px",fontWeight:"800",color:"#0f1f3d"}}>⛽ National diesel prices</div>
@@ -2001,7 +2301,7 @@ function MarketDieselPanel({data,status,err,load,regionCode,setRegionCode,sel,av
 
           {/* Headline price */}
           <div style={{display:"flex",alignItems:"flex-end",gap:"12px",flexWrap:"wrap",marginBottom:"4px"}}>
-            <div style={{fontSize:"34px",fontWeight:"900",color:"#0f1f3d",lineHeight:"1"}}>${sel.price.toFixed(3)}</div>
+            <div style={{fontSize:"34px",fontWeight:"900",color:"#0f1f3d",lineHeight:"1"}}>${priceTxt}</div>
             <div style={{fontSize:"12px",color:"#64748b",fontWeight:"600",paddingBottom:"4px"}}>per gallon</div>
             {typeof sel.change==="number"&&isFinite(sel.change)&&(
               <div style={{fontSize:"12px",fontWeight:"800",paddingBottom:"4px",color:sel.change>0?"#dc2626":sel.change<0?"#059669":"#64748b"}}>
@@ -2009,7 +2309,11 @@ function MarketDieselPanel({data,status,err,load,regionCode,setRegionCode,sel,av
               </div>
             )}
           </div>
-          <div style={{fontSize:"11px",color:"#64748b",marginBottom:"10px"}}>{(MKT_REGIONS.find(r=>r.code===regionCode)||{}).label}</div>
+          <div style={{fontSize:"11px",color:"#64748b",marginBottom:"10px"}}>
+            {regionFellBack
+              ? <span style={{color:"#b45309",fontWeight:"700"}}>⚠ {regionMeta.label||"That region"} was not in this week's release — showing the U.S. average</span>
+              : (regionMeta.label||"")}
+          </div>
 
           <div style={{marginBottom:"6px"}}><MktSparkline points={sel.history||[]}/></div>
           <div style={{fontSize:"10px",color:"#94a3b8",marginBottom:"14px"}}>
@@ -2046,7 +2350,7 @@ function MarketDieselPanel({data,status,err,load,regionCode,setRegionCode,sel,av
             </div>
             {fscValid&&baseN>sel.price-0.75&&(
               <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:"6px",padding:"7px 9px",marginTop:"8px",fontSize:"11px",color:"#92400e",lineHeight:"1.5"}}>
-                A baseline of ${baseN.toFixed(2)} sits close to the current ${sel.price.toFixed(3)}, which drives the surcharge to almost nothing.
+                A baseline of ${baseN.toFixed(2)} sits close to the current ${priceTxt}, which drives the surcharge to almost nothing.
                 Most contracts use a baseline near $1.25.
               </div>
             )}
@@ -2056,7 +2360,7 @@ function MarketDieselPanel({data,status,err,load,regionCode,setRegionCode,sel,av
               </div>
             )}
             <div style={{fontSize:"10px",color:"#94a3b8",marginTop:"6px",lineHeight:"1.5"}}>
-              ({(MKT_REGIONS.find(r=>r.code===regionCode)||{}).short} ${sel.price.toFixed(3)} − {isFinite(baseN)?"$"+baseN.toFixed(2):"—"}) ÷ {isFinite(mpgN)&&mpgN>0?mpgN:"—"} MPG.
+              ({shownRegion} ${priceTxt} − {isFinite(baseN)?"$"+baseN.toFixed(2):"—"}) ÷ {isFinite(mpgN)&&mpgN>0?mpgN:"—"} MPG.
               Your contract may round differently or use a stepped table.
             </div>
           </div>
@@ -2094,7 +2398,11 @@ function MarketCarrierPanel(){
   const lblSt={fontSize:"10px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"4px",display:"block"};
 
   const c=res&&res.carrier?res.carrier:null;
-  const ok=c&&c.allowedToOperate===true;
+  // allowedToOperate is tri-state — the yn() helper on the next line already
+  // models that. Treating "field absent" as false made the panel assert, in red,
+  // that a legitimate broker was not authorized to operate.
+  const authKnown=!!c&&(c.allowedToOperate===true||c.allowedToOperate===false);
+  const ok=!!c&&c.allowedToOperate===true;
   const yn=v=>v===true?"Yes":v===false?"No":"—";
 
   const Row=({label,value,strong,color})=>(
@@ -2153,9 +2461,9 @@ function MarketCarrierPanel(){
 
       {status==="ok"&&c&&(
         <div>
-          <div style={{background:ok?"#f0fdf4":"#fef2f2",border:`1px solid ${ok?"#bbf7d0":"#fecaca"}`,borderRadius:"8px",padding:"12px 14px",marginBottom:"12px"}}>
-            <div style={{fontSize:"13px",fontWeight:"900",color:ok?"#166534":"#991b1b",marginBottom:"2px"}}>
-              {ok?"✓ Authorized to operate":"✕ Not authorized to operate"}
+          <div style={{background:!authKnown?"#f8fafc":(ok?"#f0fdf4":"#fef2f2"),border:`1px solid ${!authKnown?"#e2e8f0":(ok?"#bbf7d0":"#fecaca")}`,borderRadius:"8px",padding:"12px 14px",marginBottom:"12px"}}>
+            <div style={{fontSize:"13px",fontWeight:"900",color:!authKnown?"#64748b":(ok?"#166534":"#991b1b"),marginBottom:"2px"}}>
+              {!authKnown?"— Authority status not reported by FMCSA":(ok?"✓ Authorized to operate":"✕ Not authorized to operate")}
             </div>
             <div style={{fontSize:"15px",fontWeight:"800",color:"#0f1f3d",lineHeight:"1.3"}}>{c.legalName||"—"}</div>
             {c.dbaName&&<div style={{fontSize:"12px",color:"#475569",fontWeight:"600"}}>dba {c.dbaName}</div>}
@@ -2980,10 +3288,20 @@ function EmailRecipientModal({emails,group,onCancel,onSend}){
   const[sel,setSel]=useState(()=>{
     // Remember the last selection — most sends go to the same few people.
     try{
-      const prev=JSON.parse(localStorage.getItem("fcbv2_lastEmailPick")||"null");
-      if(Array.isArray(prev)&&prev.length){
+      // Stored as {picked, roster}: who was ticked, and who was on the list at
+      // the time. Keeping the roster is what lets a dispatcher added since then
+      // start ticked while someone deliberately unticked stays unticked.
+      // Previously only the intersection with `picked` survived, so a new
+      // dispatcher was silently dropped from every send — contradicting this
+      // modal's own "everyone is ticked by default" contract. The old
+      // bare-array format is still read.
+      const raw=JSON.parse(localStorage.getItem("fcbv2_lastEmailPick")||"null");
+      const prev=Array.isArray(raw)?raw:(raw&&Array.isArray(raw.picked)?raw.picked:null);
+      const roster=(raw&&Array.isArray(raw.roster))?raw.roster:prev;
+      if(prev&&prev.length){
         const keep=emails.filter(e=>prev.indexOf(e)>=0);
-        if(keep.length)return keep;
+        const addedSince=roster?emails.filter(e=>roster.indexOf(e)<0):[];
+        if(keep.length||addedSince.length)return keep.concat(addedSince);
       }
     }catch(e){}
     return emails.slice();
@@ -2994,7 +3312,7 @@ function EmailRecipientModal({emails,group,onCancel,onSend}){
 
   const send=()=>{
     if(!sel.length)return;
-    try{localStorage.setItem("fcbv2_lastEmailPick",JSON.stringify(sel));}catch(e){}
+    try{localStorage.setItem("fcbv2_lastEmailPick",JSON.stringify({picked:sel,roster:emails}));}catch(e){}
     onSend(sel);
   };
 
@@ -3126,6 +3444,15 @@ function App(){
   const[driverDateFrom,setDriverDateFrom]=useState("");
   const[driverDateTo,setDriverDateTo]=useState("");
   const[saveStatus,setSaveStatus]=useState("idle");
+  // pendingSave: a write is sitting in the outbox because the request could not
+  // leave the browser. storageFull: the local backup copy could not be written.
+  // Neither condition had any indicator before — both failed silently.
+  const[pendingSave,setPendingSave]=useState(()=>!!outboxPeek());
+  const[storageFull,setStorageFull]=useState(false);
+  const[showMileageCheck,setShowMileageCheck]=useState(false);
+  // Cities where the name table and the ZIP table give materially different
+  // mileage from the yard. Computed once — both tables are static.
+  const mileageIssues=React.useMemo(()=>distDisagreements(0.15),[]);
   const[loading,setLoading]=useState(true);
   const[apiKey,setApiKey]=useState(()=>localStorage.getItem("fcbv2_apikey")||"");
   const[showPinModal,setShowPinModal]=useState(false);
@@ -3269,11 +3596,21 @@ function App(){
           let claimDetected = false;
           setWeeks(prevWeeks => {
             if (!serverWeeks.length) return prevWeeks;
-            const merged = prevWeeks.map((pw, wi) => {
-              const sw = serverWeeks[wi];
+            // Match weeks and trailers BY ID, not by array position. The old
+            // code paired prevWeeks[wi] with serverWeeks[wi] and pg[gi] with
+            // sg[gi], so the moment anyone added or deleted a trailer every
+            // later index shifted and the next poll copied one trailer's driver
+            // and claim stamp onto a different trailer — a load assigned to a
+            // driver who never claimed it.
+            const swById = {};
+            serverWeeks.forEach(sw => { if (sw && sw.id != null) swById[sw.id] = sw; });
+            const merged = prevWeeks.map((pw) => {
+              const sw = swById[pw.id];
               if (!sw) return pw;
-              const mergedGroups = (pw.groups || []).map((pg, gi) => {
-                const sg = (sw.groups || [])[gi];
+              const sgById = {};
+              (sw.groups || []).forEach(g => { if (g && g.id != null) sgById[g.id] = g; });
+              const mergedGroups = (pw.groups || []).map((pg) => {
+                const sg = sgById[pg.id];
                 if (!sg) return pg;
                 // If server has a driver claim that local doesn't — take server version
                 const serverHasClaim = sg.groupDriver && sg.securedAt;
@@ -3437,6 +3774,10 @@ function App(){
   const toggleLoadExpand=(lid)=>setExpandedLoads(prev=>({...prev,[lid]:!prev[lid]})); // "default"|"pickup"|"delivery"
   const[showHdrMenu,setShowHdrMenu]=useState(false);
   const dragGroupIdx=useRef(null);
+  // undoLast is declared further down (it needs saveToSheets), but the keyboard
+  // handler above it must call the current version — hold it in a ref rather
+  // than referencing the const before its declaration.
+  const undoLastRef=useRef(null);
   const[dragOverIdx,setDragOverIdx]=useState(null);
   const dragLoad=useRef(null); // {loadId, fromGroupId}
   const dragOverTarget=useRef(null); // track via ref, no re-renders
@@ -3471,11 +3812,18 @@ function App(){
         if(sheetsHasData&&local.weeks&&local.weeks.length>0){
           const localSavedRecently=(now=>now-localSavedAt<30000)(Date.now());
           if(localSavedRecently){
-            rawWeeks.forEach(function(sw,wi){
-              const lw=local.weeks&&local.weeks[wi];
+            // Match by id, not array position — same reason as the live poll
+            // below. A trailer added or deleted locally shifted every later
+            // index and transplanted claims onto unrelated trailers.
+            const lwById={};
+            (local.weeks||[]).forEach(function(w){if(w&&w.id!=null)lwById[w.id]=w;});
+            rawWeeks.forEach(function(sw){
+              const lw=lwById[sw.id];
               if(!lw)return;
-              (sw.groups||[]).forEach(function(sg,gi){
-                const lg=(lw.groups||[])[gi];
+              const lgById={};
+              (lw.groups||[]).forEach(function(g){if(g&&g.id!=null)lgById[g.id]=g;});
+              (sw.groups||[]).forEach(function(sg){
+                const lg=lgById[sg.id];
                 if(!lg)return;
                 const lgAt=lg.securedAt||0;
                 const sgAt=sg.securedAt||0;
@@ -3493,8 +3841,13 @@ function App(){
         const stripTripPrice=(weeks)=>weeks.map(w=>({...w,groups:(w.groups||[]).map(g=>({...g,loads:(g.loads||[]).map(l=>{const{tripPrice:_,...rest}=l;return rest;})}))}));
         if(sheetsHasData)rawWeeks.splice(0,rawWeeks.length,...stripTripPrice(rawWeeks));
         if(local.weeks)local.weeks=stripTripPrice(local.weeks);
-        // F1: remember when server data was last seen
-        lastLoadedServerTs.current=sheetsSavedAt;
+        // F1: remember when server data was last seen.
+        // This assignment used to run BEFORE the concurrent-edit guard below,
+        // which then compared sheetsSavedAt against a value it had just set to
+        // sheetsSavedAt — i.e. `x > x + 60000`, always false. The guard and its
+        // modal were dead code, so a second admin's load silently replaced the
+        // first one's work. Capture the previous value first and assign after.
+        const prevLoadedServerTs=lastLoadedServerTs.current;
         if(useLocalData){if(local.customDrivers)setCustomDrivers(local.customDrivers); if(Array.isArray(local.terminatedDrivers))setTerminatedDrivers(local.terminatedDrivers);if(local.customTrucks)setCustomTrucks(local.customTrucks);if(local.customTrailers)setCustomTrailers(local.customTrailers);if(local.dispatchers)setDispatchers(local.dispatchers);const storedPhotosL=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");const localWithPhotos=(local.weeks||[]).map(function(wk){
             return {...wk,groups:(wk.groups||[]).map(function(g){
               return {...g,loads:(g.loads||[]).map(function(l){
@@ -3512,12 +3865,13 @@ function App(){
         //   2) User has made local changes since they last loaded (localSavedAt > lastLoadedServerTs)
         //   3) The gap is > 60s (not just clock drift)
         //   4) We already loaded once before (lastLoadedServerTs > 0)
-        if(rawWeeks.length>0&&lastLoadedServerTs.current>0&&sheetsSavedAt>lastLoadedServerTs.current+60000&&localSavedAt>lastLoadedServerTs.current+5000){
+        if(rawWeeks.length>0&&prevLoadedServerTs>0&&sheetsSavedAt>prevLoadedServerTs+60000&&localSavedAt>prevLoadedServerTs+5000){
           pendingServerData.current={rawWeeks,data};
           setShowOverwriteWarn(true);
           setLoading(false);
           return;
         }
+        lastLoadedServerTs.current=sheetsSavedAt;
         if(rawWeeks.length>0){
           const storedPhotos=JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");
           const rawWithPhotos=rawWeeks.map(function(wk){
@@ -3627,19 +3981,22 @@ function App(){
     return()=>clearInterval(distPoll);
   },[]);
 
+  // activeTab is read inside the handler, so it has to be a dependency. With an
+  // empty array the handler closed over the mount-time value ("dashboard"), and
+  // since the shortcut is suppressed on the Dashboard, Ctrl+F never opened
+  // search on any tab for the whole session. Undo also needs to persist — see
+  // undoLast below; restoring state without saving meant the delete's own
+  // debounced save had already gone out and the undo never did.
   useEffect(()=>{
     const handler=(e)=>{
-      if((e.ctrlKey||e.metaKey)&&e.key==="z"){e.preventDefault();
-        setUndoStack(stk=>{if(!stk.length)return stk;const[last,...rest]=stk;setWeeks(last);return rest;});
-        return;
-      }
+      if((e.ctrlKey||e.metaKey)&&e.key==="z"){e.preventDefault();if(undoLastRef.current)undoLastRef.current();return;}
       // Search is not offered on the Dashboard, so the shortcut is off there too.
       if((e.ctrlKey||e.metaKey)&&e.key==="f"&&activeTab!=="dashboard"){e.preventDefault();setShowSearch(s=>{if(!s)setTimeout(()=>searchRef.current?.focus(),50);return true;}); }
       if(e.key==="Escape"){setShowSearch(false);setShowHdrMenu(false);setShowSummary(false);}
     };
     window.addEventListener("keydown",handler);
     return()=>window.removeEventListener("keydown",handler);
-  },[]);
+  },[activeTab]);
 
   useEffect(()=>{
     if(!searchQuery.trim()){setSearchResults([]);setSearchIdx(0);return;}
@@ -3815,7 +4172,7 @@ function App(){
     if(!confirm("Archive this week?"))return;
     const w=weeks[weekIdx];const entry={...w,archivedAt:new Date().toLocaleString()};
     const newArchive=[entry,...archivedWeeks];
-    setArchivedWeeks(newArchive);localStorage.setItem("fcbv2_archive",JSON.stringify(newArchive));
+    setArchivedWeeks(newArchive);writeArchive(newArchive);
     const remaining=weeks.filter((_,i)=>i!==weekIdx);
     setWeeks(remaining);setActiveWeek(0);
     // Save weeks AND archive together so the archive syncs to Sheets immediately.
@@ -3829,7 +4186,7 @@ function App(){
     const stamped=cands.map(c=>({...c,archivedAt:new Date().toLocaleString()}));
     const newArchive=[...stamped,...archivedWeeks];
     setArchivedWeeks(newArchive);
-    localStorage.setItem("fcbv2_archive",JSON.stringify(newArchive));
+    writeArchive(newArchive);
     const remaining=weeks.filter(w=>!ids.has(w.id));
     const finalWeeks=remaining.length?remaining:weeks;
     setWeeks(finalWeeks);setActiveWeek(0);
@@ -3843,14 +4200,14 @@ function App(){
     if(!w)return;
     const newArchive=archivedWeeks.filter((_,j)=>j!==archIdx);
     const newWeeks=[w,...weeks];
-    setArchivedWeeks(newArchive);localStorage.setItem("fcbv2_archive",JSON.stringify(newArchive));
+    setArchivedWeeks(newArchive);writeArchive(newArchive);
     setWeeks(newWeeks);setActiveWeek(0);
     saveToSheets({weeks:newWeeks,archive:newArchive});
   };
   // Permanently delete an archived week — syncs the archive.
   const deleteArchivedWeek=(archIdx)=>{
     const newArchive=archivedWeeks.filter((_,j)=>j!==archIdx);
-    setArchivedWeeks(newArchive);localStorage.setItem("fcbv2_archive",JSON.stringify(newArchive));
+    setArchivedWeeks(newArchive);writeArchive(newArchive);
     saveToSheets({archive:newArchive});
   };
 
@@ -3973,20 +4330,76 @@ function App(){
             })};
           })};
         });
-        try{localStorage.setItem("fcbv2_photos",JSON.stringify(photoStore));}catch(e){}
+        // These writes can throw QuotaExceededError once photos and the archive
+        // grow — a silent catch meant the offline copy quietly stopped updating
+        // while the header still said "✓ Saved". Surface it.
+        try{localStorage.setItem("fcbv2_photos",JSON.stringify(photoStore));}
+        catch(e){console.warn("Photo cache is full — photos will not survive a reload.",e);setStorageFull(true);}
         localStorage.setItem(LS_KEY,JSON.stringify({weeks:wNoPhotos,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,terminatedDrivers:tdrv,savedAt:Date.now()}));
         localStorage.setItem("fcbv2_truckassign",JSON.stringify(ta));
-      }catch(e){}
-      // Sheets save — no-cors fetch always throws TypeError on redirect but data still saves
+        setStorageFull(false);
+      }catch(e){
+        console.warn("Local backup copy could not be written.",e);
+        setStorageFull(true);
+      }
+      // Sheets save. sheetsSave now returns its promise, so this await is real:
+      // it resolves when the POST has actually been dispatched and rejects when
+      // the request never left the browser. Previously sheetsSave returned
+      // undefined, so this resolved instantly and the board reported "✓ Saved"
+      // for writes that had not started — and the catch below was unreachable.
       try{
         await sheetsSave({weeks:w,customDrivers:cd,customTrucks:ct,customTrailers:ctr,dispatchers:disp,truckAssignments:ta,archive:arch,terminatedDrivers:tdrv,dispatcherEmails:(ls.dispatcherEmails&&ls.dispatcherEmails.length?ls.dispatcherEmails:(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_disp_emails")||"[]");}catch(e){return[];}})()),
         adminPin:localStorage.getItem(ADMIN_PIN_KEY)||"",viewerPin:localStorage.getItem(VIEWER_PIN_KEY)||""});
+        setPendingSave(false);
         setSaveStatus("saved");setTimeout(()=>setSaveStatus("idle"),3000);
       }catch(err){
-        // TypeError = no-cors redirect quirk — data already in localStorage, treat as saved
-        setSaveStatus("saved");setTimeout(()=>setSaveStatus("idle"),3000);
+        // The request never left. The payload is parked in the outbox and will
+        // go out on the next successful save or when the browser reconnects.
+        console.warn("Sheets save did not go out; queued for retry.",err);
+        setPendingSave(true);
+        setSaveStatus("error");
       }
     },1000);
+  },[]);
+
+  // Flush anything the outbox is holding: on demand from the banner, when the
+  // browser reconnects, and every two minutes while a save is still pending.
+  const retryQueuedSave=useCallback(()=>{
+    setSaveStatus("saving");
+    outboxFlush().then(sent=>{
+      if(sent||!outboxPeek()){
+        setPendingSave(false);setSaveStatus("saved");setTimeout(()=>setSaveStatus("idle"),3000);
+      }else{
+        setPendingSave(true);setSaveStatus("error");
+      }
+    });
+  },[]);
+  useEffect(()=>{
+    if(!pendingSave)return;
+    const onOnline=()=>retryQueuedSave();
+    window.addEventListener("online",onOnline);
+    const t=setInterval(()=>{if(navigator.onLine!==false)retryQueuedSave();},120000);
+    return()=>{window.removeEventListener("online",onOnline);clearInterval(t);};
+  },[pendingSave,retryQueuedSave]);
+  // Last line of defence: warn before the tab closes on unsaved work.
+  useEffect(()=>{
+    if(!pendingSave)return;
+    const onBeforeUnload=e=>{e.preventDefault();e.returnValue="";};
+    window.addEventListener("beforeunload",onBeforeUnload);
+    return()=>window.removeEventListener("beforeunload",onBeforeUnload);
+  },[pendingSave]);
+
+  // localStorage writes for the archive must never throw out of a handler —
+  // archiveWeek updates React state on both sides of the write, so a
+  // QuotaExceededError mid-handler left the board internally inconsistent and
+  // silently lost the archived week on reload.
+  const writeArchive=useCallback((arch)=>{
+    try{localStorage.setItem("fcbv2_archive",JSON.stringify(arch));setStorageFull(false);return true;}
+    catch(e){
+      console.warn("Archive could not be written — this browser's storage is full.",e);
+      setStorageFull(true);
+      return false;
+    }
   },[]);
 
   const setWeeksAndSave=useCallback((updater)=>{
@@ -3999,6 +4412,21 @@ function App(){
       return next;
     });
   },[saveToSheets]);
+
+  // Undo restores the previous board AND persists it. Both callers used to call
+  // setWeeks directly, so the change being undone had already gone to Sheets via
+  // its own debounced save while the undo never did: a deleted trailer came back
+  // on screen, then vanished again on the next reload.
+  const undoLast=useCallback(()=>{
+    setUndoStack(stk=>{
+      if(!stk.length)return stk;
+      const[last,...rest]=stk;
+      setWeeks(last);
+      saveToSheets(last);
+      return rest;
+    });
+  },[saveToSheets]);
+  useEffect(()=>{undoLastRef.current=undoLast;},[undoLast]);
 
   const week=weeks[Math.min(activeWeek,weeks.length-1)];
   // Merged set: live + archived weeks. Used by statistics, driver scores, top
@@ -4820,7 +5248,10 @@ function App(){
       // Manual override — keyed by freight week id (or "noweek" if none)
       const ovKey=freightWeek?.id||"noweek";
       const ov=payrollOverrides[ovKey]?.[disp.name];
-      const total=ov&&ov.amount!==""&&ov.amount!=null?parseFloat(ov.amount):computed;
+      const ovNum=(ov&&ov.amount!==""&&ov.amount!=null)
+        ? parseFloat(String(ov.amount).replace(/[^0-9.\-]/g,""))   // tolerate "$2,200"
+        : NaN;
+      const total=isFinite(ovNum)?ovNum:computed;
       results.push({
         name:disp.name,
         isZygis,
@@ -5288,8 +5719,12 @@ function App(){
       const rates=(g.loads||[]).map(l=>parseFloat(l.rate)||0).sort((a,b)=>b-a);
       return s+rates.slice(1).reduce((x,r)=>x+r,0);
     },0);
+    // Same fix as the Dashboard: calcTripMi/autoTripMi are calcGroup outputs and
+    // are not present on the stored groups, so auto-routed trailers contributed
+    // zero miles to the weekly summary.
     const allMi=grps.reduce((s,g)=>{
-      const raw=g.tripMiles!==""&&g.tripMiles!=null?parseFloat(g.tripMiles):g.calcTripMi?parseFloat(g.calcTripMi):g.autoTripMi?parseFloat(g.autoTripMi):0;
+      const cg=calcGroup(g);
+      const raw=g.tripMiles!==""&&g.tripMiles!=null?parseFloat(g.tripMiles):(cg.calcTripMi||cg.autoTripMi||0);
       return s+(isNaN(raw)?0:raw);
     },0);
     const rpm=allMi>0?Math.round((netGross/allMi)*100)/100:0;
@@ -5708,10 +6143,45 @@ ${accRows.length>0?`
     setManualPlannedOrder({...manualPlannedOrder,[week.id]:next});
     if(!manualOrderActive)setManualOrderActive(true);
   };
+  // Drop `gid` at the position `targetGid` currently occupies on screen.
+  // Drag-reorder used to splice week.groups using indices taken from the
+  // filtered/sorted render list, so under any filter other than "all" — or in
+  // manual-order mode — dragging trailer #3 above trailer #1 moved two entirely
+  // unrelated trailers and then persisted it. Going through the same id-based
+  // manual order the arrow buttons use makes both controls agree.
+  const dropPlannedTrailer=(currentVisibleOrder, gid, targetGid)=>{
+    if(gid==null||targetGid==null||gid===targetGid)return;
+    const visibleIds=currentVisibleOrder.map(g=>g.id);
+    const visibleSet=new Set(visibleIds);
+    const savedIds=(manualPlannedOrder[week.id]||[]).filter(id=>visibleSet.has(id));
+    const seedOrder=savedIds.slice();
+    for(const id of visibleIds){if(!seedOrder.includes(id))seedOrder.push(id);}
+    const from=seedOrder.indexOf(gid);
+    if(from<0)return;
+    const next=seedOrder.slice();
+    next.splice(from,1);
+    const to=next.indexOf(targetGid);
+    if(to<0)return;
+    next.splice(to,0,gid);
+    setManualPlannedOrder({...manualPlannedOrder,[week.id]:next});
+    if(!manualOrderActive)setManualOrderActive(true);
+  };
 
   const addLoad=gid=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:[...g.loads,mkLoad()]}));
   const removeLoad=(gid,lid)=>setW("groups",week.groups.map(g=>{if(g.id!==gid)return g;const ls=g.loads.filter(l=>l.id!==lid);return{...g,loads:ls.length?ls:[mkLoad()]};}));
-  const moveLoad=(fromGid,toGid,lid,toPosition)=>{
+  // toPosition is a raw index into the destination trailer's loads array.
+  // beforeLoadId is the preferred form: the drop target's load id, resolved to a
+  // raw index here. The board renders calcGroup's delivery-sorted order, so the
+  // visual index a drop handler sees is NOT the array index — passing it
+  // straight through dropped the load in the wrong place and shuffled the stop
+  // numbers.
+  const moveLoad=(fromGid,toGid,lid,toPosition,beforeLoadId)=>{
+    if(beforeLoadId!=null){
+      const destG=week.groups.find(g=>g.id===toGid);
+      const raw=destG?(destG.loads||[]).findIndex(l=>l.id===beforeLoadId):-1;
+      toPosition=raw>=0?raw:(destG?(destG.loads||[]).length:0);
+    }
+    if(toPosition==null)toPosition=0;
     if(fromGid===toGid){
       // Reorder within same trailer
       const g=week.groups.find(g=>g.id===fromGid);
@@ -6019,6 +6489,66 @@ ${accRows.length>0?`
     </div>)}
 
     {/* F1: OVERWRITE WARNING MODAL */}
+    {showMileageCheck&&(<div className="modal-bg" onClick={()=>setShowMileageCheck(false)}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"640px",width:"100%",maxHeight:"80vh",display:"flex",flexDirection:"column"}}>
+        <div style={{padding:"16px 18px 10px",borderBottom:"1px solid #f1f5f9"}}>
+          <div style={{fontSize:"15px",fontWeight:"800",color:"#0f1f3d"}}>📏 Mileage data check</div>
+          <div style={{fontSize:"11px",color:"#64748b",marginTop:"3px",lineHeight:"1.5"}}>
+            The board holds two mileage tables from the Romeoville yard — one keyed by city name, one by ZIP.
+            Where they disagree, the same load prices differently depending on whether a dispatcher typed a ZIP
+            or a city. These are the cities where they differ by more than 15%. Nothing here is corrected
+            automatically; set the number you run and it is used everywhere.
+          </div>
+        </div>
+        <div style={{flex:1,overflowY:"auto",padding:"10px 14px"}}>
+          {mileageIssues.length===0
+            ? <div style={{padding:"22px",textAlign:"center",color:"#64748b",fontSize:"12px"}}>✓ The two tables agree everywhere they overlap.</div>
+            : (<table style={{width:"100%",borderCollapse:"collapse",fontSize:"11px"}}>
+                <thead><tr style={{textAlign:"left",color:"#64748b"}}>
+                  <th style={{padding:"5px 6px"}}>City</th>
+                  <th style={{padding:"5px 6px",textAlign:"right"}}>By name</th>
+                  <th style={{padding:"5px 6px",textAlign:"right"}}>By ZIP</th>
+                  <th style={{padding:"5px 6px",textAlign:"right"}}>Gap</th>
+                  <th style={{padding:"5px 6px",textAlign:"right"}}>Use</th>
+                </tr></thead>
+                <tbody>
+                  {mileageIssues.map(m=>{
+                    const key=m.city.toLowerCase()+" "+m.state.toLowerCase();
+                    const set=v=>{
+                      const next={...DIST_OVERRIDES,[key]:v,[m.city.toLowerCase()]:v};
+                      Object.assign(DIST_OVERRIDES,next);
+                      try{localStorage.setItem("fcbv2_distoverrides",JSON.stringify(DIST_OVERRIDES));}catch(e){}
+                      setShowMileageCheck(false);setTimeout(()=>setShowMileageCheck(true),0);
+                    };
+                    const chosen=DIST_OVERRIDES[key];
+                    return(<tr key={key} style={{borderTop:"1px solid #f1f5f9"}}>
+                      <td style={{padding:"6px"}}><strong>{m.city}, {m.state}</strong>{chosen!=null&&<span style={{marginLeft:"6px",color:"#059669",fontWeight:"700"}}>· set to {chosen} mi</span>}</td>
+                      <td style={{padding:"6px",textAlign:"right"}}>{m.byName} mi</td>
+                      <td style={{padding:"6px",textAlign:"right"}}>{m.byZip} mi</td>
+                      <td style={{padding:"6px",textAlign:"right",color:"#b45309",fontWeight:"700"}}>{m.deltaMi} mi</td>
+                      <td style={{padding:"6px",textAlign:"right",whiteSpace:"nowrap"}}>
+                        <button onClick={()=>set(m.byName)} style={{fontSize:"10px",fontWeight:"700",border:"1px solid #cbd5e1",background:"#fff",borderRadius:"4px",padding:"2px 7px",cursor:"pointer",marginRight:"4px"}}>{m.byName}</button>
+                        <button onClick={()=>set(m.byZip)} style={{fontSize:"10px",fontWeight:"700",border:"1px solid #cbd5e1",background:"#fff",borderRadius:"4px",padding:"2px 7px",cursor:"pointer"}}>{m.byZip}</button>
+                      </td>
+                    </tr>);
+                  })}
+                </tbody>
+              </table>)}
+          {Object.keys(DIST_MISS_LOG).length>0&&(<div style={{marginTop:"14px",borderTop:"1px solid #e2e8f0",paddingTop:"10px"}}>
+            <div style={{fontSize:"12px",fontWeight:"800",color:"#0f1f3d",marginBottom:"5px"}}>Cities with no mileage on file this session</div>
+            <div style={{fontSize:"11px",color:"#64748b",lineHeight:"1.7"}}>
+              {Object.keys(DIST_MISS_LOG).map(k=>{
+                const e=DIST_MISS_LOG[k];
+                return <span key={k} style={{display:"inline-block",marginRight:"10px"}}>{e.city}{e.estimated?` (≈${e.estimated} mi straight-line)`:""}</span>;
+              })}
+            </div>
+          </div>)}
+        </div>
+        <div style={{padding:"12px 16px",borderTop:"1px solid #f1f5f9",textAlign:"right"}}>
+          <button onClick={()=>setShowMileageCheck(false)} style={{background:"#0f1f3d",color:"#fff",border:"none",borderRadius:"7px",padding:"7px 16px",fontSize:"12px",fontWeight:"700",cursor:"pointer"}}>Close</button>
+        </div>
+      </div>
+    </div>)}
     {showOverwriteWarn&&(<div className="modal-bg" onClick={e=>e.stopPropagation()}><div className="modal" onClick={e=>e.stopPropagation()}>
       <div style={{fontWeight:"700",fontSize:"16px",color:"#dc2626",marginBottom:"10px"}}>⚠️ Newer Data on Server</div>
       <div style={{fontSize:"13px",color:"#374151",marginBottom:"16px",lineHeight:"1.6"}}>
@@ -6415,7 +6945,7 @@ ${accRows.length>0?`
   else{
     try{const ta=JSON.parse(localStorage.getItem("fcbv2_truckassign")||"{}");setTruckAssignments(ta);}catch(e2){}
   }
-  if(d.archive){setArchivedWeeks(d.archive);localStorage.setItem("fcbv2_archive",JSON.stringify(d.archive));saveToSheets({weeks:w,archive:d.archive});}
+  if(d.archive){setArchivedWeeks(d.archive);writeArchive(d.archive);saveToSheets({weeks:w,archive:d.archive});}
   alert("✅ Imported successfully!");
   setShowRecover(false);
 }catch(err){alert("Could not read file: "+err.message);}};r.readAsText(f);e.target.value="";}} /></label></div>{archivedWeeks.length>0&&<div style={{marginBottom:"12px"}}><div style={{fontSize:"11px",fontWeight:"700",color:"#374151",marginBottom:"8px"}}>📦 Archived Weeks ({archivedWeeks.length})</div>{archivedWeeks.map((w,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:"8px",padding:"6px 10px",background:"#f8fafc",borderRadius:"6px",marginBottom:"4px",border:"1px solid #e2e8f0"}}><span style={{fontSize:"11px",fontWeight:"600",flex:1}}>{w.label}</span><span style={{fontSize:"10px",color:"#94a3b8"}}>{w.archivedAt}</span><button onClick={()=>{if(!confirm("Restore?"))return;restoreArchivedWeek(i);setShowRecover(false);}} style={{background:"#eff6ff",color:"#2563eb",border:"1px solid #bfdbfe",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",cursor:"pointer"}}>Restore</button><button onClick={()=>{if(!confirm("Delete permanently?"))return;deleteArchivedWeek(i);}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"4px",padding:"2px 8px",fontSize:"10px",cursor:"pointer"}}>Delete</button></div>))}</div>}<div style={{display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setShowRecover(false)} style={{background:"#f1f5f9",color:"#374151",border:"1px solid #d1d5db",padding:"7px 16px",borderRadius:"6px",fontSize:"12px",cursor:"pointer"}}>Close</button></div></div></div>)}
@@ -6619,7 +7149,16 @@ ${accRows.length>0?`
     {showSearch&&(<div style={{position:"fixed",top:"60px",left:"50%",transform:"translateX(-50%)",zIndex:2000,background:"#fff",borderRadius:"12px",boxShadow:"0 8px 40px rgba(0,0,0,0.25)",border:"1px solid #e2e8f0",padding:"12px 16px",width:"min(600px,95vw)"}}><div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:searchResults.length>0?"10px":"0"}}><span style={{fontSize:"14px"}}>🔍</span><input ref={searchRef} value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&searchResults.length>0)setSearchIdx(i=>(i+1)%searchResults.length);if(e.key==="Escape"){setShowSearch(false);setSearchQuery("");}}} placeholder="Search routes, drivers, dates, status... (Ctrl+F)" style={{flex:1,border:"none",outline:"none",fontSize:"14px",color:"#1a2e50",fontFamily:"inherit"}}/>{searchQuery&&<span style={{fontSize:"11px",color:"#94a3b8",whiteSpace:"nowrap",fontWeight:"600"}}>{searchResults.length} result{searchResults.length!==1?"s":""}</span>}{searchResults.length>1&&<div style={{display:"flex",gap:"4px"}}><button onClick={()=>setSearchIdx(i=>(i-1+searchResults.length)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↑</button><button onClick={()=>setSearchIdx(i=>(i+1)%searchResults.length)} style={{background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontSize:"12px"}}>↓</button></div>}<button onClick={()=>{setShowSearch(false);setSearchQuery("");}} style={{background:"#fee2e2",border:"none",borderRadius:"6px",padding:"4px 10px",cursor:"pointer",fontSize:"11px",color:"#dc2626",fontWeight:"700"}}>✕ Close</button></div>{searchResults.length>0&&(<div style={{maxHeight:"320px",overflowY:"auto",borderTop:"1px solid #f1f5f9",paddingTop:"8px"}}>{searchResults.map((r,i)=>(<div key={i} onClick={()=>{const wId=weeks[r.weekIdx]?.id;setSearchIdx(i);setShowSearch(false);setSearchQuery("");if(wId&&r.loadId)setLoadDetailId({loadId:r.loadId,weekId:wId});goToLoad(wId,r.loadId);}} style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 10px",borderRadius:"8px",cursor:"pointer",background:i===searchIdx?"#eff6ff":"transparent",border:i===searchIdx?"1px solid #bfdbfe":"1px solid transparent",marginBottom:"3px"}}><div style={{flex:1,minWidth:0}}><div style={{fontSize:"12px",fontWeight:"700",color:"#1a2e50",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r.sr||"—"}</div><div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"2px"}}>{r.broker&&isAdmin&&(<span style={{fontSize:"10px",color:"#2563eb",fontWeight:"600"}}>{r.broker}</span>)}{r.pickup&&<span style={{fontSize:"10px",color:"#64748b"}}>🛫 {r.pickup}</span>}{r.driver&&<span style={{fontSize:"10px",color:"#059669",fontWeight:"600"}}>🧑 {r.driver}</span>}{r.status&&<span style={{fontSize:"10px",color:"#7c3aed",fontWeight:"600"}}>{r.status}</span>}</div></div><div style={{textAlign:"right",flexShrink:0}}><div style={{fontSize:"10px",fontWeight:"700",color:"#1a2e50",background:"#dbeafe",padding:"1px 7px",borderRadius:"8px"}}>{r.weekLabel}</div><div style={{fontSize:"10px",color:"#94a3b8",marginTop:"2px"}}>{r.delivery}</div></div></div>))}</div>)}{searchQuery&&searchResults.length===0&&(<div style={{color:"#94a3b8",fontSize:"12px",textAlign:"center",padding:"12px 0"}}>No results found across {weeks.length} week{weeks.length!==1?"s":""}</div>)}<div style={{fontSize:"10px",color:"#cbd5e1",marginTop:searchResults.length>0?"8px":"0",textAlign:"center"}}>Press Enter to cycle · Esc to close · Click a result to jump to it</div></div>)}
 
     {/* SAVE INDICATOR */}
-    {saveStatus!=="idle"&&(<div className={`save-indicator ${saveStatus==="saving"?"save-saving":saveStatus==="saved"?"save-ok":"save-error"}`}>{saveStatus==="saving"&&<><span className="spinning">↻</span> Saving to Sheets...</>}{saveStatus==="saved"&&<>✓ Saved to Google Sheets</>}{saveStatus==="error"&&<>⚠ Save failed — retrying</>}</div>)}
+    {(saveStatus!=="idle"||pendingSave||storageFull)&&(<div className={`save-indicator ${saveStatus==="saving"?"save-saving":(saveStatus==="error"||pendingSave||storageFull)?"save-error":"save-ok"}`}>
+      {saveStatus==="saving"&&<><span className="spinning">↻</span> Saving to Sheets...</>}
+      {saveStatus==="saved"&&!pendingSave&&!storageFull&&<>✓ Saved to Google Sheets</>}
+      {(saveStatus==="error"||pendingSave)&&saveStatus!=="saving"&&(
+        <span>⚠ Not saved to Sheets — held on this device{" "}
+          <button onClick={retryQueuedSave} style={{marginLeft:"8px",background:"#fca5a5",color:"#7f1d1d",border:"none",borderRadius:"5px",padding:"2px 8px",fontSize:"11px",fontWeight:"800",cursor:"pointer"}}>Retry now</button>
+        </span>
+      )}
+      {storageFull&&saveStatus!=="saving"&&<div style={{marginTop:"4px",fontSize:"11px"}}>This browser's storage is full — archive an old week to free space.</div>}
+    </div>)}
 
     {/* ── HEADER ── */}
     <div style={{background:"#0f1f3d",borderRadius:"10px 10px 0 0",padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"8px"}}>
@@ -6692,6 +7231,11 @@ ${accRows.length>0?`
               <span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>⬆</span> Import Backup
               <input type="file" accept=".json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{try{const d=JSON.parse(ev.target.result);const w=d.weeks||d;if(!Array.isArray(w)){alert("Invalid file");return;}if(!confirm(`Import ${w.length} week(s)?`))return;setWeeksAndSave(w);setActiveWeek(0);setShowHdrMenu(false);alert("✅ Imported!");}catch{alert("Could not read file.");}};r.readAsText(f);e.target.value="";}} />
             </label>}
+
+            {isAdmin&&<button className="hdr-menu-item" onClick={()=>{setShowMileageCheck(true);setShowHdrMenu(false);}}>
+              <span style={{fontSize:"15px",width:"18px",textAlign:"center"}}>📏</span> Mileage data check
+              {mileageIssues.length>0&&<span style={{marginLeft:"auto",background:"#fee2e2",color:"#b91c1c",borderRadius:"9px",padding:"0 7px",fontSize:"10px",fontWeight:"800"}}>{mileageIssues.length}</span>}
+            </button>}
 
             {isAdmin&&<><div className="hdr-menu-divider"/>
             <div className="hdr-menu-section">Settings</div>
@@ -6784,9 +7328,7 @@ ${accRows.length>0?`
           {saveStatus==="saving"&&<><span className="spinning" style={{display:"inline-block",marginRight:"3px"}}>↻</span>Saving...</>}
           {saveStatus==="saved"&&"✓ Saved"}{saveStatus==="error"&&"⚠ Save error"}{saveStatus==="idle"&&"✓ Live"}
         </span>
-        {undoStack.length>0&&isAdmin&&(<button onClick={()=>{
-          setUndoStack(stk=>{if(!stk.length)return stk;const[last,...rest]=stk;setWeeks(last);return rest;});
-        }} title={"Undo last change (Ctrl+Z) — "+undoStack.length+" step"+(undoStack.length>1?"s":"")} style={{background:"#1e3a5f",border:"1px solid #fbbf24",borderRadius:"5px",padding:"2px 8px",fontSize:"10px",fontWeight:"700",color:"#fbbf24",cursor:"pointer",marginLeft:"8px",display:"flex",alignItems:"center",gap:"4px"}}>
+        {undoStack.length>0&&isAdmin&&(<button onClick={undoLast} title={"Undo last change (Ctrl+Z) — "+undoStack.length+" step"+(undoStack.length>1?"s":"")} style={{background:"#1e3a5f",border:"1px solid #fbbf24",borderRadius:"5px",padding:"2px 8px",fontSize:"10px",fontWeight:"700",color:"#fbbf24",cursor:"pointer",marginLeft:"8px",display:"flex",alignItems:"center",gap:"4px"}}>
           ↩ Undo {undoStack.length>1&&<span style={{background:"#fbbf24",color:"#0f1f3d",borderRadius:"8px",padding:"0 5px",fontSize:"9px",fontWeight:"800"}}>{undoStack.length}</span>}
         </button>)}
       </div>
@@ -7345,7 +7887,7 @@ ${accRows.length>0?`
             return(
               <div key={group.id}
                 draggable={!isViewer}
-                onDragStart={e=>{if(dragLoad.current)return;dragGroupIdx.current=gi;}}
+                onDragStart={e=>{if(dragLoad.current)return;dragGroupIdx.current=group.id;}}
                 onDragOver={e=>{if(dragLoad.current){e.preventDefault();e.stopPropagation();return;}e.preventDefault();setDragOverIdx(gi);}}
                 onDragLeave={()=>setDragOverIdx(null)}
                 onDrop={e=>{
@@ -7358,10 +7900,10 @@ ${accRows.length>0?`
                     }
                     setDragOverIdx(null);return;
                   }
-                  // Otherwise dragging a GROUP (trailer reorder)
-                  const from=dragGroupIdx.current;const to=gi;
-                  if(from==null||from===to){setDragOverIdx(null);return;}
-                  setW("groups",(()=>{const arr=[...week.groups];const[moved]=arr.splice(from,1);arr.splice(to,0,moved);return arr;})());
+                  // Otherwise dragging a GROUP (trailer reorder). Reorder by id
+                  // through the shared manual-order helper, never by splicing
+                  // week.groups with a display index.
+                  dropPlannedTrailer(sortedArr,dragGroupIdx.current,group.id);
                   dragGroupIdx.current=null;setDragOverIdx(null);
                 }}
                 style={{border:`1px solid ${dragOverIdx===gi?"#fbbf24":"#d1d5db"}`,borderRadius:"8px",overflow:"hidden",outline:dragOverIdx===gi?"2px solid #fbbf24":"none"}}
@@ -7416,7 +7958,7 @@ ${accRows.length>0?`
                   </div>}
                   <div style={{display:"flex",alignItems:"center",gap:"3px",background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.1)",borderRadius:"4px",padding:"1px 5px",flexShrink:0}}>
                     <span style={{fontSize:"9px",color:"#93c5fd"}}>mi:</span>
-                    <input value={group.tripMiles!==""&&group.tripMiles!=null?group.tripMiles:(group.autoTripMi||"")} type="number" placeholder={group.autoTripMi?"~"+group.autoTripMi:"—"} onChange={e=>setGroup(group.id,"tripMiles",e.target.value)} style={{width:"44px",border:"none",background:group.tripMiles!==""&&group.tripMiles!=null?"rgba(251,146,60,.15)":"transparent",fontSize:"9px",fontWeight:"700",color:group.tripMiles!==""&&group.tripMiles!=null?"#fb923c":"#fff",padding:"0 2px",outline:"none",fontFamily:"inherit"}} disabled={!isAdmin}/>
+                    <input value={group.tripMiles!==""&&group.tripMiles!=null?group.tripMiles:""} type="number" placeholder={group.autoTripMi?"~"+group.autoTripMi:"—"} onChange={e=>setGroup(group.id,"tripMiles",e.target.value)} style={{width:"44px",border:"none",background:group.tripMiles!==""&&group.tripMiles!=null?"rgba(251,146,60,.15)":"transparent",fontSize:"9px",fontWeight:"700",color:group.tripMiles!==""&&group.tripMiles!=null?"#fb923c":"#fff",padding:"0 2px",outline:"none",fontFamily:"inherit"}} disabled={!isAdmin}/>
                     {group.tripMiles!==""&&group.tripMiles!=null&&<button onClick={()=>setGroup(group.id,"tripMiles","")} style={{background:"none",border:"none",color:"#fb923c",cursor:"pointer",fontSize:"9px",padding:"0",lineHeight:1}}>↺</button>}
                   </div>
                   {(group.calcTripMi||group.autoTripMi)&&group.rpm!=null&&<span style={{fontSize:"9px",fontWeight:"800",background:rpmBg(group.rpm),color:rpmFg(group.rpm),padding:"1px 5px",borderRadius:"4px",flexShrink:0}}>${group.rpm}/mi</span>}
@@ -7539,7 +8081,7 @@ ${accRows.length>0?`
                         onClick={()=>toggleLoadExpand(load.id)}
                         onDragOver={e=>{if(!dragLoad.current)return;e.preventDefault();e.currentTarget.style.boxShadow="inset 0 -3px 0 #3b82f6";}}
                         onDragLeave={e=>{e.currentTarget.style.boxShadow="";}}
-                        onDrop={e=>{e.preventDefault();e.currentTarget.style.boxShadow="";if(!dragLoad.current||!isAdmin)return;const dl=dragLoad.current;dragLoad.current=null;moveLoad(dl.fromGroupId,group.id,dl.loadId,li);}}
+                        onDrop={e=>{e.preventDefault();e.currentTarget.style.boxShadow="";if(!dragLoad.current||!isAdmin)return;const dl=dragLoad.current;dragLoad.current=null;moveLoad(dl.fromGroupId,group.id,dl.loadId,null,load.id);}}
                         style={{display:"grid",gridTemplateColumns:"16px minmax(0,1fr) 125px 125px 48px 24px 130px 55px 65px 78px 22px 22px",gap:"10px",padding:"7px 12px",alignItems:"center",fontSize:"12px",background:cardRowBg,borderBottom:"1px solid #e5edf5",cursor:"pointer",transition:"background .1s",borderLeft:cardRowBorder}}
                       >
                         {/* Stop dot */}
@@ -8817,14 +9359,25 @@ ${accRows.length>0?`
             const net=(calcG.gross||0)-(calcG.loc||0);
             const loadCount=(calcG.loads||[]).length;
             const delivered=groupStatus==="Delivered";
+            // A trailer's net and miles belong to the trailer, not to each name
+            // on it. Crediting the full figure to every driver in the set meant a
+            // trailer with an OTR driver plus one load-level driver reported the
+            // same $8,000 twice, and the Drivers page totalled above actual
+            // weekly revenue. Split the trailer evenly across its drivers.
+            // Miles also fell back to nothing when the trailer used the auto
+            // route calc — calcTripMi is only set when a mileage was typed by
+            // hand, so include autoTripMi the way the board header does.
+            const nDrivers=drivers.size||1;
+            const netShare=net/nDrivers;
+            const trailerMi=(calcG.calcTripMi||calcG.autoTripMi||0)/nDrivers;
             drivers.forEach(d=>{
               if(!driverStats[d])driverStats[d]={loads:0,trailers:0,delivered:0,inTransit:0,net:0,miles:0,weeks:new Set()};
               const ds=driverStats[d];
               ds.loads+=loadCount;
               ds.trailers++;
-              if(delivered){ds.delivered+=loadCount;ds.net+=net;}
+              if(delivered){ds.delivered+=loadCount;ds.net+=netShare;}
               if(groupStatus==="In Transit")ds.inTransit+=loadCount;
-              if(calcG.calcTripMi)ds.miles+=calcG.calcTripMi;
+              if(trailerMi)ds.miles+=trailerMi;
               ds.weeks.add(w.label);
             });
           });
@@ -9825,7 +10378,7 @@ ${accRows.length>0?`
                                   const v=e.target.value.trim();
                                   const ovKey=freightWeekForBoard?.id||"noweek";
                                   const next={...payrollOverrides};
-                                  if(!next[ovKey])next[ovKey]={};
+                                  next[ovKey]={...(next[ovKey]||{})};
                                   if(v===""){delete next[ovKey][disp.name];if(Object.keys(next[ovKey]).length===0)delete next[ovKey];}
                                   else next[ovKey][disp.name]={amount:v,note:(disp.override&&disp.override.note)||""};
                                   savePayrollOverrides(next);
@@ -9837,9 +10390,9 @@ ${accRows.length>0?`
                                   if(!disp.override&&!e.target.value.trim())return;
                                   const ovKey=freightWeekForBoard?.id||"noweek";
                                   const next={...payrollOverrides};
-                                  if(!next[ovKey])next[ovKey]={};
-                                  if(!next[ovKey][disp.name])next[ovKey][disp.name]={amount:"",note:""};
-                                  next[ovKey][disp.name].note=e.target.value.trim();
+                                  next[ovKey]={...(next[ovKey]||{})};
+                                  const prevEntry=next[ovKey][disp.name]||{amount:"",note:""};
+                                  next[ovKey][disp.name]={...prevEntry,note:e.target.value.trim()};
                                   savePayrollOverrides(next);
                                 }}
                                 style={{width:"160px",padding:"4px 8px",border:"1px solid #cbd5e1",borderRadius:"4px",fontSize:"12px",fontFamily:"inherit"}}/>
@@ -9908,12 +10461,25 @@ ${accRows.length>0?`
             const acc=(w.accessorials||[]).reduce((s,a)=>s+(parseFloat(a.amount)||0),0);
             const localDel=(w.localDeliveries||[]).length;
             const trailers=grps.length;
+            // calcTripMi / autoTripMi only exist on objects returned by calcGroup —
+            // never on the stored week — so reading them off raw groups meant only
+            // trailers with a manually typed mileage counted. A week routed
+            // entirely from the auto calculation reported "Miles Driven —" while
+            // the board header showed a normal $/mi from the same data. Run the
+            // groups through calcGroup first.
             const allMi=grps.reduce((s,g)=>{
-              const raw=g.tripMiles!==""&&g.tripMiles!=null?parseFloat(g.tripMiles):g.calcTripMi?parseFloat(g.calcTripMi):g.autoTripMi?parseFloat(g.autoTripMi):0;
+              const cg=calcGroup(g);
+              const raw=g.tripMiles!==""&&g.tripMiles!=null?parseFloat(g.tripMiles):(cg.calcTripMi||cg.autoTripMi||0);
               return s+(isNaN(raw)?0:raw);
             },0);
             const netGross=gross-loc+acc;
-            const rpm=allMi>0?Math.round((netGross/allMi)*100)/100:0;
+            // The board header's overallRPM is (gross - local) / miles. This one
+            // added accessorials on top, so the same week showed two different
+            // $/mi figures with nothing to explain the gap. Keep the headline RPM
+            // on the same definition as the board and report the accessorial
+            // effect separately.
+            const rpm=allMi>0?Math.round(((gross-loc)/allMi)*100)/100:0;
+            const rpmWithAcc=allMi>0?Math.round((netGross/allMi)*100)/100:0;
             const drivers={};
             loads.forEach(l=>{const d=l.driver||(grps.find(g=>g.loads.some(ld=>ld.id===l.id))||{}).groupDriver;if(d&&!LOCAL_DRV.has(d)){drivers[d]=(drivers[d]||0)+(parseFloat(l.rate)||0);}});
             const states={};
@@ -9926,7 +10492,7 @@ ${accRows.length>0?`
               if(st)states[st]=(states[st]||0)+1;
             });
             const extraAdded=grps.filter(g=>(g.loads||[]).length>1).reduce((s,g)=>{const rates=(g.loads||[]).map(l=>parseFloat(l.rate)||0).sort((a,b)=>b-a);return s+rates.slice(1).reduce((x,r)=>x+r,0);},0);
-          return{gross,loc,acc,localDel,trailers,loads:loads.length,allMi:Math.round(allMi),netGross,rpm,drivers,states,extraAdded};
+          return{gross,loc,acc,localDel,trailers,loads:loads.length,allMi:Math.round(allMi),netGross,rpm,rpmWithAcc,drivers,states,extraAdded};
           };
           const cur=calcWk(curWk);
           const prev=calcWk(prevWk);
@@ -10128,32 +10694,42 @@ ${accRows.length>0?`
                                               const payload={weeks:updated,customDrivers:ls.customDrivers||[],customTrucks:ls.customTrucks||[],customTrailers:ls.customTrailers||[],dispatchers:ls.dispatchers||[],truckAssignments:ls.truckAssignments||{},savedAt:now};
                                               localStorage.setItem("fcbv2_localdata",JSON.stringify(payload));
                                             }catch(ex){}
-                                            // Save to Sheets immediately (no debounce, no timer)
-                                            const url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
+                                            // Send ONLY the claim. This used to upload the whole
+                                            // `weeks` array plus dispatchers, truck assignments and the
+                                            // admin PIN — from a public dashboard, unauthenticated. A
+                                            // guest whose tab had been open since morning would
+                                            // last-write-wins their stale snapshot over Sheets and wipe
+                                            // every load added since. The claim itself is four fields;
+                                            // Apps Script applies it to the row it names.
                                             const claimAdminEmail=localStorage.getItem("fcbv2_adminEmail")||adminEmail||"";
+                                            let claimSent=false;
                                             try{
-                                              const ls=latestState.current;
-                                              await fetch(url,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify({data:{
+                                              await fetch(withTok(localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL),{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({data:{
                                                 action:"claimLoad",
                                                 claimerName:name,
                                                 groupId:group.id,
+                                                weekId:weeks[wkIdx]&&weeks[wkIdx].id,
                                                 truckNum:group.groupTruck||"",
                                                 trailerNum:group.groupTrailer||"",
                                                 adminEmail:claimAdminEmail,
-                                                weeks:updated,
-                                                customDrivers:ls.customDrivers||[],
-                                                customTrucks:ls.customTrucks||[],
-                                                customTrailers:ls.customTrailers||[],
-                                                dispatchers:ls.dispatchers||[],
-                                                truckAssignments:ls.truckAssignments||{},
-                                                dispatcherEmails:[],
-                                                adminPin:localStorage.getItem("fcbv2_adminPin")||"",
+                                                securedAt:now,
                                                 savedAt:now
                                               }})});
-                                            }catch(ex){}
-                                            btn.textContent="✓ Claimed!";btn.style.background="#15803d";
-                                            // Mark local savedAt so our own poll skips re-processing our own claim
-                                            lastLoadedServerTs.current = now;
+                                              claimSent=true;
+                                            }catch(ex){
+                                              console.warn("Claim did not reach Sheets",ex);
+                                            }
+                                            if(claimSent){
+                                              btn.textContent="✓ Claimed!";btn.style.background="#15803d";
+                                            }else{
+                                              // Do not tell someone a load is theirs when the request
+                                              // never left the browser.
+                                              btn.textContent="⚠ Not sent — try again";btn.style.background="#b91c1c";btn.disabled=false;
+                                            }
+                                            // Do NOT advance lastLoadedServerTs from the local clock.
+                                            // A laptop running ten minutes fast used to set it into the
+                                            // future, and the poll's `serverSavedAt <= lastSeen` check
+                                            // then suppressed everyone else's claims for ten minutes.
                                             // Write claim notif to localStorage for same-device admin
                                             try{
                                               const notifs=JSON.parse(localStorage.getItem("fcbv2_claim_notifs")||"[]");
