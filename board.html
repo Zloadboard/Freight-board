@@ -379,6 +379,19 @@ function normalizeShipperAddr(addr){
   return tokens.join(" ").trim();
 }
 // Parse the ending date out of a week label (handles "3.30.2026 - 4.6.2026", "Week of 5/12/2026", "4-6-26")
+// Same tolerance as weekEndDate (/. or - separated, 2-4 digit year) but takes
+// the FIRST date in the label rather than the last, since that's the Monday.
+function weekStartDate(label){
+  if(!label)return null;
+  var ms=String(label).match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/g);
+  if(!ms||!ms.length)return null;
+  var p=ms[0].match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/);
+  if(!p)return null;
+  var yr=+p[3];if(yr<100)yr+=2000;
+  var d=new Date(yr,+p[1]-1,+p[2]);d.setHours(0,0,0,0);
+  return isNaN(d.getTime())?null:d;
+}
+
 function weekEndDate(label){
   if(!label)return null;
   var ms=String(label).match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/g);
@@ -1237,7 +1250,20 @@ let _uid=Date.now();
 const uid=()=>++_uid;
 const mkLoad=(o={})=>({id:uid(),sr:"",broker:"",pickup:"",delivery:"",product:"",pallets:"",weight:"",rate:"",driver:"",truck:"",trailer:"",status:"",notes:"",xdockId:"",manualPickupMi:"",manualLocalCharge:"",stopMiles:"",photos:[],shipperCo:"",shipperAddr:"",receiverCo:"",receiverAddr:"",...o});
 const mkGroup=()=>({id:uid(),tripMiles:"",groupDriver:"",groupTruck:"",groupTrailer:"",groupStatus:"Pending",groupNotes:"",loads:[mkLoad()]});
-const mkWeek=(label)=>({id:uid(),label:label||"New Week",groups:[mkGroup()],localDeliveries:[],crossdockDrops:[],accessorials:[],openSections:{main:true,local:false,xdrop:false,acc:false,otr:true}});
+const GB_DAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const gbBlankDay=()=>({pickup:"",delivery:"",miles:"",gross:"",notes:"",off:false});
+const gbBlankDays=()=>{const o={};GB_DAYS.forEach(d=>o[d]=gbBlankDay());return o;};
+// Distinct gradient per driver so rows are told apart at a glance. Cycles by
+// how many drivers already exist, not by array position, so removing a driver
+// never reshuffles everyone else's color.
+const GB_PALETTE=[
+  ["#1e3a8a","#172554"],["#065f46","#022c22"],["#7c2d12","#431407"],
+  ["#6b21a8","#3b0764"],["#9d174d","#500724"],["#0e7490","#083344"],
+  ["#a16207","#422006"],["#4d7c0f","#1a2e05"]
+];
+const mkGBDriver=(o={},idx=0)=>({id:uid(),name:"",phone:"",home:"",truck:"",trailer:"",
+  color:GB_PALETTE[idx%GB_PALETTE.length],days:gbBlankDays(),...o});
+const mkWeek=(label)=>({id:uid(),label:label||"New Week",groups:[mkGroup()],localDeliveries:[],crossdockDrops:[],accessorials:[],generalBoardDrivers:[],openSections:{main:true,local:false,xdrop:false,acc:false,otr:true,generalBoard:false}});
 const mkLocal=()=>({id:uid(),destination:"",trailer:"",truck:"",broker:"",loadNum:"",datetime:"",driver:"",otrBroughtBy:"",notes:"",status:""});
 // srcLoadId / srcGroupId / srcWeekId point back at the planned load this row
 // came from. Rate, broker and receiver stay owned by that load — this row only
@@ -5369,6 +5395,54 @@ function App(){
   const toggleSection=k=>setW("openSections",{...week.openSections,[k]:!week.openSections?.[k]});
   const setLoad=(gid,lid,f,v)=>setW("groups",week.groups.map(g=>g.id!==gid?g:{...g,loads:g.loads.map(l=>l.id!==lid?l:{...l,[f]:v})}));
 
+  // ── General Board — Mon-Sun driver/day grid, separate from Planned/OTR ──
+  const gbDrivers=(week&&week.generalBoardDrivers)||[];
+  const setGBDrivers=(next)=>setW("generalBoardDrivers",next);
+  const gbAddDriver=()=>setGBDrivers([...gbDrivers,mkGBDriver({},gbDrivers.length)]);
+  const gbRemoveDriver=(id)=>{if(!confirm("Remove this driver from the General Board?"))return;setGBDrivers(gbDrivers.filter(d=>d.id!==id));};
+  const gbSetDriverField=(id,f,v)=>setGBDrivers(gbDrivers.map(d=>d.id!==id?d:{...d,[f]:v}));
+  const gbSetDayField=(id,day,f,v)=>setGBDrivers(gbDrivers.map(d=>{
+    if(d.id!==id)return d;
+    const cur=d.days?.[day]||gbBlankDay();
+    const next={...cur,[f]:v};
+    if(f==="pickup")next.off=/off|vacation/i.test(String(v||""));
+    return{...d,days:{...d.days,[day]:next}};
+  }));
+  const gbDriverTotals=(d)=>{
+    let m=0,g=0;
+    GB_DAYS.forEach(day=>{const x=d.days?.[day];if(!x)return;m+=Number(x.miles)||0;g+=Number(x.gross)||0;});
+    return{m,g,r:m>0?(g/m).toFixed(2):"—"};
+  };
+  const gbWeekTotals=(()=>{
+    let m=0,g=0;
+    gbDrivers.forEach(d=>{const t=gbDriverTotals(d);m+=t.m;g+=t.g;});
+    return{drivers:gbDrivers.length,m,g,r:m>0?"$"+(g/m).toFixed(2):"—"};
+  })();
+  const gbExportJSON=()=>{
+    const payload={version:2,weekLabel:week.label,dispatcher:"Zygis",dispatchColor:"blue",
+      drivers:gbDrivers.map(d=>{const t=gbDriverTotals(d);return{...d,weekMiles:t.m,weekGross:t.g,weekRpm:Number(t.r)||0};})};
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:"application/json"}));
+    a.download=`general-board-${(week.label||"week").replace(/[^\w-]+/g,"_")}.json`;a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  const gbExportCSV=()=>{
+    const rows=[["week","driverName","phone","homeBase","truck","trailer","day","pickup","delivery","miles","gross","rpm","notes"]];
+    gbDrivers.forEach(d=>{
+      GB_DAYS.forEach(day=>{
+        const x=d.days?.[day]||{};
+        if(!x.pickup&&!x.delivery&&!x.miles&&!x.gross&&!x.notes)return;
+        const m=Number(x.miles)||0,g=Number(x.gross)||0;
+        rows.push([week.label,d.name,d.phone,d.home,d.truck,d.trailer,day,x.pickup||"",x.delivery||"",x.miles||"",x.gross||"",m>0?(g/m).toFixed(2):"",x.notes||""]);
+      });
+    });
+    const csv=rows.map(r=>r.map(v=>{v=String(v??"");return /[",\n]/.test(v)?`"${v.replace(/"/g,'""')}"`:v;}).join(",")).join("\n");
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+    a.download=`general-board-${(week.label||"week").replace(/[^\w-]+/g,"_")}.csv`;a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
   // ── Crossdock hand-off ────────────────────────────────────────────
   // Creates a crossdock row LINKED to this load rather than a copy of it.
   // Crossdock-only facts live on the row; rate, broker and receiver stay
@@ -6306,7 +6380,11 @@ ${accRows.length>0?`
       return true; // Pending / blank / In Transit / Loaded / Issue / Dispatched — carry
     }).map(g=>({...g,id:uid(),carriedFrom:lastWk.label||"prev"}));
     const carryLocal=(lastWk.localDeliveries||[]).filter(r=>r.status!=="Delivered").map(r=>({...r,id:uid(),carriedFrom:lastWk.label||"prev"}));
-    const newWk={...mkWeek(label),crossdockDrops:carryXdock,accessorials:carryAcc,groups:[mkGroup(),...carryOTR],localDeliveries:carryLocal};
+    // General Board carries the ROSTER forward (name/phone/home/truck/trailer),
+    // not the work — unlike loads, a driver doesn't stop existing because last
+    // week finished. Every day cell resets blank for the new week.
+    const carryGB=(lastWk.generalBoardDrivers||[]).map(d=>({...d,id:uid(),days:gbBlankDays()}));
+    const newWk={...mkWeek(label),crossdockDrops:carryXdock,accessorials:carryAcc,groups:[mkGroup(),...carryOTR],localDeliveries:carryLocal,generalBoardDrivers:carryGB};
     const carried=[carryOTR.length&&carryOTR.length+" OTR",carryLocal.length&&carryLocal.length+" local",carryXdock.length&&carryXdock.length+" crossdock",carryAcc.length&&carryAcc.length+" accessorials"].filter(Boolean);
     return {newWk,carried,counts:{otr:carryOTR.length,local:carryLocal.length,xdock:carryXdock.length,acc:carryAcc.length}};
   };
@@ -7237,6 +7315,7 @@ ${accRows.length>0?`
             {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="roster"?" active":"")} style={{color:activeTab==="roster"?"#065f46":"#374151",background:activeTab==="roster"?"#ecfdf5":"transparent"}} onClick={()=>{setActiveTab("roster");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>👥</span>Drivers</button>}
             {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="equipment"?" active":"")} style={{color:activeTab==="equipment"?"#0369a1":"#374151",background:activeTab==="equipment"?"#eff6ff":"transparent"}} onClick={()=>{setActiveTab("equipment");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🚛</span>Equipment</button>}
             {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="xdock"?" active":"")} style={{color:activeTab==="xdock"?"#7c3aed":"#374151",background:activeTab==="xdock"?"#faf5ff":"transparent"}} onClick={()=>{setActiveTab("xdock");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🔁</span>Crossdock</button>}
+            {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="generalboard"?" active":"")} style={{color:activeTab==="generalboard"?"#1d4ed8":"#374151",background:activeTab==="generalboard"?"#eff6ff":"transparent"}} onClick={()=>{setActiveTab("generalboard");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🗓️</span>General Board</button>}
             {(isAdmin||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="archive"?" active":"")} style={{color:activeTab==="archive"?"#4c1d95":"#374151",background:activeTab==="archive"?"#faf5ff":"transparent"}} onClick={()=>{setActiveTab("archive");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📦</span>Archive{archivedWeeks.length>0 ? <span style={{marginLeft:"auto",fontSize:"9px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 6px",borderRadius:"10px"}}>{archivedWeeks.length}</span> : null}</button>}
             {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="stats"?" active":"")} style={{color:activeTab==="stats"?"#b45309":"#374151",background:activeTab==="stats"?"#fffbeb":"transparent"}} onClick={()=>{setActiveTab("stats");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📊</span>Stats</button>}
             {(isAdmin||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="insights"?" active":"")} style={{color:activeTab==="insights"?"#0891b2":"#374151",background:activeTab==="insights"?"#ecfeff":"transparent"}} onClick={()=>{setActiveTab("insights");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🧠</span>Insights</button>}
@@ -9638,6 +9717,187 @@ ${accRows.length>0?`
       </div>
     </div>
   )}
+    {/* GENERAL BOARD TAB — full Mon-Sun driver/day grid, separate from
+        Planned Shipments/OTR. Lives on the SAME week object (generalBoardDrivers)
+        so it saves through the exact same pipeline as Local/Crossdock and
+        stays in lockstep with the main week timeline. */}
+    {activeTab==="generalboard"&&(isAdmin||isDispatcher||isViewer)&&(
+      <div style={{padding:"14px",maxWidth:"100%",overflowX:"hidden"}}>
+
+        <div style={{display:"flex",flexWrap:"wrap",gap:"10px",alignItems:"flex-end",justifyContent:"space-between",marginBottom:"10px"}}>
+          <div>
+            <div style={{fontSize:"16px",fontWeight:"800",color:"#0f1f3d"}}>🗓️ General Board</div>
+            <div style={{fontSize:"11px",color:"#64748b",marginTop:"2px"}}>{week.label} · full week, one screen</div>
+          </div>
+          <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
+            {[["Drivers",gbWeekTotals.drivers],["Week miles",gbWeekTotals.m.toLocaleString()],
+              ["Week gross","$"+gbWeekTotals.g.toLocaleString()],["Avg RPM",gbWeekTotals.r]].map(([lbl,val])=>(
+              <div key={lbl} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"10px",padding:"6px 12px",minWidth:"84px"}}>
+                <div style={{fontSize:"9px",fontWeight:"700",color:"#94a3b8",textTransform:"uppercase",letterSpacing:".05em"}}>{lbl}</div>
+                <div style={{fontSize:"14px",fontWeight:"800",color:"#0f1f3d",marginTop:"1px"}}>{val}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Week tabs — the SAME weeks used everywhere else on the board, so
+            General Board always shows the week you're already working in. */}
+        <div style={{display:"flex",gap:"6px",flexWrap:"wrap",alignItems:"center",marginBottom:"12px"}}>
+          {weeks.map((w,i)=>(
+            (isViewer&&i!==weeks.length-1)?null:
+            <button key={w.id} onClick={()=>setActiveWeek(i)}
+              style={{padding:"6px 13px",borderRadius:"999px",border:"1px solid "+(i===activeWeek?"#2563eb":"#e2e8f0"),
+                      background:i===activeWeek?"#2563eb":"#fff",color:i===activeWeek?"#fff":"#64748b",
+                      fontSize:"12px",fontWeight:"700",cursor:"pointer",outline:"none"}}>{w.label}</button>
+          ))}
+          {isAdmin&&<button onClick={addWeek} style={{padding:"6px 13px",borderRadius:"999px",border:"1px dashed #cbd5e1",background:"#fff",color:"#64748b",fontSize:"12px",fontWeight:"700",cursor:"pointer",outline:"none"}}>+ New week</button>}
+        </div>
+
+        {gbDrivers.length===0?(
+          <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"12px",padding:"28px",textAlign:"center"}}>
+            <div style={{fontSize:"26px",marginBottom:"6px"}}>🗓️</div>
+            <div style={{fontSize:"13px",fontWeight:"700",color:"#0f1f3d",marginBottom:"10px"}}>No drivers on this week's General Board yet.</div>
+            {!isViewer&&<button onClick={gbAddDriver} style={{padding:"9px 18px",background:"#2563eb",color:"#fff",border:"none",borderRadius:"8px",fontSize:"13px",fontWeight:"700",cursor:"pointer",outline:"none"}}>+ Add driver</button>}
+          </div>
+        ):(
+        <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:"12px",overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,.06)"}}>
+          <table style={{borderCollapse:"collapse",width:"100%",tableLayout:"fixed"}}>
+            <colgroup>
+              <col style={{width:"188px"}}/>
+              {GB_DAYS.map(d=><col key={d} style={{width:"calc((100% - 188px) / 7)"}}/>)}
+            </colgroup>
+            <thead>
+              <tr>
+                <th style={{background:"#1a2e50",color:"#93c5fd",fontSize:"10px",fontWeight:"800",textTransform:"uppercase",letterSpacing:".05em",padding:"8px 10px",textAlign:"left",border:"1px solid #0f1f3d"}}>Driver</th>
+                {GB_DAYS.map((d,i)=>{
+                  const wsd=weekStartDate(week.label);
+                  let dateStr="";
+                  if(wsd){const dt=new Date(wsd.getTime());dt.setDate(dt.getDate()+i);dateStr=(dt.getMonth()+1)+"/"+dt.getDate();}
+                  return(
+                    <th key={d} style={{background:"#0f172a",color:"#94a3b8",fontSize:"10px",fontWeight:"700",textTransform:"uppercase",letterSpacing:".05em",padding:"8px 4px",textAlign:"center",border:"1px solid #1e293b"}}>
+                      {d}{dateStr&&<span style={{display:"block",color:"#e2e8f0",fontSize:"11px",fontWeight:"800",textTransform:"none",letterSpacing:"0",marginTop:"2px"}}>{dateStr}</span>}
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {gbDrivers.map(d=>{
+                const t=gbDriverTotals(d);
+                return(
+                  <tr key={d.id}>
+                    <td style={{padding:0,border:"1px solid #e2e8f0",verticalAlign:"top",background:`linear-gradient(180deg,${(d.color||GB_PALETTE[0])[0]},${(d.color||GB_PALETTE[0])[1]})`}}>
+                      <div style={{padding:"9px"}}>
+                        <div style={{display:"flex",alignItems:"flex-start",gap:"6px"}}>
+                          <input value={d.name} onChange={e=>gbSetDriverField(d.id,"name",e.target.value)} disabled={isViewer}
+                            placeholder="Driver name"
+                            style={{flex:1,minWidth:0,background:"rgba(255,255,255,.08)",border:"1px solid rgba(255,255,255,.18)",borderRadius:"5px",color:"#fff",fontSize:"12px",fontWeight:"700",padding:"3px 6px",outline:"none"}}/>
+                          {!isViewer&&<button onClick={()=>gbRemoveDriver(d.id)} title="Remove driver" style={{background:"rgba(239,68,68,.2)",border:"1px solid rgba(239,68,68,.4)",color:"#fca5a5",borderRadius:"5px",width:"20px",height:"20px",flexShrink:0,fontSize:"11px",cursor:"pointer",lineHeight:1}}>✕</button>}
+                        </div>
+                        {!isViewer&&(
+                          <div style={{display:"flex",gap:"3px",marginTop:"5px",flexWrap:"wrap"}}>
+                            {GB_PALETTE.map((c,ci)=>(
+                              <button key={ci} onClick={()=>gbSetDriverField(d.id,"color",c)} title="Set card color"
+                                style={{width:"13px",height:"13px",borderRadius:"50%",padding:0,cursor:"pointer",
+                                        background:`linear-gradient(135deg,${c[0]},${c[1]})`,
+                                        border:(d.color&&d.color[0]===c[0])?"2px solid #fff":"1px solid rgba(255,255,255,.3)"}}/>
+                            ))}
+                          </div>
+                        )}
+                        <div style={{display:"grid",gridTemplateColumns:"1fr",gap:"3px",marginTop:"5px"}}>
+                          <input value={d.phone} onChange={e=>gbSetDriverField(d.id,"phone",e.target.value)} disabled={isViewer}
+                            placeholder="Phone" style={{background:"transparent",border:"none",color:"#c7d2fe",fontSize:"10px",padding:"1px 2px",outline:"none"}}/>
+                          <input value={d.home} onChange={e=>gbSetDriverField(d.id,"home",e.target.value)} disabled={isViewer}
+                            placeholder="Home base" style={{background:"transparent",border:"none",color:"#c7d2fe",fontSize:"10px",padding:"1px 2px",outline:"none"}}/>
+                        </div>
+                        <div style={{display:"flex",gap:"4px",marginTop:"5px",flexWrap:"wrap"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:"3px",background:"rgba(255,255,255,.1)",border:"1px solid rgba(255,255,255,.15)",borderRadius:"6px",padding:"2px 5px"}}>
+                            <span style={{fontSize:"9px",color:"#93c5fd",fontWeight:"700"}}>TRK</span>
+                            <input value={d.truck} onChange={e=>gbSetDriverField(d.id,"truck",e.target.value)} disabled={isViewer}
+                              style={{width:"38px",background:"transparent",border:"none",color:"#fff",fontSize:"10px",fontWeight:"700",outline:"none"}}/>
+                          </div>
+                          <div style={{display:"flex",alignItems:"center",gap:"3px",background:"rgba(255,255,255,.1)",border:"1px solid rgba(255,255,255,.15)",borderRadius:"6px",padding:"2px 5px"}}>
+                            <span style={{fontSize:"9px",color:"#93c5fd",fontWeight:"700"}}>TRL</span>
+                            <input value={d.trailer} onChange={e=>gbSetDriverField(d.id,"trailer",e.target.value)} disabled={isViewer}
+                              style={{width:"38px",background:"transparent",border:"none",color:"#fff",fontSize:"10px",fontWeight:"700",outline:"none"}}/>
+                          </div>
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"3px",marginTop:"6px"}}>
+                          <div style={{background:"rgba(0,0,0,.25)",borderRadius:"6px",padding:"3px 4px"}}>
+                            <div style={{fontSize:"8px",color:"#93c5fd",textTransform:"uppercase"}}>Miles</div>
+                            <div style={{fontSize:"11px",fontWeight:"800",color:"#fff"}}>{t.m.toLocaleString()}</div>
+                          </div>
+                          <div style={{background:"rgba(0,0,0,.25)",borderRadius:"6px",padding:"3px 4px"}}>
+                            <div style={{fontSize:"8px",color:"#93c5fd",textTransform:"uppercase"}}>Gross</div>
+                            <div style={{fontSize:"11px",fontWeight:"800",color:"#6ee7b7"}}>${t.g.toLocaleString()}</div>
+                          </div>
+                          <div style={{background:"rgba(0,0,0,.25)",borderRadius:"6px",padding:"3px 4px"}}>
+                            <div style={{fontSize:"8px",color:"#93c5fd",textTransform:"uppercase"}}>RPM</div>
+                            <div style={{fontSize:"11px",fontWeight:"800",color:"#fff"}}>{t.r}</div>
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    {GB_DAYS.map(day=>{
+                      const x=d.days?.[day]||gbBlankDay();
+                      const off=!!x.off;
+                      const hasNote=!!(x.notes&&String(x.notes).trim());
+                      const mi_=Number(x.miles)||0,gr_=Number(x.gross)||0;
+                      const rpmTxt=mi_>0?("$"+(gr_/mi_).toFixed(2)):null;
+                      const inSt={width:"100%",border:"1px solid "+(off?"#9d174d":"#cbd5e1"),background:off?"#3b1020":"#f8fafc",color:off?"#fda4af":"#0f1f3d",borderRadius:"5px",padding:"3px 4px",fontSize:"10px",fontFamily:"inherit",lineHeight:"1.25",outline:"none",boxSizing:"border-box"};
+                      const lblSt={display:"block",fontSize:"8px",fontWeight:"700",color:"#94a3b8",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"1px"};
+                      return(
+                        <td key={day} style={{padding:"4px",border:"1px solid #e2e8f0",verticalAlign:"top",background:off?"#fef2f2":"#fff"}}>
+                          <div style={{display:"grid",gap:"3px"}}>
+                            <div><label style={lblSt}>Pickup</label>
+                              <textarea value={x.pickup} disabled={isViewer} onChange={e=>gbSetDayField(d.id,day,"pickup",e.target.value)}
+                                style={{...inSt,resize:"none",height:"28px",overflow:"auto"}}/></div>
+                            <div><label style={lblSt}>Delivery</label>
+                              <input value={x.delivery} disabled={isViewer} onChange={e=>gbSetDayField(d.id,day,"delivery",e.target.value)} style={inSt}/></div>
+                            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px"}}>
+                              <div><label style={lblSt}>Mi</label>
+                                <input type="number" min="0" value={x.miles} disabled={isViewer} onChange={e=>gbSetDayField(d.id,day,"miles",e.target.value)} style={inSt}/></div>
+                              <div><label style={lblSt}>$</label>
+                                <input type="number" min="0" value={x.gross} disabled={isViewer} onChange={e=>gbSetDayField(d.id,day,"gross",e.target.value)} style={{...inSt,color:off?"#fda4af":"#059669",fontWeight:"700"}}/></div>
+                            </div>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:rpmTxt?"#fffbeb":"#f8fafc",border:"1px solid "+(rpmTxt?"#fde68a":"#e2e8f0"),borderRadius:"5px",padding:"3px 6px",marginTop:"1px"}}>
+                              <span style={{fontSize:"8px",fontWeight:"700",color:"#92400e",textTransform:"uppercase",letterSpacing:".04em"}}>Rate/mi</span>
+                              <span style={{fontSize:"11px",fontWeight:"800",color:rpmTxt?"#b45309":"#cbd5e1"}}>{rpmTxt||"—"}</span>
+                            </div>
+                            <div><label style={lblSt}>Notes</label>
+                              <textarea value={x.notes} disabled={isViewer} onChange={e=>gbSetDayField(d.id,day,"notes",e.target.value)}
+                                placeholder="Add note…"
+                                style={{...inSt,resize:"none",height:"24px",overflow:"auto",
+                                        borderStyle:hasNote?"solid":"dashed",
+                                        borderColor:hasNote?"#a78bfa":(off?"#9d174d":"#cbd5e1"),
+                                        background:hasNote?"#1e1b4b":inSt.background,
+                                        color:hasNote?"#e9d5ff":inSt.color}}/></div>
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        )}
+
+        <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"12px"}}>
+          {!isViewer&&gbDrivers.length>0&&<button onClick={gbAddDriver} style={{padding:"8px 16px",background:"#fff",border:"1px solid #cbd5e1",borderRadius:"8px",fontSize:"12px",fontWeight:"700",color:"#374151",cursor:"pointer",outline:"none"}}>+ Add driver</button>}
+          <button onClick={gbExportJSON} style={{padding:"8px 16px",background:"#2563eb",color:"#fff",border:"none",borderRadius:"8px",fontSize:"12px",fontWeight:"700",cursor:"pointer",outline:"none"}}>Export JSON</button>
+          <button onClick={gbExportCSV} style={{padding:"8px 16px",background:"#fff",border:"1px solid #cbd5e1",borderRadius:"8px",fontSize:"12px",fontWeight:"700",color:"#374151",cursor:"pointer",outline:"none"}}>Export CSV</button>
+        </div>
+        <div style={{fontSize:"11px",color:"#94a3b8",marginTop:"10px",lineHeight:"1.6",maxWidth:"640px"}}>
+          Each day has a Notes field (dashed until you type). <strong>+ New week</strong> carries driver names, phones,
+          trucks and trailers forward automatically and starts every day cell blank. This data saves with the rest of
+          the board and is separate from Planned Shipments — nothing here touches loads, brokers, or rates.
+        </div>
+      </div>
+    )}
+
+
 
     {/* ARCHIVE TAB */}
     {activeTab==="archive"&&(isAdmin||isViewer)&&(<div style={{background:"#fff",border:"1px solid #d1d5db",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"20px"}}><div style={{fontWeight:"700",fontSize:"14px",color:"#4c1d95",marginBottom:"4px"}}>📦 Archived Weeks</div><div style={{fontSize:"11px",color:"#64748b",marginBottom:"14px"}}>Weeks moved here from the main board.</div>{archivedWeeks.length===0?<div style={{textAlign:"center",padding:"40px",color:"#94a3b8",fontSize:"12px",border:"2px dashed #e2e8f0",borderRadius:"8px"}}>No archived weeks yet. Click 📦 on a week tab to archive it.</div>:archivedWeeks.map((w,i)=>(<div key={i} style={{border:"1px solid #e9d5ff",borderRadius:"10px",padding:"14px",marginBottom:"12px",background:"#faf5ff"}}><div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"10px"}}><span style={{fontWeight:"700",fontSize:"13px",color:"#4c1d95",flex:1}}>{w.label}</span><span style={{fontSize:"10px",color:"#94a3b8"}}>{w.archivedAt}</span><button onClick={()=>{if(!confirm("Restore?"))return;restoreArchivedWeek(i);setActiveTab("weeks");}} style={{background:"#eff6ff",color:"#2563eb",border:"1px solid #bfdbfe",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer",display:isAdmin?"inline-block":"none"}}>Restore</button><button onClick={()=>{if(!confirm("Permanently delete?"))return;deleteArchivedWeek(i);}} style={{background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:"6px",padding:"4px 10px",fontSize:"11px",fontWeight:"600",cursor:"pointer",display:isAdmin?"inline-block":"none"}}>Delete</button></div><div style={{display:"flex",gap:"12px",flexWrap:"wrap",fontSize:"11px",color:"#6b7280"}}><span>{(w.groups||[]).length} trailers</span><span>{(w.groups||[]).flatMap(g=>g.loads||[]).length} loads</span><span style={{fontWeight:"700",color:"#059669"}}>${(w.groups||[]).flatMap(g=>g.loads||[]).reduce((s,l)=>s+(parseFloat(l.rate)||0),0).toLocaleString()} gross</span></div></div>))}</div>)}
