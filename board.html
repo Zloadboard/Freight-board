@@ -1255,7 +1255,7 @@ const GB_DAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 // a load opening today that won't have numbers until it delivers on some
 // later day. Splitting these lets one day carry both without one erasing
 // the other's fields.
-const gbBlankDay=()=>({delivered:{city:"",miles:"",gross:""},pickedUp:{city:"",deliversOn:""},notes:"",off:false});
+const gbBlankDay=()=>({delivered:{city:"",miles:"",gross:"",confirmed:false},pickedUp:{city:"",deliversOn:""},notes:"",off:false});
 // Reads either the new split shape or the old flat {pickup,delivery,miles,
 // gross,notes} shape from before this rework, so nothing already typed is
 // lost. Old delivery -> delivered, old pickup -> pickedUp, old miles/gross
@@ -1263,14 +1263,14 @@ const gbBlankDay=()=>({delivered:{city:"",miles:"",gross:""},pickedUp:{city:"",d
 function gbDayNorm(x){
   if(!x)return gbBlankDay();
   if(x.delivered||x.pickedUp)return{
-    delivered:{city:"",miles:"",gross:"",...(x.delivered||{})},
+    delivered:{city:"",miles:"",gross:"",confirmed:false,...(x.delivered||{})},
     pickedUp:{city:"",deliversOn:"",...(x.pickedUp||{})},
     notes:x.notes||"",off:!!x.off
   };
   return{
     // A legitimate "0" (a logged repositioning move with no revenue) must
     // survive migration — ||"" would treat 0 the same as missing and blank it.
-    delivered:{city:x.delivery||"",miles:x.miles!=null?x.miles:"",gross:x.gross!=null?x.gross:""},
+    delivered:{city:x.delivery||"",miles:x.miles!=null?x.miles:"",gross:x.gross!=null?x.gross:"",confirmed:false},
     pickedUp:{city:x.pickup||"",deliversOn:""},
     notes:x.notes||"",off:!!x.off
   };
@@ -5491,7 +5491,7 @@ function App(){
   };
   const gbExportCSV=()=>{
     const rows=[["week","driverName","phone","homeBase","truck","trailer","day",
-                 "deliveredCity","miles","gross","rpm","pickedUpCity","deliversOn","notes"]];
+                 "deliveredCity","miles","gross","rpm","confirmed","pickedUpCity","deliversOn","notes"]];
     gbDrivers.forEach(d=>{
       GB_DAYS.forEach(day=>{
         const x=gbDayNorm(d.days?.[day]);
@@ -5500,6 +5500,7 @@ function App(){
         const m=Number(x.delivered.miles)||0,g=Number(x.delivered.gross)||0;
         rows.push([week.label,d.name,d.phone,d.home,d.truck,d.trailer,day,
           x.delivered.city||"",x.delivered.miles||"",x.delivered.gross||"",m>0?(g/m).toFixed(2):"",
+          x.delivered.confirmed?"Y":"N",
           x.pickedUp.city||"",x.pickedUp.deliversOn||"",x.notes||""]);
       });
     });
@@ -9937,41 +9938,75 @@ ${accRows.length>0?`
                         <td key={day} style={{padding:"4px",border:"1px solid #e2e8f0",verticalAlign:"top",background:off?"#fef2f2":"#fff"}}>
                           <div style={{display:"grid",gap:"4px"}}>
 
-                            {/* DELIVERED — closes a load today; the only side that carries real Mi/$ */}
-                            <div style={{background:off?"#3b1020":"#f0fdf4",border:"1px solid "+(off?"#9d174d":"#bbf7d0"),borderRadius:"6px",padding:"4px"}}>
-                              <label style={{...lblSt,color:off?"#fda4af":"#166534"}}>Delivered</label>
-                              <textarea value={x.delivered.city} disabled={isViewer} placeholder="City, ST"
-                                onChange={e=>gbSetDayField(d.id,day,"delivered.city",e.target.value)}
-                                style={{...inSt,resize:"none",height:"26px",overflow:"auto",marginBottom:"3px"}}/>
-                              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px"}}>
-                                <div><label style={{...lblSt,color:"#94a3b8"}}>Mi</label>
-                                  <input type="number" min="0" value={x.delivered.miles} disabled={isViewer}
-                                    onChange={e=>gbSetDayField(d.id,day,"delivered.miles",e.target.value)} style={inSt}/></div>
-                                <div><label style={{...lblSt,color:"#94a3b8"}}>$</label>
-                                  <input type="number" min="0" value={x.delivered.gross} disabled={isViewer}
-                                    onChange={e=>gbSetDayField(d.id,day,"delivered.gross",e.target.value)} style={{...inSt,color:off?"#fda4af":"#059669",fontWeight:"700"}}/></div>
+                            {/* DELIVERED — closes a load today; the only side that carries real
+                                Mi/$. The checkbox marks it CONFIRMED — dims its own fields (locked
+                                until unchecked) and, if a pickup elsewhere pointed here, dims that
+                                pickup's box too, since the whole load is now settled. */}
+                            {(()=>{
+                              const confirmed=!!x.delivered.confirmed;
+                              const dimSt=confirmed?{filter:"blur(1.5px)",opacity:.45,pointerEvents:"none"}:{};
+                              return(
+                              <div style={{background:off?"#3b1020":"#f0fdf4",border:"1px solid "+(off?"#9d174d":"#bbf7d0"),borderRadius:"6px",padding:"4px"}}>
+                                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"2px"}}>
+                                  <label style={{...lblSt,color:off?"#fda4af":"#166534",marginBottom:0}}>Delivered</label>
+                                  <label title="Mark this delivery confirmed" style={{display:"flex",alignItems:"center",gap:"3px",cursor:isViewer?"default":"pointer"}}>
+                                    {confirmed&&<span style={{fontSize:"8px",fontWeight:"800",color:"#166534"}}>✓</span>}
+                                    <input type="checkbox" checked={confirmed} disabled={isViewer}
+                                      onChange={e=>gbSetDayField(d.id,day,"delivered.confirmed",e.target.checked)}
+                                      style={{width:"12px",height:"12px",cursor:isViewer?"default":"pointer",accentColor:"#166534"}}/>
+                                  </label>
+                                </div>
+                                <div style={dimSt}>
+                                  <textarea value={x.delivered.city} disabled={isViewer||confirmed} placeholder="City, ST"
+                                    onChange={e=>gbSetDayField(d.id,day,"delivered.city",e.target.value)}
+                                    style={{...inSt,resize:"none",height:"26px",overflow:"auto",marginBottom:"3px"}}/>
+                                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px"}}>
+                                    <div><label style={{...lblSt,color:"#94a3b8"}}>Mi</label>
+                                      <input type="number" min="0" value={x.delivered.miles} disabled={isViewer||confirmed}
+                                        onChange={e=>gbSetDayField(d.id,day,"delivered.miles",e.target.value)} style={inSt}/></div>
+                                    <div><label style={{...lblSt,color:"#94a3b8"}}>$</label>
+                                      <input type="number" min="0" value={x.delivered.gross} disabled={isViewer||confirmed}
+                                        onChange={e=>gbSetDayField(d.id,day,"delivered.gross",e.target.value)} style={{...inSt,color:off?"#fda4af":"#059669",fontWeight:"700"}}/></div>
+                                  </div>
+                                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:rpmTxt?"#fffbeb":"#fff",border:"1px solid "+(rpmTxt?"#fde68a":"#e2e8f0"),borderRadius:"5px",padding:"3px 6px",marginTop:"3px"}}>
+                                    <span style={{fontSize:"8px",fontWeight:"700",color:"#92400e",textTransform:"uppercase",letterSpacing:".04em"}}>Rate/mi</span>
+                                    <span style={{fontSize:"11px",fontWeight:"800",color:rpmTxt?"#b45309":"#cbd5e1"}}>{rpmTxt||"—"}</span>
+                                  </div>
+                                </div>
                               </div>
-                              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:rpmTxt?"#fffbeb":"#fff",border:"1px solid "+(rpmTxt?"#fde68a":"#e2e8f0"),borderRadius:"5px",padding:"3px 6px",marginTop:"3px"}}>
-                                <span style={{fontSize:"8px",fontWeight:"700",color:"#92400e",textTransform:"uppercase",letterSpacing:".04em"}}>Rate/mi</span>
-                                <span style={{fontSize:"11px",fontWeight:"800",color:rpmTxt?"#b45309":"#cbd5e1"}}>{rpmTxt||"—"}</span>
-                              </div>
-                            </div>
+                              );
+                            })()}
 
                             {/* PICKED UP — opens a load today; no numbers yet, since the trip isn't
-                                done. "Delivers" just flags which day to look for the real numbers. */}
-                            <div style={{background:off?"#3b1020":"#eff6ff",border:"1px solid "+(off?"#9d174d":"#bfdbfe"),borderRadius:"6px",padding:"4px"}}>
-                              <label style={{...lblSt,color:off?"#fda4af":"#1d4ed8"}}>Picked up</label>
-                              <input value={x.pickedUp.city} disabled={isViewer} placeholder="City, ST"
-                                onChange={e=>gbSetDayField(d.id,day,"pickedUp.city",e.target.value)}
-                                style={{...inSt,marginBottom:"3px"}}/>
-                              <select value={x.pickedUp.deliversOn} disabled={isViewer}
-                                onChange={e=>gbSetDayField(d.id,day,"pickedUp.deliversOn",e.target.value)}
-                                style={{...inSt,cursor:isViewer?"default":"pointer"}}>
-                                <option value="">Delivers…</option>
-                                {GB_DAYS.map(gd=><option key={gd} value={gd}>→ {gd}</option>)}
-                                <option value="Next wk">→ Next wk</option>
-                              </select>
-                            </div>
+                                done. "Delivers" just flags which day to look for the real numbers.
+                                Dims automatically once THAT day's Delivered box is checked confirmed —
+                                no separate checkbox needed here, since it's the same load either way. */}
+                            {(()=>{
+                              const target=x.pickedUp.city&&x.pickedUp.deliversOn&&x.pickedUp.deliversOn!=="Next wk"
+                                ?gbDayNorm(d.days?.[x.pickedUp.deliversOn]):null;
+                              const pickupConfirmed=!!(target&&target.delivered.confirmed);
+                              const dimSt=pickupConfirmed?{filter:"blur(1.5px)",opacity:.45,pointerEvents:"none"}:{};
+                              return(
+                              <div style={{background:off?"#3b1020":"#eff6ff",border:"1px solid "+(off?"#9d174d":"#bfdbfe"),borderRadius:"6px",padding:"4px",position:"relative"}}>
+                                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"2px"}}>
+                                  <label style={{...lblSt,color:off?"#fda4af":"#1d4ed8",marginBottom:0}}>Picked up</label>
+                                  {pickupConfirmed&&<span style={{fontSize:"8px",fontWeight:"800",color:"#166534"}}>✓ Delivered</span>}
+                                </div>
+                                <div style={dimSt}>
+                                  <input value={x.pickedUp.city} disabled={isViewer||pickupConfirmed} placeholder="City, ST"
+                                    onChange={e=>gbSetDayField(d.id,day,"pickedUp.city",e.target.value)}
+                                    style={{...inSt,marginBottom:"3px"}}/>
+                                  <select value={x.pickedUp.deliversOn} disabled={isViewer||pickupConfirmed}
+                                    onChange={e=>gbSetDayField(d.id,day,"pickedUp.deliversOn",e.target.value)}
+                                    style={{...inSt,cursor:(isViewer||pickupConfirmed)?"default":"pointer"}}>
+                                    <option value="">Delivers…</option>
+                                    {GB_DAYS.map(gd=><option key={gd} value={gd}>→ {gd}</option>)}
+                                    <option value="Next wk">→ Next wk</option>
+                                  </select>
+                                </div>
+                              </div>
+                              );
+                            })()}
 
                             <div><label style={{...lblSt,color:"#94a3b8"}}>Notes</label>
                               <textarea value={x.notes} disabled={isViewer} onChange={e=>gbSetDayField(d.id,day,"notes",e.target.value)}
