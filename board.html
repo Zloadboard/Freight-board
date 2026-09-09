@@ -1255,45 +1255,31 @@ const GB_DAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 // a load opening today that won't have numbers until it delivers on some
 // later day. Splitting these lets one day carry both without one erasing
 // the other's fields.
-const gbBlankDay=()=>({delivered:{city:"",miles:"",gross:"",confirmed:false},pickedUp:{city:"",deliversOn:""},notes:"",off:false});
+const gbBlankDay=()=>({delivered:{city:"",miles:"",gross:"",confirmed:false},pickedUp:{city:"",broker:"",loadNum:"",confirmed:false},notes:"",off:false});
 // Reads either the new split shape or the old flat {pickup,delivery,miles,
 // gross,notes} shape from before this rework, so nothing already typed is
 // lost. Old delivery -> delivered, old pickup -> pickedUp, old miles/gross
 // stay with delivered since that's the side that owns real numbers.
 function gbDayNorm(x){
   if(!x)return gbBlankDay();
+  // Older saves may still carry a "deliversOn" field from a since-removed
+  // multi-day picker — spreading it through here is harmless (unused, never
+  // rendered or written again) rather than something to strip out.
   if(x.delivered||x.pickedUp)return{
     delivered:{city:"",miles:"",gross:"",confirmed:false,...(x.delivered||{})},
-    pickedUp:{city:"",deliversOn:"",...(x.pickedUp||{})},
+    pickedUp:{city:"",broker:"",loadNum:"",confirmed:false,...(x.pickedUp||{})},
     notes:x.notes||"",off:!!x.off
   };
   return{
     // A legitimate "0" (a logged repositioning move with no revenue) must
     // survive migration — ||"" would treat 0 the same as missing and blank it.
     delivered:{city:x.delivery||"",miles:x.miles!=null?x.miles:"",gross:x.gross!=null?x.gross:"",confirmed:false},
-    pickedUp:{city:x.pickup||"",deliversOn:""},
+    pickedUp:{city:x.pickup||"",broker:"",loadNum:"",confirmed:false},
     notes:x.notes||"",off:!!x.off
   };
 }
 const gbBlankDays=()=>{const o={};GB_DAYS.forEach(d=>o[d]=gbBlankDay());return o;};
-// Days strictly between a pickup and the day it's flagged to deliver — the
-// truck is rolling those days with nothing to log, so they read as "why is
-// this blank" rather than "nothing happens here, on purpose." "Next wk"
-// spans through Sunday since there's no further date to anchor to.
-function gbTransitDays(d){
-  const s=new Set();
-  GB_DAYS.forEach((day,i)=>{
-    const x=gbDayNorm(d.days?.[day]);
-    if(!x.pickedUp.city||!x.pickedUp.deliversOn)return;
-    if(x.pickedUp.deliversOn==="Next wk"){
-      for(let k=i+1;k<GB_DAYS.length;k++)s.add(GB_DAYS[k]);
-      return;
-    }
-    const j=GB_DAYS.indexOf(x.pickedUp.deliversOn);
-    if(j>i)for(let k=i+1;k<j;k++)s.add(GB_DAYS[k]);
-  });
-  return s;
-}
+
 // Distinct gradient per driver so rows are told apart at a glance. Cycles by
 // how many drivers already exist, not by array position, so removing a driver
 // never reshuffles everyone else's color.
@@ -3530,11 +3516,6 @@ function App(){
   const[distOverrides,setDistOverrides]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_distoverrides")||"{}");}catch(e){return{};}});
   const[emailPick,setEmailPick]=useState(null); // {group, emails} while the picker is open
   const[xdockPrompt,setXdockPrompt]=useState(null); // {gid, lid} while asking for the crossdock city
-  // Which collapsed "in transit" cells the user has manually expanded to
-  // edit, keyed "driverId|day". Purely a view toggle, never saved — once a
-  // cell actually has content, it stops collapsing on its own anyway.
-  const[gbForceOpen,setGbForceOpen]=useState({});
-  const gbToggleOpen=(key)=>setGbForceOpen(prev=>({...prev,[key]:!prev[key]}));
 
   // Builds the payload and posts it. Recipients come from the picker, so the
   // same routine serves "everyone" and "just these two".
@@ -5447,8 +5428,8 @@ function App(){
   const gbAddDriver=()=>setGBDrivers([...gbDrivers,mkGBDriver({},gbDrivers.length)]);
   const gbRemoveDriver=(id)=>{if(!confirm("Remove this driver from the General Board?"))return;setGBDrivers(gbDrivers.filter(d=>d.id!==id));};
   const gbSetDriverField=(id,f,v)=>setGBDrivers(gbDrivers.map(d=>d.id!==id?d:{...d,[f]:v}));
-  // path is "delivered.city", "delivered.miles", "delivered.gross",
-  // "pickedUp.city", "pickedUp.deliversOn", or the flat "notes".
+  // path is "delivered.city", "delivered.miles", "delivered.gross", "delivered.confirmed",
+  // "pickedUp.city", "pickedUp.broker", "pickedUp.loadNum", "pickedUp.confirmed", or the flat "notes".
   const gbSetDayField=(id,day,path,v)=>setGBDrivers(gbDrivers.map(d=>{
     if(d.id!==id)return d;
     const cur=gbDayNorm(d.days?.[day]);
@@ -5478,7 +5459,7 @@ function App(){
     return{drivers:gbDrivers.length,m,g,r:m>0?"$"+(g/m).toFixed(2):"—"};
   })();
   const gbExportJSON=()=>{
-    const payload={version:3,weekLabel:week.label,dispatcher:"Zygis",dispatchColor:"blue",
+    const payload={version:4,weekLabel:week.label,dispatcher:"Zygis",dispatchColor:"blue",
       drivers:gbDrivers.map(d=>{
         const t=gbDriverTotals(d);
         const days={};GB_DAYS.forEach(day=>{days[day]=gbDayNorm(d.days?.[day]);});
@@ -5491,17 +5472,20 @@ function App(){
   };
   const gbExportCSV=()=>{
     const rows=[["week","driverName","phone","homeBase","truck","trailer","day",
-                 "deliveredCity","miles","gross","rpm","confirmed","pickedUpCity","deliversOn","notes"]];
+                 "deliveredCity","miles","gross","rpm","deliveredConfirmed",
+                 "pickedUpCity","broker","loadNum","pickedUpConfirmed","notes"]];
     gbDrivers.forEach(d=>{
       GB_DAYS.forEach(day=>{
         const x=gbDayNorm(d.days?.[day]);
-        const hasContent=x.delivered.city||x.delivered.miles||x.delivered.gross||x.pickedUp.city||x.notes;
+        const hasContent=x.delivered.city||x.delivered.miles||x.delivered.gross||
+                          x.pickedUp.city||x.pickedUp.broker||x.pickedUp.loadNum||x.notes;
         if(!hasContent)return;
         const m=Number(x.delivered.miles)||0,g=Number(x.delivered.gross)||0;
         rows.push([week.label,d.name,d.phone,d.home,d.truck,d.trailer,day,
           x.delivered.city||"",x.delivered.miles||"",x.delivered.gross||"",m>0?(g/m).toFixed(2):"",
           x.delivered.confirmed?"Y":"N",
-          x.pickedUp.city||"",x.pickedUp.deliversOn||"",x.notes||""]);
+          x.pickedUp.city||"",x.pickedUp.broker||"",x.pickedUp.loadNum||"",
+          x.pickedUp.confirmed?"Y":"N",x.notes||""]);
       });
     });
     const csv=rows.map(r=>r.map(v=>{v=String(v??"");return /[",\n]/.test(v)?`"${v.replace(/"/g,'""')}"`:v;}).join(",")).join("\n");
@@ -9852,7 +9836,6 @@ ${accRows.length>0?`
             <tbody>
               {gbDrivers.map(d=>{
                 const t=gbDriverTotals(d);
-                const transitDays=gbTransitDays(d);
                 return(
                   <tr key={d.id}>
                     <td style={{padding:0,border:"1px solid #e2e8f0",verticalAlign:"top",background:`linear-gradient(180deg,${(d.color||GB_PALETTE[0])[0]},${(d.color||GB_PALETTE[0])[1]})`}}>
@@ -9910,25 +9893,6 @@ ${accRows.length>0?`
                     {GB_DAYS.map(day=>{
                       const x=gbDayNorm(d.days?.[day]);
                       const off=!!x.off;
-                      const hasContent=!!(x.delivered.city||x.delivered.miles||x.delivered.gross||x.pickedUp.city||x.notes);
-                      const gbKey=d.id+"|"+day;
-                      const collapsed=transitDays.has(day)&&!hasContent&&!gbForceOpen[gbKey];
-
-                      // The truck is rolling this day with nothing to log — a single
-                      // status bar instead of three empty input sections, so it reads
-                      // as "on purpose" rather than "why is this blank."
-                      if(collapsed)return(
-                        <td key={day} style={{padding:"4px",border:"1px solid #e2e8f0",verticalAlign:"middle",background:"#f1f5f9"}}>
-                          <button onClick={()=>gbToggleOpen(gbKey)} disabled={isViewer} title={isViewer?"":"Click to log something on this day"}
-                            style={{width:"100%",height:"100%",minHeight:"90px",background:"none",border:"1.5px dashed #cbd5e1",borderRadius:"7px",
-                                    display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"4px",
-                                    cursor:isViewer?"default":"pointer",padding:"10px 4px"}}>
-                            <span style={{fontSize:"15px"}}>🚚</span>
-                            <span style={{fontSize:"9px",fontWeight:"800",color:"#94a3b8",textTransform:"uppercase",letterSpacing:".05em"}}>In Transit</span>
-                          </button>
-                        </td>
-                      );
-
                       const hasNote=!!(x.notes&&String(x.notes).trim());
                       const mi_=Number(x.delivered.miles)||0,gr_=Number(x.delivered.gross)||0;
                       const rpmTxt=mi_>0?("$"+(gr_/mi_).toFixed(2)):null;
@@ -9977,32 +9941,35 @@ ${accRows.length>0?`
                               );
                             })()}
 
-                            {/* PICKED UP — opens a load today; no numbers yet, since the trip isn't
-                                done. "Delivers" just flags which day to look for the real numbers.
-                                Dims automatically once THAT day's Delivered box is checked confirmed —
-                                no separate checkbox needed here, since it's the same load either way. */}
+                            {/* PICKED UP — its own checkbox now, independent of Delivered.
+                                Check it once the load is actually in hand; Broker and Load #
+                                give you somewhere to log the paperwork as soon as you have it. */}
                             {(()=>{
-                              const target=x.pickedUp.city&&x.pickedUp.deliversOn&&x.pickedUp.deliversOn!=="Next wk"
-                                ?gbDayNorm(d.days?.[x.pickedUp.deliversOn]):null;
-                              const pickupConfirmed=!!(target&&target.delivered.confirmed);
-                              const dimSt=pickupConfirmed?{filter:"blur(1.5px)",opacity:.45,pointerEvents:"none"}:{};
+                              const pconfirmed=!!x.pickedUp.confirmed;
+                              const dimSt=pconfirmed?{filter:"blur(1.5px)",opacity:.45,pointerEvents:"none"}:{};
                               return(
-                              <div style={{background:off?"#3b1020":"#eff6ff",border:"1px solid "+(off?"#9d174d":"#bfdbfe"),borderRadius:"6px",padding:"4px",position:"relative"}}>
+                              <div style={{background:off?"#3b1020":"#eff6ff",border:"1px solid "+(off?"#9d174d":"#bfdbfe"),borderRadius:"6px",padding:"4px"}}>
                                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"2px"}}>
                                   <label style={{...lblSt,color:off?"#fda4af":"#1d4ed8",marginBottom:0}}>Picked up</label>
-                                  {pickupConfirmed&&<span style={{fontSize:"8px",fontWeight:"800",color:"#166534"}}>✓ Delivered</span>}
+                                  <label title="Mark this pickup confirmed" style={{display:"flex",alignItems:"center",gap:"3px",cursor:isViewer?"default":"pointer"}}>
+                                    {pconfirmed&&<span style={{fontSize:"8px",fontWeight:"800",color:"#166534"}}>✓</span>}
+                                    <input type="checkbox" checked={pconfirmed} disabled={isViewer}
+                                      onChange={e=>gbSetDayField(d.id,day,"pickedUp.confirmed",e.target.checked)}
+                                      style={{width:"12px",height:"12px",cursor:isViewer?"default":"pointer",accentColor:"#1d4ed8"}}/>
+                                  </label>
                                 </div>
                                 <div style={dimSt}>
-                                  <input value={x.pickedUp.city} disabled={isViewer||pickupConfirmed} placeholder="City, ST"
+                                  <input value={x.pickedUp.city} disabled={isViewer||pconfirmed} placeholder="City, ST"
                                     onChange={e=>gbSetDayField(d.id,day,"pickedUp.city",e.target.value)}
                                     style={{...inSt,marginBottom:"3px"}}/>
-                                  <select value={x.pickedUp.deliversOn} disabled={isViewer||pickupConfirmed}
-                                    onChange={e=>gbSetDayField(d.id,day,"pickedUp.deliversOn",e.target.value)}
-                                    style={{...inSt,cursor:(isViewer||pickupConfirmed)?"default":"pointer"}}>
-                                    <option value="">Delivers…</option>
-                                    {GB_DAYS.map(gd=><option key={gd} value={gd}>→ {gd}</option>)}
-                                    <option value="Next wk">→ Next wk</option>
-                                  </select>
+                                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px"}}>
+                                    <div><label style={{...lblSt,color:"#94a3b8"}}>Broker</label>
+                                      <input value={x.pickedUp.broker} disabled={isViewer||pconfirmed} placeholder="Broker"
+                                        onChange={e=>gbSetDayField(d.id,day,"pickedUp.broker",e.target.value)} style={inSt}/></div>
+                                    <div><label style={{...lblSt,color:"#94a3b8"}}>Load #</label>
+                                      <input value={x.pickedUp.loadNum} disabled={isViewer||pconfirmed} placeholder="Load #"
+                                        onChange={e=>gbSetDayField(d.id,day,"pickedUp.loadNum",e.target.value)} style={inSt}/></div>
+                                  </div>
                                 </div>
                               </div>
                               );
