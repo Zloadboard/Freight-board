@@ -5163,9 +5163,11 @@ function App(){
             const rpm=rate/mi;
             if(rpm>=0.5&&rpm<=8){
               const gross=mktAddBack(rate,prev,d);
+              // dayIdx (0=Mon..6=Sun) lets the caller stamp a real calendar date once
+              // it knows this sheet's Monday — parseSheet itself only sees columns.
               laneRecs.push({d,o:prev,mi:Math.round(mi),rate:Math.round(gross),rpm:gross/mi,
                              local:mi<150,multi:rpm>SINGLE_LOAD_MAX_RPM,stopsKnown:false,estimated:true,
-                             live:false,broker:""});
+                             live:false,broker:"",dayIdx:LANE_DAYS.indexOf(c)});
             }
           }
           // origin of the NEXT load is this day's pickup
@@ -5216,12 +5218,13 @@ function App(){
       const laneRecs=dispatchers.laneRecs||[];
       // Derive week key + label from sheet name first, else scan cell dates
       const nameDates=parseSheetNameDates(sheetName);
-      let weekKey='',weekLabel='';
+      let weekKey='',weekLabel='',weekMon=null;
       if(nameDates){
         const{start,end}=nameDates;
         const fmt=d=>(d.getMonth()+1)+"-"+d.getDate()+"-"+d.getFullYear();
         weekKey=start.getFullYear()+"-"+String(start.getMonth()+1).padStart(2,"0")+"-"+String(start.getDate()).padStart(2,"0");
         weekLabel=fmt(start)+" → "+fmt(end);
+        weekMon=start;
       } else {
         const grid=window.XLSX.utils.sheet_to_json(sheet,{header:1,defval:""});
         const foundDates=new Set();
@@ -5238,12 +5241,20 @@ function App(){
           const fmt=d=>(d.getMonth()+1)+"-"+d.getDate()+"-"+d.getFullYear();
           weekKey=mon.getFullYear()+"-"+String(mon.getMonth()+1).padStart(2,"0")+"-"+String(mon.getDate()).padStart(2,"0");
           weekLabel=fmt(mon)+" → "+fmt(sun);
+          weekMon=mon;
         } else {
           weekKey='sheet-'+sheetName;
           weekLabel=sheetName;
         }
       }
-      weeks.push({weekKey,weekLabel,dispatchers,sheetName,laneRecs});
+      // Stamp each lane record with its real calendar date (Monday + dayIdx),
+      // so imported loads are visible to the 7/14/30-day Lane Price Moves
+      // panel instead of silently being undated and excluded from it.
+      const datedLaneRecs=weekMon?laneRecs.map(r=>{
+        const dt=new Date(weekMon.getFullYear(),weekMon.getMonth(),weekMon.getDate()+(r.dayIdx||0));
+        return{...r,date:dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0")};
+      }):laneRecs;
+      weeks.push({weekKey,weekLabel,dispatchers,sheetName,laneRecs:datedLaneRecs});
     });
     if(!weeks.length)return{ok:false,error:"No week sheets found in workbook. Expected sheet names like '08032026-08092026'."};
     return{ok:true,weeks};
@@ -10544,7 +10555,10 @@ ${accRows.length>0?`
                   parsed.weeks.forEach(w=>{
                     const wk=w.weekLabel||w.sheetName;
                     if(!(w.laneRecs||[]).length)return;
-                    store[wk]=w.laneRecs.map(r=>({...r,week:wk,date:""}));
+                    // date now comes from parseSheet/parseMainBoardXLSX itself (Monday +
+                    // dayIdx) — this used to force it blank, which silently hid every
+                    // imported load from the 7/14/30-day Lane Price Moves panel.
+                    store[wk]=w.laneRecs.map(r=>({...r,week:wk}));
                     added+=w.laneRecs.length;
                   });
                   const flat=Object.keys(store).reduce((a,k)=>a.concat(store[k]),[]);
