@@ -1018,6 +1018,8 @@ function normalizeData(raw) {
     startDate:  w.startDate || "",
     createdAt:  w.createdAt || 0,
     archived:   !!w.archived,
+    updatedAt:  w.updatedAt || 0,     // 2026-09-15: weeks are stamped now, so a
+                                      // rename stops losing to whoever saves next
     loads:      Array.isArray(w.loads) ? w.loads.map(migrateLoad) : []
   }));
 
@@ -1056,16 +1058,57 @@ function mergeClientData(serverRaw, localRaw) {
     tombSet[id] = true;
   });
 
-  // Config — take whichever side was updated more recently
+  // Config — 2026-09-12 FIX.
+  //
+  // This used to be all-or-nothing: whichever side had the newer top-level
+  // `updatedAt` supplied EVERY config field. Since every local mutation stamps
+  // data.updatedAt = Date.now(), local essentially always won — so one
+  // dispatcher's empty copy silently wiped another's imported drivers, truck
+  // map and board passcode (measured 10/10 runs). The Apps Script's guard did
+  // not catch it either, because `[]` and `{}` are truthy in JavaScript, so
+  // `incoming.customDrivers || server.customDrivers` always took the empty
+  // client value. Merging correctly HERE also fixes that: what we post is now
+  // the union, so the server's `||` picks up the right thing.
+  //
+  // Lists are unioned, the truck map is merged key by key, and the two scalars
+  // fall back to whichever side actually has a value before considering which
+  // is newer — a blank is never treated as a deliberate change.
   const serverNewer = (server.updatedAt || 0) >= (local.updatedAt || 0);
-  const cfg = serverNewer ? server : local;
 
+  const unionList = (a, b) => {
+    const seen = new Set(), out = [];
+    [].concat(a || [], b || []).forEach(v => {
+      const k = String(v == null ? "" : v).trim();
+      if (!k || seen.has(k)) return;
+      seen.add(k); out.push(v);
+    });
+    return out;
+  };
+  // Truck → driver map: union the keys. Where both sides name a driver for the
+  // same truck and disagree, the more recently updated side wins.
+  const mergeTruckMap = (s, l) => {
+    const out = Object.assign({}, serverNewer ? l : s);
+    Object.keys(serverNewer ? s : l).forEach(k => { out[k] = (serverNewer ? s : l)[k]; });
+    return out;
+  };
+  // A scalar only counts as a change when it is non-empty; otherwise keep the
+  // side that has one, so a stale blank can never clear a real value.
+  const pickScalar = (sv, lv) => {
+    const s2 = sv || "", l2 = lv || "";
+    if (s2 && !l2) return s2;
+    if (l2 && !s2) return l2;
+    return serverNewer ? s2 : l2;
+  };
   const out = {
-    adminPin:         cfg.adminPin || "",
-    accessPasscode:   cfg.accessPasscode || "",
-    customDrivers:    cfg.customDrivers || [],
-    customTrucks:     cfg.customTrucks || [],
-    truckAssignments: cfg.truckAssignments || {},
+    adminPin:         pickScalar(server.adminPin, local.adminPin),
+    // 2026-09-15: the server is the only thing that changes the passcode now
+    // (see apiSetPasscode), so its value is simply the truth — including a
+    // deliberate removal, which the pass-1 "never let a blank win" rule had to
+    // special-case with a timestamp hack.
+    accessPasscode:   server.accessPasscode || "",
+    customDrivers:    unionList(server.customDrivers, local.customDrivers),
+    customTrucks:     unionList(server.customTrucks, local.customTrucks),
+    truckAssignments: mergeTruckMap(server.truckAssignments || {}, local.truckAssignments || {}),
     // currentWeekId is effectively a per-device view choice — keep local's
     // so a poll never yanks the user to a week someone else selected.
     currentWeekId:    local.currentWeekId || server.currentWeekId || "",
@@ -1093,16 +1136,21 @@ function mergeClientData(serverRaw, localRaw) {
         if (sl && ll) loads.push((ll.updatedAt || 0) >= (sl.updatedAt || 0) ? ll : sl);
         else          loads.push(ll || sl);
       });
-      const meta = serverNewer ? sw : lw;
+      // 2026-09-15: week metadata follows the week's OWN stamp, not the
+      // board-wide one. Before this, any local edit made local "newer" and
+      // reverted another dispatcher's week rename.
+      const meta = ((lw.updatedAt || 0) >= (sw.updatedAt || 0)) ? lw : sw;
       out.weeks.push({
         id: wid, label: meta.label, startDate: meta.startDate || "",
-        createdAt: meta.createdAt || 0, archived: !!meta.archived, loads
+        createdAt: sw.createdAt || lw.createdAt || 0, archived: !!meta.archived,
+        updatedAt: Math.max(sw.updatedAt || 0, lw.updatedAt || 0), loads
       });
     } else {
       const w = sw || lw;
       out.weeks.push({
         id: w.id, label: w.label, startDate: w.startDate || "",
         createdAt: w.createdAt || 0, archived: !!w.archived,
+        updatedAt: w.updatedAt || 0,
         loads: (w.loads || []).filter(l => l && l.id && !tombSet[l.id])
       });
     }
@@ -1114,6 +1162,67 @@ function mergeClientData(serverRaw, localRaw) {
   }
 
   return out;
+}
+
+// 2026-09-12: field-level reconciliation.
+//
+// Every edit still POSTs a whole load (the Apps Script resolves conflicts at
+// whole-load granularity), so whichever dispatcher writes last replaces ALL of
+// that load's fields with their own copy. That is how one person assigning a
+// driver erased another person's claim, status and trailer.
+//
+// Until the payload itself becomes a field patch (needs an Apps Script branch),
+// this rebuilds the load we are about to write as:
+//
+//     { ...the server's newest copy, ...only the fields WE changed }
+//
+// so another dispatcher's edits to other fields survive our write.
+function applyPendingPatches(target, serverRaw, patches) {
+  if (!patches || !Object.keys(patches).length) return target;
+  const server = normalizeData(serverRaw);
+  const serverLoads = {};
+  (server.weeks || []).forEach(w => (w.loads || []).forEach(l => { if (l && l.id) serverLoads[l.id] = l; }));
+
+  return {
+    ...target,
+    weeks: (target.weeks || []).map(w => ({
+      ...w,
+      loads: (w.loads || []).map(l => {
+        const fields = l && patches[l.id];
+        const sl = l && serverLoads[l.id];
+        if (!fields || !sl) return l;                 // nothing pending, or a load the server hasn't seen yet
+        return { ...sl, ...fields, updatedAt: Date.now() };
+      })
+    }))
+  };
+}
+
+// Force the server's copy of specific loads over ours. Used right after a
+// successful patch: the server stamps `updatedAt` with ITS clock, and a
+// dispatcher laptop running a few seconds fast would otherwise keep winning the
+// merge and re-clobber those loads on the next whole-board save.
+function adoptServerLoads(target, serverRaw, ids) {
+  if (!ids || !ids.length) return target;
+  const want = {};
+  ids.forEach(id => { want[id] = true; });
+  const server = normalizeData(serverRaw);
+  const serverLoads = {};
+  (server.weeks || []).forEach(w => (w.loads || []).forEach(l => { if (l && l.id) serverLoads[l.id] = l; }));
+  return {
+    ...target,
+    weeks: (target.weeks || []).map(w => ({
+      ...w,
+      loads: (w.loads || []).map(l => (l && want[l.id] && serverLoads[l.id]) ? serverLoads[l.id] : l)
+    }))
+  };
+}
+
+// Which week holds a given load, for addressing a patch.
+function weekIdForLoad(data, loadId) {
+  for (const w of (data.weeks || [])) {
+    if ((w.loads || []).some(l => l && l.id === loadId)) return w.id;
+  }
+  return "";
 }
 
 function getCurrentWeek(data) {
@@ -1704,6 +1813,25 @@ async function apiSave(data) {
   return apiCall({ action: "save", data });
 }
 
+// 2026-09-15: the common path. Sends ONLY the fields this device changed, so
+// the server can write them onto its own copy of the load instead of replacing
+// the whole record. Two dispatchers editing different fields of the same load
+// no longer overwrite each other. Response carries `missing` — loads the server
+// has never seen, which the caller re-sends with a full save.
+async function apiPatchLoads(patches, logs) {
+  const payload = { action: "patchLoads", patches };
+  if (logs && logs.length) payload._log = logs;
+  return apiCall(payload);
+}
+
+// Passcode changes no longer ride along on ordinary saves, where any stale
+// blank could clear them. This is the only thing that changes the passcode.
+async function apiSetPasscode(passcode, logs) {
+  const payload = { action: "setPasscode", passcode: passcode || "" };
+  if (logs && logs.length) payload._log = logs;
+  return apiCall(payload);
+}
+
 async function apiUpload(file, kind) {
   const base64 = await fileToBase64(file);
   const payload = {
@@ -1992,10 +2120,31 @@ function StopRow({ stop, index, type, color, onChange, onRemove }) {
   // groups while you're still typing. We commit on blur or Enter instead, so
   // the card only moves when you've finished typing the date.
   const [pendingDt, setPendingDt] = useState(stop.datetime || "");
-  useEffect(() => { setPendingDt(stop.datetime || ""); }, [stop.datetime]);
+  // 2026-09-12: same focus guard as the driver field — polling now runs while
+  // this box is being typed in, so only take a new value from props when the
+  // cursor isn't here. Unlike the driver, this one still commits on blur only:
+  // committing mid-type would re-bucket the card out from under the user.
+  const dtFocusedRef = useRef(false);
+  useEffect(() => {
+    if (dtFocusedRef.current) return;
+    setPendingDt(stop.datetime || "");
+  }, [stop.datetime]);
   const commitDt = () => {
     if (pendingDt !== (stop.datetime || "")) set("datetime", pendingDt);
   };
+
+  // Backstop: flush a typed-but-uncommitted date when the row goes away
+  // (card collapsed, load filtered out) or the tab closes.
+  const dtLatest = useRef(null);
+  dtLatest.current = { pendingDt, datetime: stop.datetime || "", set };
+  useEffect(() => {
+    const flush = () => {
+      const c = dtLatest.current;
+      if (c && c.pendingDt !== c.datetime) c.set("datetime", c.pendingDt);
+    };
+    window.addEventListener("pagehide", flush);
+    return () => { window.removeEventListener("pagehide", flush); flush(); };
+  }, []);
 
   return (
     <div className="clb-stop" style={{ "--stop-color": color }}>
@@ -2010,7 +2159,8 @@ function StopRow({ stop, index, type, color, onChange, onRemove }) {
           <span className="clb-field__lbl">Date / Time</span>
           <input value={pendingDt}
                  onChange={e => setPendingDt(e.target.value)}
-                 onBlur={commitDt}
+                 onFocus={() => { dtFocusedRef.current = true; }}
+                 onBlur={() => { dtFocusedRef.current = false; commitDt(); }}
                  onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
                  placeholder="5/12 8AM or 05/15/2026 1200 - 2300" />
         </div>
@@ -2273,7 +2423,14 @@ function PhotosSlot({ load, onChange }) {
 
 function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, checkDuplicate, role, userName, expanded, onToggle, onChange, onDelete }) {
   const [pendingDriver, setPendingDriver] = useState(load.otrDriver || "");
-  useEffect(() => { setPendingDriver(load.otrDriver || ""); }, [load.otrDriver]);
+  // 2026-09-12: now that polling no longer stops while a field has focus, an
+  // incoming merge could yank text out from under the cursor mid-word. Only
+  // accept a new value from props when this field ISN'T being typed in.
+  const driverFocusedRef = useRef(false);
+  useEffect(() => {
+    if (driverFocusedRef.current) return;
+    setPendingDriver(load.otrDriver || "");
+  }, [load.otrDriver]);
 
   const update = (field, value) => onChange({ ...load, [field]: value });
 
@@ -2290,6 +2447,27 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
     if (mt && !next.otrTruck) next.otrTruck = mt;
     onChange(next);
   };
+
+  // 2026-09-12: the driver used to commit ONLY on blur, so closing the tab,
+  // switching apps or a phone sleeping lost the name entirely. Commit on a
+  // short idle instead, and flush on unmount / pagehide as a backstop. Blur
+  // still commits immediately.
+  useEffect(() => {
+    if (pendingDriver === (load.otrDriver || "")) return;
+    const t = setTimeout(() => updateOtrDriver(pendingDriver), 900);
+    return () => clearTimeout(t);
+  }, [pendingDriver, load.otrDriver]);
+
+  const driverLatest = useRef(null);
+  driverLatest.current = { pendingDriver, otrDriver: load.otrDriver || "", commit: updateOtrDriver };
+  useEffect(() => {
+    const flush = () => {
+      const c = driverLatest.current;
+      if (c && c.pendingDriver !== c.otrDriver) c.commit(c.pendingDriver);
+    };
+    window.addEventListener("pagehide", flush);
+    return () => { window.removeEventListener("pagehide", flush); flush(); };
+  }, []);
 
   const ss = STATUS_STYLES[load.status] || STATUS_STYLES["Need to Drop"];
   const bucketColor = bucket.color;
@@ -2404,7 +2582,11 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
               <input list={"clb-drivers-" + load.id}
                      value={pendingDriver}
                      onChange={e => setPendingDriver(e.target.value)}
-                     onBlur={() => { if (pendingDriver !== (load.otrDriver || "")) updateOtrDriver(pendingDriver); }}
+                     onFocus={() => { driverFocusedRef.current = true; }}
+                     onBlur={() => {
+                       driverFocusedRef.current = false;
+                       if (pendingDriver !== (load.otrDriver || "")) updateOtrDriver(pendingDriver);
+                     }}
                      onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
                      placeholder="Assign driver" />
               <datalist id={"clb-drivers-" + load.id}>
@@ -2698,6 +2880,10 @@ function App() {
   const [data,        setData]        = useState(null);
   const [session,     setSession]     = useState(null);   // { role:"viewer"|"admin", name }
   const [saveStatus,  setSaveStatus]  = useState("idle");
+  // Mirrored into a ref so the polling loop can read it without having to be
+  // torn down and rebuilt every time it changes (see the polling effect).
+  const saveStatusRef = useRef("idle");
+  saveStatusRef.current = saveStatus;
   const [lastSync,    setLastSync]    = useState(0);
   const [expandedIds, setExpandedIds] = useState(() => new Set());
   const [search,      setSearch]      = useState("");
@@ -2777,9 +2963,17 @@ function App() {
     apiLoadWithRetry(3, 1500)
       .then(d => {
         if (dead) return;
-        const normalized = normalizeData(d);
-        setData(normalized);
-        saveCacheToLocal(normalized);
+        // 2026-09-12 FIX: this was the one path that REPLACED state instead of
+        // merging. The board paints instantly from cache, and this fetch can
+        // take 5s+ on a cold Apps Script (3 attempts, 1.5s apart) — anything a
+        // dispatcher did in that window was visually reverted when it landed.
+        // Merge against whatever is on screen, exactly like the poll does.
+        const merged = dataRef.current
+          ? mergeClientData(d, dataRef.current)
+          : normalizeData(d);
+        noteServerIds(d);
+        setData(merged);
+        saveCacheToLocal(merged);
         setReconnecting(false);
         if (!cached) restoreSession();
       })
@@ -2799,15 +2993,31 @@ function App() {
   // poll never reverts a local edit that hasn't finished saving yet.
   // A failed poll flips the reconnecting banner on; the next successful
   // poll clears it.
+  // 2026-09-12 FIX: this loop used to skip every tick while ANY text field had
+  // focus. That froze a dispatcher's copy of the board for as long as they sat
+  // inside an expanded card — and because every commit writes the WHOLE load
+  // back, tabbing out then erased whatever anyone else had done to that load in
+  // the meantime (claim, status, trailer). Measured: 4/4 losses at every dwell
+  // length from 1s to 12s. In-progress typing is already protected by the
+  // pendingDriver / pendingDt local state, so the guard bought nothing.
+  //
+  // Deps are [session, !!data] rather than [session, saveStatus]: keying on
+  // saveStatus tore the 3s timer down and rebuilt it on every single save, so
+  // the dispatcher working hardest polled least (measured 3 GETs/13s while
+  // active vs 5 while idle). saveStatus is now read from a ref instead.
   useEffect(() => {
     if (!data || !session) return;
     const timer = setInterval(async () => {
-      const active = document.activeElement;
-      if (active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return;
-      if (saveStatus === "saving") return;
+      if (saveStatusRef.current === "saving") return;
       try {
         const fresh  = await apiLoad();
-        const merged = mergeClientData(fresh, dataRef.current);
+        // Reconcile at field level: take the server's newest copy of any load
+        // we have uncommitted edits on, then lay our own changed fields back
+        // over it. Otherwise our local stamp wins the whole load and we never
+        // see what anyone else did to it.
+        const merged = applyPendingPatches(
+          mergeClientData(fresh, dataRef.current), fresh, pendingPatchRef.current);
+        noteServerIds(fresh);
         if (JSON.stringify(merged) !== JSON.stringify(dataRef.current)) {
           setData(merged);
         }
@@ -2817,7 +3027,7 @@ function App() {
       }
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [session, saveStatus]);
+  }, [session, !!data]);
 
   // ---- Cache last-known-good data to localStorage whenever it changes ----
   // So if Apps Script is unreachable next session, we can show this snapshot.
@@ -2829,23 +3039,104 @@ function App() {
   const saveTimerRef = useRef(null);
   const dataRef      = useRef(data);
   const pendingLogRef = useRef([]);   // change entries queued for the next save
+  // loadId -> { field: value } for fields THIS device changed and hasn't yet
+  // had confirmed by a save. See applyPendingPatches.
+  const pendingPatchRef = useRef({});
+  // Set by every mutation that is NOT a plain field edit — adding or deleting a
+  // load, week create/rename/archive/delete, the driver/truck import. Those
+  // still need a whole-board save; field edits go out as patches.
+  const needsFullSaveRef = useRef(false);
+  // Ids the server is known to have. A load created on this device and not yet
+  // saved cannot be patched — there is nothing there to patch — so it forces a
+  // full save instead of silently losing the edit.
+  const serverIdsRef = useRef({});
   dataRef.current = data;
+
+  const noteServerIds = useCallback((serverData) => {
+    const ids = {};
+    ((serverData && serverData.weeks) || []).forEach(w =>
+      (w.loads || []).forEach(l => { if (l && l.id) ids[l.id] = true; }));
+    serverIdsRef.current = ids;
+  }, []);
+
+  // Remove the field values we just wrote, leaving anything typed during the
+  // round-trip queued for the next flush.
+  const clearSentPatches = (sent) => {
+    Object.keys(sent).forEach(id => {
+      const still = pendingPatchRef.current[id];
+      if (!still) return;
+      Object.keys(sent[id]).forEach(f => {
+        if (JSON.stringify(still[f]) === JSON.stringify(sent[id][f])) delete still[f];
+      });
+      if (!Object.keys(still).length) delete pendingPatchRef.current[id];
+    });
+  };
 
   const persist = useCallback(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
       const logs = pendingLogRef.current.splice(0);   // take and clear
-      const snapshot = { ...dataRef.current, updatedAt: Date.now() };
-      if (logs.length) snapshot._log = logs;
+      const sentPatches = JSON.parse(JSON.stringify(pendingPatchRef.current));
+      const patchIds = Object.keys(sentPatches);
+      const unknownToServer = patchIds.some(id => !serverIdsRef.current[id]);
+      const fullSave = needsFullSaveRef.current || unknownToServer || patchIds.length === 0;
       setSaveStatus("saving");
       try {
+
+        // ---------- Field patches: the common path ----------
+        if (!fullSave) {
+          const cur = dataRef.current;
+          const patches = patchIds.map(id => ({
+            weekId: weekIdForLoad(cur, id),
+            loadId: id,
+            fields: sentPatches[id],
+            at:     Date.now()
+          }));
+          const resp = await apiPatchLoads(patches, logs);
+          if (resp && resp.data) {
+            noteServerIds(resp.data);
+            clearSentPatches(sentPatches);
+            // Take the server's copy of what we just patched (its clock decides,
+            // not ours), then lay back anything typed during the round-trip.
+            let next = adoptServerLoads(
+              mergeClientData(resp.data, dataRef.current), resp.data, patchIds);
+            next = applyPendingPatches(next, resp.data, pendingPatchRef.current);
+            setData(next);
+          }
+          // Any load the server has never seen still needs a real save.
+          if (resp && resp.missing && resp.missing.length) {
+            needsFullSaveRef.current = true;
+            const snap = { ...dataRef.current, updatedAt: Date.now() };
+            const r2 = await apiSave(snap);
+            if (r2 && r2.data) { noteServerIds(r2.data); setData(mergeClientData(r2.data, dataRef.current)); }
+            needsFullSaveRef.current = false;
+          }
+          setSaveStatus("saved");
+          setLastSync(Date.now());
+          return;
+        }
+
+        // ---------- Whole-board save: structural changes only ----------
+        // Still reads immediately before writing, because this payload carries
+        // every load and a stale one can revert another dispatcher's work.
+        // These are rare (add / delete / week ops / import), so the extra read
+        // costs nothing in practice.
+        let base = dataRef.current;
+        try {
+          const fresh = await apiLoad();
+          base = applyPendingPatches(mergeClientData(fresh, dataRef.current), fresh, sentPatches);
+        } catch (preErr) { /* offline or a blip — save local state as-is */ }
+
+        const snapshot = { ...base, updatedAt: Date.now() };
+        if (logs.length) snapshot._log = logs;
+
         const resp = await apiSave(snapshot);
-        // Server returns the merged result. Merge it with our current local
-        // state (which may have changed during the round-trip) so nothing
-        // is lost in either direction.
         if (resp && resp.data) {
+          noteServerIds(resp.data);
           setData(mergeClientData(resp.data, dataRef.current));
         }
+        clearSentPatches(sentPatches);
+        needsFullSaveRef.current = false;
         setSaveStatus("saved");
         setLastSync(Date.now());
       } catch (e) {
@@ -2861,6 +3152,14 @@ function App() {
     setData({ ...next, updatedAt: Date.now() });
     persist();
   }, [persist]);
+
+  // 2026-09-15: structural changes (add / delete a load, week create, rename,
+  // archive, delete, the driver+truck import) still need the whole board
+  // written. Only plain field edits go out as patches.
+  const mutateStructural = useCallback((next) => {
+    needsFullSaveRef.current = true;
+    mutate(next);
+  }, [mutate]);
 
   // Helper: find a load anywhere in the data by id.
   const findLoad = (data, id) => {
@@ -2896,6 +3195,18 @@ function App() {
     const by = (session && session.name) || "unknown";
     const entries = diffLoadForLog(oldLoad, updatedLoad, by);
     if (entries.length) pendingLogRef.current.push(...entries);
+
+    // Record exactly which fields THIS device changed, so the save can write
+    // them onto the server's newest copy instead of replacing the whole load.
+    const changed = {};
+    Object.keys(updatedLoad).forEach(k => {
+      if (k === "updatedAt") return;
+      if (!oldLoad || JSON.stringify(updatedLoad[k]) !== JSON.stringify(oldLoad[k])) changed[k] = updatedLoad[k];
+    });
+    if (Object.keys(changed).length) {
+      pendingPatchRef.current[updatedLoad.id] =
+        Object.assign({}, pendingPatchRef.current[updatedLoad.id] || {}, changed);
+    }
     mutate(updateCurrentWeekLoads(dataRef.current, loads =>
       loads.map(l => l.id === updatedLoad.id ? { ...updatedLoad, updatedAt: Date.now() } : l)
     ));
@@ -2912,12 +3223,13 @@ function App() {
         details: `deleted ${oldLoad.lane || ""}`.trim()
       });
     }
+    delete pendingPatchRef.current[id];   // nothing to reconcile on a deleted load
     const withoutLoad = updateCurrentWeekLoads(cur, loads => loads.filter(l => l.id !== id));
     // Record a tombstone — without it, another user's concurrent save (which
     // still has this load) would resurrect it on the next merge.
     const tombstones = (cur.tombstones || []).filter(t => t.id !== id)
       .concat([{ id, at: Date.now() }]);
-    mutate({ ...withoutLoad, tombstones });
+    mutateStructural({ ...withoutLoad, tombstones });
   }, [mutate, session]);
 
   const onAddLoad = useCallback(() => {
@@ -2945,7 +3257,7 @@ function App() {
       createdAt: now,
       updatedAt: now
     };
-    mutate(updateCurrentWeekLoads(dataRef.current, loads => [newLoad, ...loads]));
+    mutateStructural(updateCurrentWeekLoads(dataRef.current, loads => [newLoad, ...loads]));
     pendingLogRef.current.push({
       at: now, by: (session && session.name) || "unknown",
       action: "create", ref: "(new)", details: "added a load"
@@ -2963,7 +3275,7 @@ function App() {
     if (!weekId) return;
     const cur = dataRef.current;
     if (!cur.weeks.find(w => w.id === weekId)) return;
-    mutate({ ...cur, currentWeekId: weekId });
+    mutateStructural({ ...cur, currentWeekId: weekId });
     setExpandedIds(new Set());   // collapse cards when switching weeks
   }, [mutate]);
 
@@ -2995,9 +3307,10 @@ function App() {
       startDate: "",
       createdAt: Date.now(),
       archived: false,
+      updatedAt: Date.now(),
       loads: newWeekLoads
     };
-    mutate({
+    mutateStructural({
       ...cur,
       weeks: [...updatedWeeks, newWeek],
       currentWeekId: newWeek.id
@@ -3021,9 +3334,9 @@ function App() {
     }
     if (trimmed === curWeek.label) return;       // no-op
     const updatedWeeks = cur.weeks.map(w =>
-      w.id !== curWeek.id ? w : { ...w, label: trimmed }
+      w.id !== curWeek.id ? w : { ...w, label: trimmed, updatedAt: Date.now() }
     );
-    mutate({ ...cur, weeks: updatedWeeks });
+    mutateStructural({ ...cur, weeks: updatedWeeks });
   }, [mutate]);
 
   const archiveCurrentWeek = useCallback(() => {
@@ -3035,9 +3348,9 @@ function App() {
       return;
     }
     if (!window.confirm("Archive week \"" + curWeek.label + "\"?\n\nIt stays accessible from the dropdown (with a 📦 icon) but won't be the default view.")) return;
-    const updatedWeeks = cur.weeks.map(w => w.id !== curWeek.id ? w : { ...w, archived: true });
+    const updatedWeeks = cur.weeks.map(w => w.id !== curWeek.id ? w : { ...w, archived: true, updatedAt: Date.now() });
     const nextActive = updatedWeeks.find(w => !w.archived) || updatedWeeks[0];
-    mutate({ ...cur, weeks: updatedWeeks, currentWeekId: nextActive.id });
+    mutateStructural({ ...cur, weeks: updatedWeeks, currentWeekId: nextActive.id });
   }, [mutate]);
 
   const deleteCurrentWeek = useCallback(() => {
@@ -3060,7 +3373,7 @@ function App() {
     // user's stale copy (same mechanism used for deleted loads).
     const tombstones = (cur.tombstones || []).filter(t => t.id !== curWeek.id)
       .concat([{ id: curWeek.id, at: Date.now() }]);
-    mutate({ ...cur, weeks: updatedWeeks, currentWeekId: nextActive.id, tombstones });
+    mutateStructural({ ...cur, weeks: updatedWeeks, currentWeekId: nextActive.id, tombstones });
   }, [mutate]);
 
   // ---- Auth handlers ----
@@ -3228,13 +3541,19 @@ function App() {
 
   if (!session) return <RoleLogin onLogin={handleLogin} />;
 
+  // 2026-09-15: goes through its own endpoint now. The passcode used to ride on
+  // every whole-board save, so any dispatcher's stale blank could clear it and
+  // silently unlock the board for everyone.
   const changeBoardPasscode = async (newPw) => {
     const next = { ...dataRef.current, accessPasscode: newPw, updatedAt: Date.now() };
     setData(next);
     try { localStorage.setItem(STORAGE.access, newPw); } catch (e) {}
     setAccess(newPw);
     setSaveStatus("saving");
-    const resp = await apiSave(next);
+    const resp = await apiSetPasscode(newPw, [{
+      at: Date.now(), by: (session && session.name) || "unknown",
+      action: "passcode", ref: "", details: newPw ? "set a board passcode" : "removed the board passcode"
+    }]);
     if (resp && resp.data) {
       setData(mergeClientData(resp.data, next));
     }
