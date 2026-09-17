@@ -190,6 +190,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .search-result-card{background:#fff;border-radius:12px;margin-bottom:8px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 1px 3px rgba(0,0,0,.06);}
 .search-result-hdr{background:#0f1f3d;padding:8px 12px;display:flex;align-items:center;gap:6px;}
 .search-result-row{padding:8px 14px;border-top:1px solid #f1f5f9;display:flex;align-items:center;gap:8px;}
+
+/* DASHBOARD FROM board.html — its panels are laid out for a desktop. Keep grid
+   cards inside the screen: let them shrink, and scroll sideways inside the
+   card if something in it still cannot. */
+#dash-content [style*="display: grid"] > *{min-width:0;}
+#dash-content [style*="display: grid"] > *{overflow-x:auto;}
+#dash-content td[style*="max-width: 320px"]{max-width:150px !important;}
+#dash-content select, #dash-content input{max-width:100%;}
+/* A card told to span two columns makes a phantom second column on a phone,
+   where only one fits. On narrow screens every spanning card fills the row. */
+@media (max-width:700px){#dash-content [style*="grid-column"]{grid-column:1 / -1 !important;}}
 </style>
 </head>
 <body>
@@ -218,13 +229,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <!-- LOGIN OVERLAY -->
 <div class="login-overlay" id="login-overlay" style="display:none;">
   <div class="login-logo">🔐</div>
-  <div class="login-title">Admin Access</div>
-  <div class="login-sub">Enter your PIN to access the full board</div>
+  <div class="login-title">Sign in</div>
+  <div class="login-sub">Enter your PIN (admin, dispatcher or viewer) to load the board</div>
   <div class="login-card">
-    <div class="login-pin-label">Admin PIN</div>
+    <div class="login-pin-label">PIN</div>
     <input class="login-pin-input" type="password" id="pin-input" maxlength="20" placeholder="••••" oninput="clearLoginErr()"/>
-    <button class="login-btn" onclick="attemptLogin()">Unlock Board</button>
-    <button class="login-view-btn" onclick="hideLoginOverlay()">Cancel — Stay as Viewer</button>
+    <button class="login-btn" id="login-btn" onclick="attemptLogin()">Sign in</button>
+    <button class="login-view-btn" id="login-cancel-btn" onclick="hideLoginOverlay()">Cancel</button>
+    <button class="login-view-btn" id="login-public-btn" onclick="enterPublicMode()" style="margin-top:8px;">Market info only — no PIN</button>
     <div class="login-err" id="login-err"></div>
   </div>
 </div>
@@ -283,13 +295,1373 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <button class="bnav-btn" onclick="refreshData()">
     <div class="bnav-icon">🔄</div>Refresh
   </button>
+  <button class="bnav-btn" id="viewer-signout-btn" onclick="signOut()" style="display:none;">
+    <div class="bnav-icon">🚪</div>Sign out
+  </button>
 </div>
 
+
+<!-- React runs the dashboard sections shared with board.html. If these fail to
+     load, the phone falls back to its basic dashboard (renderDashboardBasic). -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<script>
+"use strict";
+// PHONE DASHBOARD
+// Compiled from board.html's Dashboard tab and Market info panels so the phone
+// shows the same sections and the same numbers. Copied verbatim from
+// working/board.html except: canSeeDetail follows sign-in, Claim hands off to
+// the phone's claim, and three layout widths are narrowed for a phone screen.
+const { useState, useEffect, useRef, useMemo, Fragment, useCallback } = React;
+const SINGLE_LOAD_MAX_RPM = 3.10;
+// How far either end of a lane can sit from the city you typed and still count.
+// Bolingbrook is 8 mi from Romeoville and Commerce is 22 mi from Austell, so a
+// 25 mi radius treats those as the same lane, which is how they price.
+const MKT_RADIUS_MI = 25;
+// Dispatchers post the rate AFTER the local pickup/delivery charge has been
+// taken out, so anything touching the Illinois yard understates the real gross.
+// Added back silently — it is part of the number, not a separate line.
+// $125 rather than the full local charge: some of these get covered by a local
+// driver and some by the OTR driver, so this is the blended average.
+const IL_LOCAL_ADDBACK = 125;
+function mktAddBack(rate, origin, dest) {
+    return (mktState(origin) === "IL" || mktState(dest) === "IL") ? rate + IL_LOCAL_ADDBACK : rate;
+}
+// MKT_GEO is packed per state as "name,lat*100,lng*100|...". Parse once.
+let _mktGeo = null;
+function mktGeoTable() {
+    if (_mktGeo)
+        return _mktGeo;
+    _mktGeo = new Map();
+    try {
+        const G = (typeof MKT_GEO !== "undefined") ? MKT_GEO : null;
+        if (G)
+            Object.keys(G).forEach(st => {
+                G[st].split("|").forEach(row => {
+                    const i = row.lastIndexOf(","), j = row.lastIndexOf(",", i - 1);
+                    if (i < 0 || j < 0)
+                        return;
+                    const name = row.slice(0, j);
+                    _mktGeo.set(name + "," + st, [+row.slice(j + 1, i) / 100, +row.slice(i + 1) / 100]);
+                });
+            });
+    }
+    catch (e) { }
+    return _mktGeo;
+}
+function mktCoords(cityStr) {
+    if (!cityStr)
+        return null;
+    const p = String(cityStr).split(",");
+    if (p.length < 2)
+        return null;
+    const key = p[0].trim().toLowerCase() + "," + p[1].trim().toUpperCase().slice(0, 2);
+    return mktGeoTable().get(key) || null;
+}
+function mktMilesApart(a, b) {
+    if (!a || !b)
+        return null;
+    const R = 3958.8, rad = Math.PI / 180;
+    const dLa = (b[0] - a[0]) * rad, dLo = (b[1] - a[1]) * rad;
+    const h = Math.sin(dLa / 2) ** 2 + Math.cos(a[0] * rad) * Math.cos(b[0] * rad) * Math.sin(dLo / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+}
+const MKT_REGIONS = [
+    { code: "NUS", label: "U.S. Average", short: "U.S." },
+    { code: "R20", label: "Midwest (PADD 2)", short: "Midwest" },
+    { code: "R10", label: "East Coast (PADD 1)", short: "East" },
+    { code: "R30", label: "Gulf Coast (PADD 3)", short: "Gulf" },
+    { code: "R40", label: "Rocky Mountain (PADD 4)", short: "Rockies" },
+    { code: "R50", label: "West Coast (PADD 5)", short: "West" },
+    { code: "SCA", label: "California", short: "Calif." }
+];
+// Tiny inline sparkline. No chart library — the board already carries enough
+// CDN weight and this is 12 lines.
+function MktSparkline({ points, color = "#2563eb", w = 260, h = 44 }) {
+    if (!points || points.length < 2)
+        return null;
+    const vals = points.map(p => p.value).filter(v => typeof v === "number" && isFinite(v));
+    if (vals.length < 2)
+        return null;
+    const min = Math.min(...vals), max = Math.max(...vals), span = (max - min) || 1;
+    const step = w / (vals.length - 1);
+    const d = vals.map((v, i) => `${i === 0 ? "M" : "L"}${(i * step).toFixed(1)},${(h - ((v - min) / span) * (h - 6) - 3).toFixed(1)}`).join(" ");
+    const last = vals[vals.length - 1];
+    const lastY = h - ((last - min) / span) * (h - 6) - 3;
+    return (React.createElement("svg", { width: "100%", height: h, viewBox: `0 0 ${w} ${h}`, preserveAspectRatio: "none", style: { display: "block", overflow: "visible" } },
+        React.createElement("path", { d: `${d} L${w},${h} L0,${h} Z`, fill: color, opacity: ".08" }),
+        React.createElement("path", { d: d, fill: "none", stroke: color, strokeWidth: "2", strokeLinejoin: "round", strokeLinecap: "round" }),
+        React.createElement("circle", { cx: w, cy: lastY, r: "3", fill: color })));
+}
+function MarketDieselPanel({ data, status, err, load, regionCode, setRegionCode, sel, available, baseline, setBaseline, mpg, setMpg }) {
+    // Stretch to the tallest sibling so the row of cards ends on one line.
+    const fill = { display: "flex", flexDirection: "column", height: "100%", minHeight: "330px", boxSizing: "border-box" };
+    const FSC_PRESETS = ["1.20", "1.25", "2.00"];
+    const baseN = parseFloat(baseline), mpgN = parseFloat(mpg);
+    const fscValid = isFinite(baseN) && isFinite(mpgN) && mpgN > 0 && sel && isFinite(sel.price);
+    const fsc = fscValid ? Math.max(0, (sel.price - baseN) / mpgN) : null;
+    const card = { background: "#fff", borderRadius: "12px", padding: "18px", boxShadow: "0 1px 4px rgba(0,0,0,0.07)", border: "1px solid #e2e8f0" };
+    return (React.createElement("div", { style: card },
+        React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap", marginBottom: "14px" } },
+            React.createElement("div", null,
+                React.createElement("div", { style: { fontSize: "16px", fontWeight: "800", color: "#0f1f3d" } }, "\u26FD National diesel prices"),
+                React.createElement("div", { style: { fontSize: "11px", color: "#64748b", marginTop: "2px" } },
+                    "EIA weekly retail average",
+                    data && data.asOf ? ` · week of ${data.asOf}` : "")),
+            React.createElement("button", { onClick: load, disabled: status === "loading", style: { fontSize: "11px", fontWeight: "700", padding: "5px 11px", borderRadius: "6px", border: "1px solid #cbd5e1", background: "#f8fafc", color: "#475569", cursor: status === "loading" ? "default" : "pointer", outline: "none" } }, status === "loading" ? "Loading…" : "Refresh")),
+        status === "loading" && React.createElement("div", { style: { flex: "1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px", color: "#94a3b8" } }, "Loading diesel prices\u2026"),
+        status === "err" && (React.createElement("div", { style: { background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "12px" } },
+            React.createElement("div", { style: { fontSize: "12px", fontWeight: "700", color: "#991b1b", marginBottom: "3px" } }, "Diesel prices unavailable"),
+            React.createElement("div", { style: { fontSize: "11px", color: "#b91c1c", lineHeight: "1.5" } }, err),
+            React.createElement("div", { style: { fontSize: "11px", color: "#7f1d1d", marginTop: "6px" } }, "Check that EIA_API_KEY is set in Apps Script \u2192 Project Settings \u2192 Script Properties, and that a new deployment version was published."))),
+        status === "ok" && !sel && (React.createElement("div", { style: { fontSize: "12px", color: "#64748b", padding: "14px 0" } }, "The feed connected but returned no regions. Try Refresh, or check the diesel debug endpoint.")),
+        status === "ok" && sel && (React.createElement("div", null,
+            React.createElement("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "14px" } }, available.map(r => {
+                const on = r.code === regionCode;
+                return (React.createElement("button", { key: r.code, onClick: () => setRegionCode(r.code), title: r.label, style: { fontSize: "11px", fontWeight: "700", padding: "5px 10px", borderRadius: "999px", border: `1px solid ${on ? "#2563eb" : "#e2e8f0"}`, background: on ? "#eff6ff" : "#fff", color: on ? "#1d4ed8" : "#64748b", cursor: "pointer", outline: "none" } }, r.short));
+            })),
+            React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: "12px", flexWrap: "wrap", marginBottom: "4px" } },
+                React.createElement("div", { style: { fontSize: "34px", fontWeight: "900", color: "#0f1f3d", lineHeight: "1" } },
+                    "$",
+                    sel.price.toFixed(3)),
+                React.createElement("div", { style: { fontSize: "12px", color: "#64748b", fontWeight: "600", paddingBottom: "4px" } }, "per gallon"),
+                typeof sel.change === "number" && isFinite(sel.change) && (React.createElement("div", { style: { fontSize: "12px", fontWeight: "800", paddingBottom: "4px", color: sel.change > 0 ? "#dc2626" : sel.change < 0 ? "#059669" : "#64748b" } },
+                    sel.change > 0 ? "▲" : sel.change < 0 ? "▼" : "■",
+                    " ",
+                    Math.abs(sel.change).toFixed(3),
+                    " vs prior week"))),
+            React.createElement("div", { style: { fontSize: "11px", color: "#64748b", marginBottom: "10px" } }, (MKT_REGIONS.find(r => r.code === regionCode) || {}).label),
+            React.createElement("div", { style: { marginBottom: "6px" } },
+                React.createElement(MktSparkline, { points: sel.history || [] })),
+            React.createElement("div", { style: { fontSize: "10px", color: "#94a3b8", marginBottom: "14px" } },
+                "Past ",
+                (sel.history || []).length,
+                " weeks \u00B7 low $",
+                sel.low != null ? sel.low.toFixed(3) : "—",
+                " \u00B7 high $",
+                sel.high != null ? sel.high.toFixed(3) : "—"),
+            React.createElement("div", { style: { borderTop: "1px solid #f1f5f9", paddingTop: "12px" } },
+                React.createElement("div", { style: { fontSize: "12px", fontWeight: "800", color: "#0f1f3d", marginBottom: "2px" } }, "Fuel surcharge"),
+                React.createElement("div", { style: { fontSize: "10px", color: "#94a3b8", marginBottom: "10px", lineHeight: "1.5" } }, "The baseline is the price your contract starts charging from \u2014 where surcharge is $0. A fixed number in the rate agreement, not today's pump price."),
+                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(104px,1fr))", gap: "10px", alignItems: "end" } },
+                    React.createElement("div", null,
+                        React.createElement("label", { style: { fontSize: "10px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: ".04em", marginBottom: "4px", display: "block" } }, "Contract baseline $/gal"),
+                        React.createElement("input", { type: "number", step: "0.01", min: "0", value: baseline, onChange: e => setBaseline(e.target.value), style: { width: "100%", padding: "6px 8px", fontSize: "13px", fontWeight: "600", border: "1px solid #cbd5e1", borderRadius: "6px", outline: "none", color: "#0f1f3d", boxSizing: "border-box" } }),
+                        React.createElement("div", { style: { display: "flex", gap: "4px", marginTop: "4px" } }, FSC_PRESETS.map(v => (React.createElement("button", { key: v, onClick: () => setBaseline(v), style: { fontSize: "10px", fontWeight: "700", padding: "3px 7px", borderRadius: "5px", border: "1px solid " + (baseline === v ? "#2563eb" : "#e2e8f0"), background: baseline === v ? "#eff6ff" : "#fff", color: baseline === v ? "#1d4ed8" : "#64748b", cursor: "pointer", outline: "none" } },
+                            "$",
+                            v))))),
+                    React.createElement("div", null,
+                        React.createElement("label", { style: { fontSize: "10px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: ".04em", marginBottom: "4px", display: "block" } }, "Truck MPG"),
+                        React.createElement("input", { type: "number", step: "0.1", min: "0.1", value: mpg, onChange: e => setMpg(e.target.value), style: { width: "100%", padding: "6px 8px", fontSize: "13px", fontWeight: "600", border: "1px solid #cbd5e1", borderRadius: "6px", outline: "none", color: "#0f1f3d", boxSizing: "border-box" } })),
+                    React.createElement("div", { style: { background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "8px", padding: "7px 9px" } },
+                        React.createElement("div", { style: { fontSize: "10px", fontWeight: "700", color: "#15803d", textTransform: "uppercase", letterSpacing: ".04em" } }, "Surcharge"),
+                        React.createElement("div", { style: { fontSize: "19px", fontWeight: "900", color: "#166534", lineHeight: "1.2" } }, fsc == null ? "—" : `$${fsc.toFixed(3)}/mi`))),
+                fscValid && baseN > sel.price - 0.75 && (React.createElement("div", { style: { background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "7px 9px", marginTop: "8px", fontSize: "11px", color: "#92400e", lineHeight: "1.5" } },
+                    "A baseline of $",
+                    baseN.toFixed(2),
+                    " sits close to the current $",
+                    sel.price.toFixed(3),
+                    ", which drives the surcharge to almost nothing. Most contracts use a baseline near $1.25.")),
+                fsc != null && (React.createElement("div", { style: { fontSize: "11px", color: "#475569", marginTop: "8px", fontWeight: "600" } },
+                    "500 mi ",
+                    React.createElement("strong", { style: { color: "#166534" } },
+                        "$",
+                        (fsc * 500).toFixed(0)),
+                    " \u00B7 1,000 mi ",
+                    React.createElement("strong", { style: { color: "#166534" } },
+                        "$",
+                        (fsc * 1000).toFixed(0)))),
+                React.createElement("div", { style: { fontSize: "10px", color: "#94a3b8", marginTop: "6px", lineHeight: "1.5" } },
+                    "(",
+                    (MKT_REGIONS.find(r => r.code === regionCode) || {}).short,
+                    " $",
+                    sel.price.toFixed(3),
+                    " \u2212 ",
+                    isFinite(baseN) ? "$" + baseN.toFixed(2) : "—",
+                    ") \u00F7 ",
+                    isFinite(mpgN) && mpgN > 0 ? mpgN : "—",
+                    " MPG. Your contract may round differently or use a stepped table."))))));
+}
+function MarketCarrierPanel() {
+    const fill = { display: "flex", flexDirection: "column", height: "100%", minHeight: "330px", boxSizing: "border-box" };
+    const [idType, setIdType] = useState("mc"); // mc | dot
+    const [q, setQ] = useState("");
+    const [status, setStatus] = useState("idle"); // idle | loading | ok | none | err
+    const [res, setRes] = useState(null);
+    const [err, setErr] = useState("");
+    const run = async () => {
+        const id = (q || "").replace(/[^0-9]/g, "");
+        if (!id) {
+            setStatus("err");
+            setErr("Enter an MC or DOT number.");
+            return;
+        }
+        setStatus("loading");
+        setErr("");
+        setRes(null);
+        try {
+            const url = (localStorage.getItem("fcbv2_sheetsUrl") || SHEETS_URL) + `?action=carrier&type=${idType}&id=${encodeURIComponent(id)}`;
+            const r = await fetch(url, { redirect: "follow" });
+            if (!r.ok)
+                throw new Error("HTTP " + r.status);
+            const j = await r.json();
+            if (!j.ok)
+                throw new Error(j.message || j.error || "Lookup failed");
+            if (!j.found) {
+                setStatus("none");
+                return;
+            }
+            setRes(j);
+            setStatus("ok");
+        }
+        catch (e) {
+            setErr(e.message || String(e));
+            setStatus("err");
+        }
+    };
+    const card = { background: "#fff", borderRadius: "12px", padding: "18px", boxShadow: "0 1px 4px rgba(0,0,0,0.07)", border: "1px solid #e2e8f0" };
+    const lblSt = { fontSize: "10px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: ".04em", marginBottom: "4px", display: "block" };
+    const c = res && res.carrier ? res.carrier : null;
+    const ok = c && c.allowedToOperate === true;
+    const yn = v => v === true ? "Yes" : v === false ? "No" : "—";
+    const Row = ({ label, value, strong, color }) => (React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: "10px", padding: "6px 0", borderBottom: "1px solid #f1f5f9" } },
+        React.createElement("span", { style: { fontSize: "11px", color: "#64748b", fontWeight: "600" } }, label),
+        React.createElement("span", { style: { fontSize: "12px", fontWeight: strong ? "800" : "600", color: color || "#0f1f3d", textAlign: "right" } }, value == null || value === "" ? "—" : value)));
+    return (React.createElement("div", { style: { ...card, ...fill } },
+        React.createElement("div", { style: { marginBottom: "14px" } },
+            React.createElement("div", { style: { fontSize: "16px", fontWeight: "800", color: "#0f1f3d" } }, "\uD83D\uDD0E Broker & carrier check"),
+            React.createElement("div", { style: { fontSize: "11px", color: "#64748b", marginTop: "2px" } }, "Authority, insurance and safety rating from FMCSA")),
+        React.createElement("div", { style: { display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap", marginBottom: "14px" } },
+            React.createElement("div", { style: { width: "88px" } },
+                React.createElement("label", { style: lblSt }, "Number"),
+                React.createElement("select", { value: idType, onChange: e => setIdType(e.target.value), style: { width: "100%", padding: "7px 6px", fontSize: "13px", fontWeight: "700", border: "1px solid #cbd5e1", borderRadius: "6px", outline: "none", color: "#0f1f3d", background: "#fff", cursor: "pointer", boxSizing: "border-box" } },
+                    React.createElement("option", { value: "mc" }, "MC"),
+                    React.createElement("option", { value: "dot" }, "DOT"))),
+            React.createElement("div", { style: { flex: "1 1 140px", minWidth: "120px" } },
+                React.createElement("label", { style: lblSt }, idType === "mc" ? "MC / docket number" : "USDOT number"),
+                React.createElement("input", { value: q, onChange: e => setQ(e.target.value), onKeyDown: e => { if (e.key === "Enter")
+                        run(); }, placeholder: idType === "mc" ? "e.g. 123456" : "e.g. 80321", style: { width: "100%", padding: "7px 9px", fontSize: "13px", fontWeight: "600", border: "1px solid #cbd5e1", borderRadius: "6px", outline: "none", color: "#0f1f3d", boxSizing: "border-box" } })),
+            React.createElement("button", { onClick: run, disabled: status === "loading", style: { padding: "8px 16px", fontSize: "13px", fontWeight: "800", borderRadius: "6px", border: "none", background: status === "loading" ? "#93c5fd" : "#2563eb", color: "#fff", cursor: status === "loading" ? "default" : "pointer", outline: "none" } }, status === "loading" ? "Checking…" : "Check")),
+        status === "idle" && (React.createElement("div", { style: { flex: "1", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", gap: "6px", color: "#cbd5e1" } },
+            React.createElement("div", { style: { fontSize: "26px", lineHeight: "1" } }, "\uD83D\uDD0E"),
+            React.createElement("div", { style: { fontSize: "12px", color: "#94a3b8", maxWidth: "220px", lineHeight: "1.5" } }, "Enter an MC or DOT number to check authority and insurance."))),
+        status === "none" && (React.createElement("div", { style: { background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "8px", padding: "12px", fontSize: "12px", color: "#92400e", fontWeight: "600" } }, "No carrier found for that number. Check the digits, and try the other number type \u2014 some brokers are easier to find by DOT than MC.")),
+        status === "err" && (React.createElement("div", { style: { background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "12px" } },
+            React.createElement("div", { style: { fontSize: "12px", fontWeight: "700", color: "#991b1b", marginBottom: "3px" } }, "Lookup failed"),
+            React.createElement("div", { style: { fontSize: "11px", color: "#b91c1c", lineHeight: "1.5" } }, err),
+            React.createElement("div", { style: { fontSize: "11px", color: "#7f1d1d", marginTop: "6px" } }, "If this says the key is missing, set FMCSA_WEB_KEY in Apps Script \u2192 Project Settings \u2192 Script Properties and redeploy a new version."))),
+        status === "ok" && c && (React.createElement("div", null,
+            React.createElement("div", { style: { background: ok ? "#f0fdf4" : "#fef2f2", border: `1px solid ${ok ? "#bbf7d0" : "#fecaca"}`, borderRadius: "8px", padding: "12px 14px", marginBottom: "12px" } },
+                React.createElement("div", { style: { fontSize: "13px", fontWeight: "900", color: ok ? "#166534" : "#991b1b", marginBottom: "2px" } }, ok ? "✓ Authorized to operate" : "✕ Not authorized to operate"),
+                React.createElement("div", { style: { fontSize: "15px", fontWeight: "800", color: "#0f1f3d", lineHeight: "1.3" } }, c.legalName || "—"),
+                c.dbaName && React.createElement("div", { style: { fontSize: "12px", color: "#475569", fontWeight: "600" } },
+                    "dba ",
+                    c.dbaName),
+                React.createElement("div", { style: { fontSize: "11px", color: "#64748b", marginTop: "4px" } },
+                    "DOT ",
+                    c.dotNumber || "—",
+                    c.docketNumbers && c.docketNumbers.length ? ` · MC ${c.docketNumbers.join(", ")}` : "")),
+            React.createElement(Row, { label: "Operating status", value: c.statusText, strong: true, color: ok ? "#166534" : "#991b1b" }),
+            React.createElement(Row, { label: "Entity type", value: c.entityType }),
+            React.createElement(Row, { label: "Safety rating", value: c.safetyRating ? `${c.safetyRating}${c.safetyRatingDate ? ` (${c.safetyRatingDate})` : ""}` : "Not rated" }),
+            React.createElement(Row, { label: "Liability insurance on file", value: yn(c.bipdOnFile), color: c.bipdOnFile === false ? "#991b1b" : "#0f1f3d" }),
+            React.createElement(Row, { label: "Cargo insurance on file", value: c.cargoOnFile === false ? "Not filed (often not required)" : yn(c.cargoOnFile) }),
+            React.createElement(Row, { label: "Surety bond on file", value: yn(c.bondOnFile) }),
+            React.createElement(Row, { label: "Power units", value: c.powerUnits }),
+            React.createElement(Row, { label: "Drivers", value: c.drivers }),
+            React.createElement(Row, { label: "Driver out-of-service rate", value: c.driverOosRate != null ? `${c.driverOosRate}%` : null }),
+            React.createElement(Row, { label: "Vehicle out-of-service rate", value: c.vehicleOosRate != null ? `${c.vehicleOosRate}%` : null }),
+            React.createElement(Row, { label: "Address", value: c.address }),
+            c.phone && React.createElement(Row, { label: "Phone", value: c.phone }),
+            React.createElement("div", { style: { fontSize: "10px", color: "#94a3b8", marginTop: "10px", lineHeight: "1.5" } },
+                "FMCSA registration snapshot",
+                res.fetchedAt ? ` · retrieved ${new Date(res.fetchedAt).toLocaleString()}` : "",
+                ". \"On file\" means FMCSA has a filing, not that coverage is current. For a load you're about to cover, still get the certificate of insurance direct from the broker.")))));
+}
+// ─── MODULE 3 — LANE RATE HISTORY ───────────────────────────────────────
+// Two questions this answers:
+//   1. "What does a market pay?"  — every load delivering into a city.
+//      Fully reliable: the delivery city is recorded on every load.
+//   2. "What does a lane pay?"    — origin -> destination.
+//      Historical origins are INFERRED from where the truck delivered the
+//      previous day (validated at a 1.34x median road factor). Live loads
+//      carry a real shipper, so those origins are exact.
+//
+// RPM here is GROSS rate / miles on both sources. The board's own trailer
+// RPM is net of local charges — the two will not match, by design.
+const MKT_STATES = ("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC").split(" ");
+function mktNormCity(raw) {
+    if (raw == null)
+        return null;
+    let s = String(raw).trim();
+    if (!s)
+        return null;
+    s = s.replace(/\n/g, " ").replace(/\s+/g, " ").split("/")[0].trim();
+    if (/^(transit|tran\s*sit|home|quit|layover|yard|pm\b|off\b|vacation|shop|breakdown|empty|reset|n\/?a)/i.test(s))
+        return null;
+    s = s.replace(/\d{5}(-\d{4})?/g, "");
+    const parts = s.split(",");
+    let city = parts[0].replace(/[^A-Za-z .'-]/g, "").trim();
+    let st = "";
+    if (parts.length > 1) {
+        const m = parts[1].toUpperCase().match(/\b([A-Z]{2})\b/);
+        if (m)
+            st = m[1];
+    }
+    else {
+        // No comma typed — "atlanta ga" / "fort worth tx". Peel a trailing
+        // state code off the last word so the lookup still lands.
+        const w = city.split(/\s+/);
+        if (w.length > 1 && /^[A-Za-z]{2}$/.test(w[w.length - 1])) {
+            const cand = w[w.length - 1].toUpperCase();
+            if (MKT_STATES.indexOf(cand) >= 0) {
+                st = cand;
+                city = w.slice(0, -1).join(" ");
+            }
+        }
+    }
+    if (city.length < 2)
+        return null;
+    city = city.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+    // Same abbreviation expansion the extractor applies, so "Ft Worth" typed on
+    // the board merges with "Fort Worth" from the spreadsheet.
+    [[/^N\.? /, "North "], [/^S\.? /, "South "], [/^E\.? /, "East "], [/^W\.? /, "West "],
+        [/^Ft\.? /, "Fort "], [/^Mt\.? /, "Mount "], [/^St\.? /, "Saint "],
+        [/\bHts\b\.?/, "Heights"], [/\bVlg\b\.?/, "Village"], [/\bSpgs\b\.?/, "Springs"],
+        [/\bMtn\b\.?/, "Mountain"], [/\bJct\b\.?/, "Junction"], [/\bPk\b\.?/, "Park"],
+        [/\bTwp\b\.?/, "Township"]].forEach(([re_, rep]) => { city = city.replace(re_, rep); });
+    city = city.replace(/\s+/g, " ").trim();
+    return st ? city + ", " + st : city;
+}
+// Match forgivingly: exact "City, ST" first, then city name alone.
+function mktCityKey(s) { return (s || "").toLowerCase().trim(); }
+function mktCityBare(s) { return (s || "").split(",")[0].toLowerCase().trim(); }
+function mktStats(vals) {
+    if (!vals.length)
+        return null;
+    const v = [...vals].sort((a, b) => a - b);
+    const q = p => v[Math.min(v.length - 1, Math.floor(v.length * p))];
+    const med = v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2;
+    return { n: v.length, med, p25: q(.25), p75: q(.75), lo: v[0], hi: v[v.length - 1] };
+}
+function MktConfidence({ n, isAdmin }) {
+    const t = n >= 7 ? { c: "#166534", b: "#f0fdf4", br: "#bbf7d0", t: "Good sample" }
+        : n >= 3 ? { c: "#92400e", b: "#fffbeb", br: "#fde68a", t: "Thin — treat as a hint" }
+            : { c: "#991b1b", b: "#fef2f2", br: "#fecaca", t: "Too few to average" };
+    return React.createElement("span", { style: { fontSize: "10px", fontWeight: "700", color: t.c, background: t.b, border: "1px solid " + t.br, padding: "2px 8px", borderRadius: "999px" } },
+        n,
+        " load",
+        n === 1 ? "" : "s",
+        isAdmin ? " · " + t.t : "");
+}
+function MktRateBlock({ title, sub, st, accent, isAdmin, gross, miles }) {
+    if (!st)
+        return null;
+    return (React.createElement("div", { style: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: "10px", padding: "10px 12px", marginBottom: "8px" } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", flexWrap: "wrap", marginBottom: "6px" } },
+            React.createElement("div", null,
+                React.createElement("div", { style: { fontSize: "13px", fontWeight: "800", color: "#0f1f3d" } }, title),
+                sub && React.createElement("div", { style: { fontSize: "10px", color: "#94a3b8", marginTop: "1px" } }, sub)),
+            React.createElement(MktConfidence, { n: st.n, isAdmin: isAdmin })),
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: "16px", flexWrap: "wrap" } },
+            React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: "5px" } },
+                React.createElement("span", { style: { fontSize: "22px", fontWeight: "900", color: accent || "#0f1f3d" } },
+                    "$",
+                    st.med.toFixed(2)),
+                React.createElement("span", { style: { fontSize: "10px", color: "#64748b", fontWeight: "600" } }, "/mi")),
+            gross != null && (React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: "5px" } },
+                React.createElement("span", { style: { fontSize: "22px", fontWeight: "900", color: "#059669" } },
+                    "$",
+                    Math.round(gross).toLocaleString()),
+                React.createElement("span", { style: { fontSize: "10px", color: "#64748b", fontWeight: "600" } }, "avg total"))),
+            miles != null && (React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: "5px" } },
+                React.createElement("span", { style: { fontSize: "22px", fontWeight: "900", color: "#475569" } }, Math.round(miles).toLocaleString()),
+                React.createElement("span", { style: { fontSize: "10px", color: "#64748b", fontWeight: "600" } }, "avg mi")))),
+        React.createElement("div", { style: { marginTop: "6px", fontSize: "11px", color: "#475569" } },
+            "Middle half ",
+            React.createElement("strong", null,
+                "$",
+                st.p25.toFixed(2),
+                "\u2013$",
+                st.p75.toFixed(2)),
+            "/mi",
+            miles != null ? React.createElement("span", { style: { color: "#94a3b8" } },
+                " \u00B7 $",
+                Math.round(st.p25 * miles).toLocaleString(),
+                "\u2013$",
+                Math.round(st.p75 * miles).toLocaleString()) : null)));
+}
+function MarketLanePanel({ records = [], imported = [], live = [], canSeeDetail, isAdmin, fuel }) {
+    const [origin, setOrigin] = useState("");
+    const [dest, setDest] = useState("");
+    const [query, setQuery] = useState(null);
+    const [singleOnly, setSingleOnly] = useState(() => localStorage.getItem("fcbv2_laneSingle") !== "0");
+    useEffect(() => { localStorage.setItem("fcbv2_laneSingle", singleOnly ? "1" : "0"); }, [singleOnly]);
+    const all = useMemo(() => singleOnly ? records.filter(r => !r.multi) : records, [records, singleOnly]);
+    const unknownStops = useMemo(() => all.filter(r => !r.stopsKnown).length, [all]);
+    // Suggestion list — the markets we actually have depth in.
+    const suggestions = useMemo(() => {
+        const c = {};
+        all.forEach(r => { if (r.d)
+            c[r.d] = (c[r.d] || 0) + 1; });
+        return Object.keys(c).sort((a, b) => c[b] - c[a]).slice(0, 400);
+    }, [all]);
+    const run = () => {
+        const d = mktNormCity(dest);
+        if (!d) {
+            setQuery({ err: "Enter a destination city, like Atlanta, GA" });
+            return;
+        }
+        setQuery({ o: mktNormCity(origin), d });
+    };
+    const result = useMemo(() => {
+        if (!query || query.err)
+            return null;
+        const dk = mktCityKey(query.d), db = mktCityBare(query.d);
+        const dCo = mktCoords(query.d), oCo = query.o ? mktCoords(query.o) : null;
+        // Near enough to be the same market: exact name, or inside the radius.
+        const near = (recCity, wantKey, wantBare, wantCo, typedHadState) => {
+            const k = mktCityKey(recCity);
+            if (k === wantKey)
+                return true;
+            if (!typedHadState && mktCityBare(recCity) === wantBare)
+                return true;
+            if (!wantCo)
+                return false;
+            const c = mktCoords(recCity);
+            if (!c)
+                return false;
+            return mktMilesApart(c, wantCo) <= MKT_RADIUS_MI;
+        };
+        const inMarket = all.filter(r => near(r.d, dk, db, dCo, query.d.includes(",")));
+        let onLane = [];
+        if (query.o) {
+            const ok = mktCityKey(query.o), ob = mktCityBare(query.o);
+            onLane = inMarket.filter(r => r.o && near(r.o, ok, ob, oCo, query.o.includes(",")));
+        }
+        // Which nearby towns got pulled in — useful to show, and it explains a
+        // result the user didn't literally ask for.
+        const alsoD = [...new Set(inMarket.map(r => r.d).filter(c => mktCityKey(c) !== dk))].slice(0, 6);
+        const origins = {};
+        inMarket.forEach(r => { if (r.o)
+            origins[r.o] = (origins[r.o] || 0) + 1; });
+        const topOrigins = Object.keys(origins).sort((a, b) => origins[b] - origins[a]).slice(0, 5).map(k => ({ city: k, n: origins[k] }));
+        return {
+            alsoD, radius: !!dCo,
+            market: mktStats(inMarket.map(r => r.rpm)),
+            lane: onLane.length ? mktStats(onLane.map(r => r.rpm)) : null,
+            inMarket, onLane, topOrigins,
+            avgMi: inMarket.length ? Math.round(inMarket.reduce((s, r) => s + r.mi, 0) / inMarket.length) : 0,
+            avgRate: inMarket.length ? Math.round(inMarket.reduce((s, r) => s + r.rate, 0) / inMarket.length) : 0,
+            laneAvgMi: onLane.length ? Math.round(onLane.reduce((s, r) => s + r.mi, 0) / onLane.length) : null,
+            laneAvgRate: onLane.length ? Math.round(onLane.reduce((s, r) => s + r.rate, 0) / onLane.length) : null
+        };
+    }, [query, all]);
+    const card = { background: "#fff", borderRadius: "12px", padding: "18px", boxShadow: "0 1px 4px rgba(0,0,0,0.07)", border: "1px solid #e2e8f0" };
+    const lblSt = { fontSize: "10px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: ".04em", marginBottom: "4px", display: "block" };
+    const inSt = { width: "100%", padding: "7px 9px", fontSize: "13px", fontWeight: "600", border: "1px solid #cbd5e1", borderRadius: "6px", outline: "none", color: "#0f1f3d", boxSizing: "border-box" };
+    // Filling in the typical distance is kept for the fuel card below.
+    const prefilled = useRef("");
+    // Clearing the destination collapses the results, so the panel shrinks back
+    // to just the search row instead of leaving a stale lane on screen.
+    useEffect(() => {
+        if (!dest.trim())
+            setQuery(null);
+    }, [dest]);
+    const detail = result ? (result.onLane.length ? result.onLane : result.inMarket).slice().sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 20) : [];
+    return (React.createElement("div", { style: { ...card, gridColumn: "1 / -1", padding: "14px" } },
+        React.createElement("div", { style: { marginBottom: "10px" } },
+            React.createElement("div", { style: { fontSize: "15px", fontWeight: "800", color: "#0f1f3d" } }, "\uD83D\uDCC8 Lane & market rates"),
+            React.createElement("div", { style: { fontSize: "11px", color: "#64748b", marginTop: "2px" } }, isAdmin
+                ? `${all.length.toLocaleString()} ${singleOnly ? "single" : "total"} loads` + (imported.length ? ` · ${imported.length} imported` : "") + (live.length ? ` · ${live.length} live` : "")
+                : `Based on ${all.length.toLocaleString()} booked loads`)),
+        React.createElement("datalist", { id: "mktCityList" }, suggestions.map(c => React.createElement("option", { key: c, value: c }))),
+        React.createElement("div", { style: { display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap", marginBottom: "10px" } },
+            React.createElement("div", { style: { flex: "1 1 150px", minWidth: "130px" } },
+                React.createElement("label", { style: lblSt }, "From (optional)"),
+                React.createElement("input", { list: "mktCityList", value: origin, onChange: e => setOrigin(e.target.value), onKeyDown: e => { if (e.key === "Enter")
+                        run(); }, placeholder: "Romeoville, IL", style: inSt })),
+            React.createElement("div", { style: { flex: "1 1 150px", minWidth: "130px" } },
+                React.createElement("label", { style: lblSt }, "To"),
+                React.createElement("input", { list: "mktCityList", value: dest, onChange: e => setDest(e.target.value), onKeyDown: e => { if (e.key === "Enter")
+                        run(); }, placeholder: "Atlanta, GA", style: inSt })),
+            React.createElement("button", { onClick: run, style: { padding: "8px 16px", fontSize: "13px", fontWeight: "800", borderRadius: "6px", border: "none", background: "#2563eb", color: "#fff", cursor: "pointer", outline: "none" } }, "Look up")),
+        isAdmin && React.createElement("label", { style: { display: "inline-flex", alignItems: "center", gap: "7px", marginBottom: "12px", cursor: "pointer" } },
+            React.createElement("input", { type: "checkbox", checked: singleOnly, onChange: e => setSingleOnly(e.target.checked), style: { cursor: "pointer" } }),
+            React.createElement("span", { style: { fontSize: "11px", fontWeight: "700", color: "#374151" } }, "Single loads only"),
+            React.createElement("span", { style: { fontSize: "10px", color: "#94a3b8" } }, "A consolidated trailer earns several loads' revenue over one trip's miles, which reads as a much higher RPM.")),
+        isAdmin && singleOnly && unknownStops > 0 && (React.createElement("div", { style: { fontSize: "10px", color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "7px 10px", marginBottom: "12px", lineHeight: "1.5" } },
+            "Applies to loads entered on this board. ",
+            unknownStops.toLocaleString(),
+            " spreadsheet loads carry one gross and one mileage per delivery day with no marker for a consolidated trailer, so those cannot be separated yet.")),
+        !query && React.createElement("div", { style: { fontSize: "12px", color: "#94a3b8", padding: "4px 0" } }, "Enter a destination. Add a starting city for a specific lane."),
+        query && query.err && React.createElement("div", { style: { background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "8px", padding: "10px 12px", fontSize: "12px", color: "#92400e", fontWeight: "600" } }, query.err),
+        result && !result.market && (React.createElement("div", { style: { background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "8px", padding: "12px", fontSize: "12px", color: "#92400e" } },
+            "No loads on record delivering into ",
+            query.d,
+            ". Try the city without a state, or a nearby market.")),
+        result && result.market && (React.createElement("div", null,
+            result.lane && (React.createElement(MktRateBlock, { title: `${query.o} → ${query.d}`, sub: null, isAdmin: isAdmin, gross: result.laneAvgRate, miles: result.laneAvgMi, st: result.lane, accent: "#1d4ed8" })),
+            query.o && !result.lane && (React.createElement("div", { style: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "10px", padding: "10px 12px", marginBottom: "8px", fontSize: "12px", color: "#475569" } },
+                "Nothing on record running ",
+                query.o,
+                " \u2192 ",
+                query.d,
+                ". Showing everything into ",
+                query.d,
+                " instead.")),
+            !result.lane && (React.createElement(MktRateBlock, { title: query.d, sub: null, gross: result.avgRate, miles: result.avgMi, st: result.market, accent: "#0f1f3d", isAdmin: isAdmin })),
+            (() => {
+                const rows = result.onLane.length ? result.onLane : result.inMarket;
+                const mi = Math.round(rows.reduce((s, r) => s + r.mi, 0) / rows.length);
+                const p = fuel && fuel.price, mpg = fuel && fuel.mpg;
+                if (!p || !mpg || !(mpg > 0) || !mi)
+                    return null;
+                const gal = mi / mpg, cost = gal * p;
+                const gross = Math.round(rows.reduce((s, r) => s + r.rate, 0) / rows.length);
+                const after = gross - cost;
+                return (React.createElement("div", { style: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "10px", padding: "10px 12px", marginBottom: "8px" } },
+                    React.createElement("div", { style: { fontSize: "12px", fontWeight: "800", color: "#0f1f3d", marginBottom: "2px" } }, "\u26FD Fuel on this run"),
+                    React.createElement("div", { style: { fontSize: "10px", color: "#94a3b8", marginBottom: "10px" } },
+                        mi.toLocaleString(),
+                        " mi average \u00B7 ",
+                        mpg,
+                        " MPG \u00B7 ",
+                        fuel.region,
+                        " diesel $",
+                        p.toFixed(3),
+                        "/gal"),
+                    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(112px,1fr))", gap: "10px" } },
+                        React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: "18px", fontWeight: "900", color: "#b45309" } },
+                                "$",
+                                Math.round(cost).toLocaleString()),
+                            React.createElement("div", { style: { fontSize: "10px", color: "#64748b", fontWeight: "600" } }, "Fuel cost")),
+                        React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: "20px", fontWeight: "900", color: "#64748b" } }, Math.round(gal).toLocaleString()),
+                            React.createElement("div", { style: { fontSize: "10px", color: "#64748b", fontWeight: "600" } }, "Gallons")),
+                        React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: "20px", fontWeight: "900", color: "#b45309" } },
+                                "$",
+                                (cost / mi).toFixed(2)),
+                            React.createElement("div", { style: { fontSize: "10px", color: "#64748b", fontWeight: "600" } }, "Fuel per mile")),
+                        React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: "20px", fontWeight: "900", color: after > 0 ? "#166534" : "#991b1b" } },
+                                "$",
+                                Math.round(after).toLocaleString()),
+                            React.createElement("div", { style: { fontSize: "10px", color: "#64748b", fontWeight: "600" } }, "Gross less fuel"))),
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "8px", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #e2e8f0", flexWrap: "wrap" } },
+                        React.createElement("span", { style: { fontSize: "10px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: ".04em" } }, "Truck MPG"),
+                        React.createElement("input", { type: "number", step: "0.1", min: "0.1", value: fuel.mpgRaw, onChange: e => fuel.setMpg(e.target.value), style: { width: "70px", padding: "5px 8px", fontSize: "12px", fontWeight: "700", border: "1px solid #cbd5e1", borderRadius: "6px", outline: "none", color: "#0f1f3d" } }),
+                        isAdmin && React.createElement("span", { style: { fontSize: "10px", color: "#94a3b8" } }, "Fuel only \u2014 no driver pay, tolls, insurance, or trailer costs."))));
+            })(),
+            !result.lane && result.alsoD && result.alsoD.length > 0 && (React.createElement("div", { style: { fontSize: "10px", color: "#94a3b8", marginBottom: "8px" } },
+                React.createElement("span", { style: { fontWeight: "700" } },
+                    "Also counted within ",
+                    MKT_RADIUS_MI,
+                    " mi: "),
+                result.alsoD.join(" · "))),
+            !result.lane && result.topOrigins.length > 0 && (React.createElement("div", { style: { fontSize: "11px", color: "#475569", marginBottom: "10px" } },
+                React.createElement("span", { style: { fontWeight: "700", color: "#64748b" } }, "Most common origins: "),
+                result.topOrigins.map((t, i) => React.createElement("span", { key: t.city },
+                    i ? " · " : "",
+                    t.city,
+                    " (",
+                    t.n,
+                    ")")))),
+            canSeeDetail ? (React.createElement("div", { style: { marginTop: "6px" } },
+                React.createElement("div", { style: { fontSize: "12px", fontWeight: "800", color: "#0f1f3d", marginBottom: "6px" } }, "Most recent loads"),
+                React.createElement("div", { style: { overflowX: "auto" } },
+                    React.createElement("table", { style: { borderCollapse: "collapse", width: "100%", minWidth: "460px" } },
+                        React.createElement("thead", null,
+                            React.createElement("tr", null, ["Date", "From", "To", "Miles", "Gross", "RPM", "Broker"].map(h => (React.createElement("th", { key: h, style: { padding: "6px 8px", background: "#1a2e50", color: "#fff", fontSize: "10px", fontWeight: "600", textAlign: "left", whiteSpace: "nowrap" } }, h))))),
+                        React.createElement("tbody", null, detail.map((r, i) => (React.createElement("tr", { key: i, style: { background: i % 2 ? "#f8fafc" : "#fff", borderBottom: "1px solid #e2e8f0" } },
+                            React.createElement("td", { style: { padding: "5px 8px", fontSize: "11px", whiteSpace: "nowrap" } },
+                                r.date || "—",
+                                r.live && React.createElement("span", { style: { marginLeft: "5px", fontSize: "8px", background: "#dbeafe", color: "#1d4ed8", padding: "1px 4px", borderRadius: "3px", fontWeight: "700" } }, "LIVE")),
+                            React.createElement("td", { style: { padding: "5px 8px", fontSize: "11px" } }, r.o || "—"),
+                            React.createElement("td", { style: { padding: "5px 8px", fontSize: "11px" } }, r.d),
+                            React.createElement("td", { style: { padding: "5px 8px", fontSize: "11px" } }, r.mi.toLocaleString()),
+                            React.createElement("td", { style: { padding: "5px 8px", fontSize: "11px", fontWeight: "700", color: "#059669" } },
+                                "$",
+                                r.rate.toLocaleString()),
+                            React.createElement("td", { style: { padding: "5px 8px", fontSize: "11px", fontWeight: "800" } },
+                                "$",
+                                r.rpm.toFixed(2)),
+                            React.createElement("td", { style: { padding: "5px 8px", fontSize: "11px", color: "#64748b" } }, r.broker || "—"))))))))) : (null),
+            isAdmin && (React.createElement("div", { style: { fontSize: "10px", color: "#94a3b8", marginTop: "10px", lineHeight: "1.5" } }, "Gross rate \u00F7 miles \u2014 not net of local charges, so these read higher than the trailer RPM on the board. Our own booked freight, not a market index."))))));
+}
+// ─── LANE PRICE MOVES ───────────────────────────────────────────────────
+// Two rankings, both anchored on Illinois:
+//   OUT  — where IL freight went, top 5 destination states by load count
+//   BACK — top 5 states sending freight back into IL
+// Ranking is by number of loads moved; the figure shown is the AVERAGE gross
+// $/mi across every load to (or from) that state in the window. Load counts
+// drive the ranking but are not displayed.
+// City-pair lanes are far too thin for a 7-day window (the busiest one
+// carries 2 loads), so this aggregates to destination/origin STATE, which
+// gives a usable sample while still answering "what moved and what changed".
+// The window is anchored to the newest date in the data, not today's date,
+// so a static export still reads as "the most recent week we have".
+function mktState(city) {
+    if (!city)
+        return "";
+    const p = String(city).split(",");
+    if (p.length < 2)
+        return "";
+    const m = p[p.length - 1].toUpperCase().match(/\b([A-Z]{2})\b/);
+    return m ? m[1] : "";
+}
+function mktMedian(v) {
+    if (!v.length)
+        return null;
+    const s = [...v].sort((a, b) => a - b);
+    return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+}
+function mktShiftDate(iso, days) {
+    const d = new Date(iso + "T00:00:00Z");
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+}
+const MKT_WINDOWS = [7, 14, 30];
+function MarketStatsPanel({ records, isAdmin }) {
+    // Consolidated trailers carry several loads' revenue over one trip's miles.
+    // Including them makes outbound freight look far richer than it is.
+    const singles = useMemo(() => (records || []).filter(r => !r.multi), [records]);
+    const [days, setDays] = useState(() => {
+        const v = parseInt(localStorage.getItem("fcbv2_statsWindow"), 10);
+        return MKT_WINDOWS.indexOf(v) >= 0 ? v : 7;
+    });
+    useEffect(() => { localStorage.setItem("fcbv2_statsWindow", String(days)); }, [days]);
+    const HUB = "IL";
+    const stats = useMemo(() => {
+        const dated = singles.filter(r => r.date && r.o && r.d);
+        if (!dated.length)
+            return null;
+        const newest = dated.reduce((m, r) => r.date > m ? r.date : m, "");
+        const today = new Date().toISOString().slice(0, 10);
+        // Next week's planned loads are already on the board with future dates.
+        // Anchoring to today keeps them out; anchoring to the newest row keeps a
+        // stale export from going blank. Whichever is earlier is the right one.
+        const last = newest < today ? newest : today;
+        const curFrom = mktShiftDate(last, -(days - 1)); // the window, inclusive
+        const baseTo = mktShiftDate(last, -days); // everything before it
+        const baseFrom = mktShiftDate(last, -(days * 5 - 1)); // four windows back, for a
+        // steadier comparison than
+        // a single prior period
+        const build = (dir) => {
+            const inWin = (r, a, b) => r.date >= a && r.date <= b;
+            const keep = r => dir === "out"
+                ? (mktState(r.o) === HUB && mktState(r.d) && mktState(r.d) !== HUB)
+                : (mktState(r.d) === HUB && mktState(r.o) && mktState(r.o) !== HUB);
+            const key = r => dir === "out" ? mktState(r.d) : mktState(r.o);
+            const cur = {}, base = {};
+            dated.forEach(r => {
+                if (!keep(r))
+                    return;
+                if (inWin(r, curFrom, last))
+                    (cur[key(r)] = cur[key(r)] || []).push(r);
+                else if (inWin(r, baseFrom, baseTo))
+                    (base[key(r)] = base[key(r)] || []).push(r);
+            });
+            return Object.keys(cur)
+                .map(k => {
+                const v = cur[k], b = base[k] || [];
+                const avg = a => a.reduce((s2, x) => s2 + x, 0) / a.length;
+                const now = avg(v.map(x => x.rpm));
+                const was = b.length ? avg(b.map(x => x.rpm)) : null;
+                // A state average hides a lot — Rocky Mount and Charlotte are 220 mi
+                // apart and do not price alike. Show the single town we run most.
+                const byCity = {};
+                v.forEach(r => {
+                    const c = dir === "out" ? r.d : r.o;
+                    (byCity[c] = byCity[c] || []).push(r);
+                });
+                const cities = Object.keys(byCity)
+                    .map(c => {
+                    const g = byCity[c];
+                    // Name both ends. The town we group by is the out-of-state end;
+                    // the other end is whichever Illinois town appears most for it.
+                    const other = {};
+                    g.forEach(r => {
+                        const k = dir === "out" ? r.o : r.d;
+                        if (k)
+                            other[k] = (other[k] || 0) + 1;
+                    });
+                    const best = Object.keys(other).sort((x, y) => other[y] - other[x])[0];
+                    const il = best ? best.split(",")[0] : "";
+                    const town = c.split(",")[0];
+                    return { from: dir === "out" ? il : town, to: dir === "out" ? town : il,
+                        n: g.length, now: avg(g.map(x => x.rpm)),
+                        gross: Math.round(avg(g.map(x => x.rate))) };
+                })
+                    .sort((a, b2) => b2.n - a.n || b2.now - a.now)
+                    .slice(0, 1);
+                return { state: k, n: v.length, now, was, cities,
+                    chg: was != null ? now - was : null,
+                    gross: Math.round(v.reduce((s, x) => s + x.rate, 0) / v.length),
+                    baseN: b.length };
+            })
+                .sort((a, b) => b.n - a.n || b.now - a.now)
+                .slice(0, 5);
+        };
+        return { last, curFrom, out: build("out"), back: build("back") };
+    }, [singles, days]);
+    // Two columns wide — the rows name both ends of a lane and need the room.
+    const card = { background: "#fff", borderRadius: "12px", padding: "18px", boxShadow: "0 1px 4px rgba(0,0,0,0.07)", border: "1px solid #e2e8f0",
+        display: "flex", flexDirection: "column", height: "100%", minHeight: "330px", boxSizing: "border-box",
+        gridColumn: "span 2" };
+    const Table = ({ title, rows, dirLabel }) => (React.createElement("div", { style: { marginBottom: "14px" } },
+        React.createElement("div", { style: { fontSize: "11px", fontWeight: "800", color: "#0f1f3d", marginBottom: "6px" } }, title),
+        rows.length === 0 ? (React.createElement("div", { style: { fontSize: "11px", color: "#94a3b8", padding: "6px 0" } }, "No loads in this window.")) : (React.createElement("table", { style: { borderCollapse: "collapse", width: "100%" } },
+            React.createElement("thead", null,
+                React.createElement("tr", null, [dirLabel, "$/mi", "Change", "Avg gross"].map((h, i) => (React.createElement("th", { key: h, style: { padding: "4px 6px", fontSize: "9px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: ".04em", textAlign: i > 0 ? "right" : "left", borderBottom: "1px solid #e2e8f0" } }, h))))),
+            React.createElement("tbody", null, rows.map((r, i) => {
+                const c = (r.cities || [])[0];
+                return (React.createElement("tr", { key: r.state, style: { background: i % 2 ? "#f8fafc" : "#fff" } },
+                    React.createElement("td", { style: { padding: "6px", fontSize: "12px", color: "#0f1f3d", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "320px" } },
+                        React.createElement("strong", { style: { fontWeight: "800" } }, r.state),
+                        c && (c.from || c.to) ? React.createElement("span", { style: { color: "#64748b" } },
+                            " \u00B7 ",
+                            c.from,
+                            c.from && c.to ? " → " : "",
+                            c.to) : null),
+                    React.createElement("td", { style: { padding: "6px", fontSize: "12px", textAlign: "right", fontWeight: "800", color: "#0f1f3d" } },
+                        "$",
+                        r.now.toFixed(2)),
+                    React.createElement("td", { style: { padding: "6px", fontSize: "11px", textAlign: "right", fontWeight: "800",
+                            color: r.chg == null ? "#94a3b8" : r.chg > 0.005 ? "#059669" : r.chg < -0.005 ? "#dc2626" : "#64748b" } }, r.chg == null ? "—" : (r.chg > 0 ? "▲ " : r.chg < 0 ? "▼ " : "■ ") + "$" + Math.abs(r.chg).toFixed(2)),
+                    React.createElement("td", { style: { padding: "6px", fontSize: "11px", textAlign: "right", color: "#059669", fontWeight: "700" } },
+                        "$",
+                        r.gross.toLocaleString())));
+            }))))));
+    return (React.createElement("div", { style: card },
+        React.createElement("div", { style: { marginBottom: "14px" } },
+            React.createElement("div", { style: { fontSize: "16px", fontWeight: "800", color: "#0f1f3d" } }, "\uD83D\uDCCA Lane price moves"),
+            React.createElement("div", { style: { fontSize: "11px", color: "#64748b", marginTop: "2px" } }, stats ? `Single loads · ${days} days to ${stats.last}` : `Single loads · last ${days} days`)),
+        React.createElement("div", { style: { display: "flex", gap: "5px", marginBottom: "12px" } }, MKT_WINDOWS.map(w => {
+            const on = w === days;
+            return (React.createElement("button", { key: w, onClick: () => setDays(w), style: { fontSize: "11px", fontWeight: "700", padding: "4px 11px", borderRadius: "999px", border: "1px solid " + (on ? "#2563eb" : "#e2e8f0"), background: on ? "#eff6ff" : "#fff", color: on ? "#1d4ed8" : "#64748b", cursor: "pointer", outline: "none" } },
+                w,
+                " days"));
+        })),
+        !stats ? (React.createElement("div", { style: { flex: "1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", color: "#94a3b8" } }, "No dated loads yet.")) : (React.createElement("div", null,
+            React.createElement(Table, { title: "Out of Illinois", rows: stats.out, dirLabel: "Destination" }),
+            React.createElement(Table, { title: "Back to Illinois", rows: stats.back, dirLabel: "Loading from" }),
+            isAdmin && (React.createElement("div", { style: { fontSize: "10px", color: "#94a3b8", lineHeight: "1.5", borderTop: "1px solid #f1f5f9", paddingTop: "8px" } },
+                "Average gross $/mi across every single load to that state in the ",
+                days,
+                " days ending ",
+                stats.last,
+                ", against the four ",
+                days,
+                "-day periods before it. States ranked by how many loads moved. Grouped by state because individual city lanes carry only one or two loads in a week. Consolidated trailers are excluded \u2014 by the board's own flag for live loads, and above $",
+                SINGLE_LOAD_MAX_RPM.toFixed(2),
+                "/mi for spreadsheet loads, which carry no marker."))))));
+}
+function MarketInfoSection({ weeks, canSeeDetail, isAdmin }) {
+    const [open, setOpen] = useState(() => localStorage.getItem("fcbv2_marketOpen") !== "0");
+    useEffect(() => { localStorage.setItem("fcbv2_marketOpen", open ? "1" : "0"); }, [open]);
+    // ── historical records from the embedded Board_2026 extract ───────────
+    const hist = useMemo(() => {
+        const H = (typeof LANE_HIST !== "undefined") ? LANE_HIST : null;
+        if (!H)
+            return [];
+        return H.loads.map(([di, oi, mi, rate, wi, dti, lo]) => {
+            const d = H.cities[di], o = oi >= 0 ? H.cities[oi] : null;
+            // Classify on the RAW rate. The $3.10 cap was calibrated against posted
+            // rates, so testing the added-back figure would wrongly flag short IL
+            // runs as consolidated.
+            const consolidated = (rate / mi) > SINGLE_LOAD_MAX_RPM;
+            const gross = mktAddBack(rate, o, d);
+            return {
+                d, o, mi, rate: gross, rpm: gross / mi,
+                date: H.dates[dti] || "", week: H.weeks[wi] || "",
+                live: false, broker: "", local: !!lo,
+                // The spreadsheet has no marker for a consolidated trailer, so this is
+                // an ESTIMATE. Loads coming back INTO Illinois are almost never
+                // consolidated and form a tight band that dies out by ~$3.10/mi.
+                multi: consolidated, stopsKnown: false, estimated: true
+            };
+        });
+    }, []);
+    // ── live records from the board's own weeks ───────────────────────────
+    const live = useMemo(() => {
+        const out = [];
+        (weeks || []).forEach(w => {
+            (w.groups || []).forEach(g => {
+                try {
+                    const cg = calcGroup(g);
+                    const combined = !!g.isCombined;
+                    const mi = cg.calcTripMi || cg.autoTripMi || 0;
+                    const gross = cg.gross || 0;
+                    if (!(mi > 0) || !(gross > 0))
+                        return;
+                    const ld = cg.loads || [];
+                    if (!ld.length)
+                        return;
+                    const d = mktNormCity(ld[ld.length - 1].receiver);
+                    if (!d)
+                        return;
+                    const o = mktNormCity(ld[0].shipper);
+                    const rpm = gross / mi;
+                    if (rpm < 0.5 || rpm > 8)
+                        return;
+                    const grossAdj = mktAddBack(gross, o, d);
+                    const dt = (ld[ld.length - 1].delivery || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+                    out.push({
+                        multi: combined || ld.length > 1, stops: ld.length, stopsKnown: true,
+                        d, o, mi: Math.round(mi), rate: Math.round(grossAdj), rpm: grossAdj / mi,
+                        date: dt ? `${dt[3]}-${String(dt[1]).padStart(2, "0")}-${String(dt[2]).padStart(2, "0")}` : "",
+                        week: w.label || "", live: true,
+                        broker: (ld[0].broker || "").split("&")[0].trim()
+                    });
+                }
+                catch (e) { /* a malformed group must not take down the panel */ }
+            });
+        });
+        return out;
+    }, [weeks]);
+    // Weeks added by the payroll Board upload — see importLaneRecords().
+    const [imported, setImported] = useState(() => {
+        try {
+            return JSON.parse(localStorage.getItem("fcbv2_laneImport") || "[]");
+        }
+        catch (e) {
+            return [];
+        }
+    });
+    useEffect(() => {
+        const h = () => { try {
+            setImported(JSON.parse(localStorage.getItem("fcbv2_laneImport") || "[]"));
+        }
+        catch (e) { } };
+        window.addEventListener("fcbv2-lane-import", h);
+        return () => window.removeEventListener("fcbv2-lane-import", h);
+    }, []);
+    const records = useMemo(() => hist.concat(imported, live), [hist, imported, live]);
+    // Diesel state lives here so the lane panel can price fuel with the same
+    // number the surcharge calculator uses — one fetch, one source of truth.
+    const [data, setData] = useState(null);
+    const [status, setStatus] = useState("loading");
+    const [err, setErr] = useState("");
+    const [regionCode, setRegionCode] = useState(() => localStorage.getItem("fcbv2_fscRegion") || "R20");
+    const [mpg, setMpg] = useState(() => localStorage.getItem("fcbv2_fscMpg") || "6.0");
+    const [baseline, setBaseline] = useState(() => localStorage.getItem("fcbv2_fscBase") || "1.25");
+    const load = async () => {
+        setStatus("loading");
+        setErr("");
+        try {
+            const url = (localStorage.getItem("fcbv2_sheetsUrl") || SHEETS_URL) + "?action=diesel";
+            const r = await fetch(url, { redirect: "follow" });
+            if (!r.ok)
+                throw new Error("HTTP " + r.status);
+            const j = await r.json();
+            if (!j.ok)
+                throw new Error(j.message || j.error || "Diesel feed returned no data");
+            setData(j);
+            setStatus("ok");
+        }
+        catch (e) {
+            setErr(e.message || String(e));
+            setStatus("err");
+        }
+    };
+    useEffect(() => { load(); }, []);
+    useEffect(() => { localStorage.setItem("fcbv2_fscRegion", regionCode); }, [regionCode]);
+    useEffect(() => { localStorage.setItem("fcbv2_fscMpg", mpg); }, [mpg]);
+    useEffect(() => { localStorage.setItem("fcbv2_fscBase", baseline); }, [baseline]);
+    const byCode = {};
+    ((data && data.regions) || []).forEach(r => { byCode[r.code] = r; });
+    const sel = byCode[regionCode] || byCode.NUS || null;
+    const available = MKT_REGIONS.filter(r => byCode[r.code]);
+    const fuel = { price: sel ? sel.price : null, mpg: parseFloat(mpg), setMpg, mpgRaw: mpg,
+        region: (MKT_REGIONS.find(r => r.code === regionCode) || {}).short || "" };
+    return (React.createElement("div", { style: { marginTop: "24px" } },
+        React.createElement("div", { onClick: () => setOpen(o => !o), style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", cursor: "pointer", marginBottom: open ? "14px" : "0", userSelect: "none" } },
+            React.createElement("div", null,
+                React.createElement("div", { style: { fontWeight: "800", fontSize: "18px", color: "#0f1f3d" } }, "\uD83E\uDDED Market info"),
+                React.createElement("div", { style: { fontSize: "11px", color: "#64748b", marginTop: "2px" } }, "Lane rates, diesel prices and broker authority \u2014 free to everyone")),
+            React.createElement("span", { style: { fontSize: "13px", color: "#64748b", fontWeight: "700" } }, open ? "▲ Hide" : "▼ Show")),
+        open && (React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: "14px", alignItems: "stretch" } },
+            React.createElement(MarketLanePanel, { records: records, imported: imported, live: live, canSeeDetail: canSeeDetail, isAdmin: isAdmin, fuel: fuel }),
+            React.createElement(MarketDieselPanel, { data: data, status: status, err: err, load: load, regionCode: regionCode, setRegionCode: setRegionCode, sel: sel, available: available, baseline: baseline, setBaseline: setBaseline, mpg: mpg, setMpg: setMpg }),
+            React.createElement(MarketCarrierPanel, null),
+            React.createElement(MarketStatsPanel, { records: records, isAdmin: isAdmin })))));
+}
+const LOCAL_DRV = new Set(["Linas Greiciunas", "Theron Mack", "John Johnson", "Douglas Russo", "Emilis Ibianskas", "Egidijus Matulis", "Oleh Lashkevych"]);
+function MobileDashboard({ weeks, isAdmin, signedIn, liveTrucks, onClaim, curIdx, setCurIdx }) {
+    const dashCurIdx = curIdx, setDashCurIdx = setCurIdx;
+    const [dashPrevIdx, setDashPrevIdx] = useState(1);
+    const liveAgo = (iso) => {
+        if (!iso)
+            return "";
+        const t = new Date(iso).getTime();
+        if (isNaN(t))
+            return "";
+        const diff = Date.now() - t;
+        if (diff < 0)
+            return "just now";
+        const m = Math.floor(diff / 60000);
+        if (m < 1)
+            return "just now";
+        if (m < 60)
+            return m + "m ago";
+        const h = Math.floor(m / 60);
+        if (h < 24)
+            return h + "h ago";
+        const d = new Date(iso);
+        return (d.getMonth() + 1) + "/" + d.getDate();
+    };
+    return (React.createElement("div", { style: { padding: "0", minHeight: "0", background: "#f0f4f8" } },
+        React.createElement("div", { style: { maxWidth: "1400px", margin: "0 auto", padding: "16px 16px 0" } },
+            React.createElement(MarketInfoSection, { weeks: weeks, canSeeDetail: signedIn, isAdmin: isAdmin })),
+        (weeks && weeks.length > 0) && (() => {
+            const resolvedCurIdx = dashCurIdx < 0 ? weeks.length + dashCurIdx : dashCurIdx;
+            const resolvedPrevIdx = dashPrevIdx < 0 ? weeks.length + dashPrevIdx : dashPrevIdx;
+            const safeCurIdx = Math.max(0, Math.min(resolvedCurIdx, weeks.length - 1));
+            const safePrevIdx = Math.max(0, Math.min(resolvedPrevIdx, weeks.length - 1));
+            const curWk = weeks[safeCurIdx] || { groups: [], localDeliveries: [], accessorials: [] };
+            const prevWk = weeks[safePrevIdx] || { groups: [], localDeliveries: [], accessorials: [] };
+            const calcWk = (w) => {
+                const grps = w.groups || [];
+                const loads = grps.flatMap(g => g.loads || []);
+                const gross = loads.reduce((s, l) => s + (parseFloat(l.rate) || 0), 0);
+                // Compute local charges from raw load data (manualLocalCharge or auto from pickupMiUsed)
+                const loc = loads.reduce((s, l) => {
+                    if (l.manualLocalCharge !== "" && l.manualLocalCharge != null)
+                        return s + (parseFloat(l.manualLocalCharge) || 0);
+                    const { s: shipper } = parseSR(l.sr || "");
+                    const am = cityMiles(shipper);
+                    const um = (l.manualPickupMi !== "" && l.manualPickupMi != null) ? parseFloat(l.manualPickupMi) : am;
+                    return s + (um != null ? localCharge(um) : 0);
+                }, 0);
+                const acc = (w.accessorials || []).reduce((s, a) => s + (parseFloat(a.amount) || 0), 0);
+                const localDel = (w.localDeliveries || []).length;
+                const trailers = grps.length;
+                const allMi = grps.reduce((s, g) => {
+                    const raw = g.tripMiles !== "" && g.tripMiles != null ? parseFloat(g.tripMiles) : g.calcTripMi ? parseFloat(g.calcTripMi) : g.autoTripMi ? parseFloat(g.autoTripMi) : 0;
+                    return s + (isNaN(raw) ? 0 : raw);
+                }, 0);
+                const netGross = gross - loc + acc;
+                const rpm = allMi > 0 ? Math.round((netGross / allMi) * 100) / 100 : 0;
+                const drivers = {};
+                loads.forEach(l => { const d = l.driver || (grps.find(g => g.loads.some(ld => ld.id === l.id)) || {}).groupDriver; if (d && !LOCAL_DRV.has(d)) {
+                    drivers[d] = (drivers[d] || 0) + (parseFloat(l.rate) || 0);
+                } });
+                const states = {};
+                loads.forEach(l => {
+                    const sr = parseSR(l.sr || "");
+                    const rcv = sr.r || "";
+                    // Match "City, ST" — grab the state abbreviation after the comma
+                    const stMatch = rcv.match(/,\s*([A-Z]{2})\b/);
+                    const st = stMatch ? stMatch[1] : null;
+                    if (st)
+                        states[st] = (states[st] || 0) + 1;
+                });
+                const extraAdded = grps.filter(g => (g.loads || []).length > 1).reduce((s, g) => { const rates = (g.loads || []).map(l => parseFloat(l.rate) || 0).sort((a, b) => b - a); return s + rates.slice(1).reduce((x, r) => x + r, 0); }, 0);
+                return { gross, loc, acc, localDel, trailers, loads: loads.length, allMi: Math.round(allMi), netGross, rpm, drivers, states, extraAdded };
+            };
+            const cur = calcWk(curWk);
+            const prev = calcWk(prevWk);
+            const curLabel = curWk.label || "Current Week";
+            const prevLabel = prevWk.label || "Previous Week";
+            const delta = (a, b) => b > 0 ? Math.round((a - b) / b * 100) : a > 0 ? 100 : 0;
+            const Arrow = ({ a, b, rev }) => { const d = delta(a, b); const good = rev ? d < 0 : d > 0; return d === 0 ? null : (React.createElement("span", { style: { fontSize: "10px", fontWeight: "700", color: good ? "#16a34a" : "#dc2626", marginLeft: "3px" } },
+                d > 0 ? "▲" : "▼",
+                Math.abs(d),
+                "%")); };
+            const statCards = [
+                { label: "Total Loads", cur: cur.loads, prev: prev.loads, icon: "📦", color: "#2563eb", bg: "#eff6ff", fmt: v => v },
+                ...(isAdmin ? [{ label: "OTR Trailers", cur: cur.trailers, prev: prev.trailers, icon: "🚛", color: "#7c3aed", bg: "#faf5ff", fmt: v => v }] : []),
+                { label: "Local Deliveries", cur: cur.localDel, prev: prev.localDel, icon: "🏙", color: "#0891b2", bg: "#ecfeff", fmt: v => v },
+                { label: "Gross Revenue", cur: cur.gross, prev: prev.gross, icon: "💰", color: "#059669", bg: "#f0fdf4", fmt: v => "$" + v.toLocaleString() },
+                { label: "Local Expenses", cur: cur.loc, prev: prev.loc, icon: "🏠", color: "#d97706", bg: "#fffbeb", fmt: v => "$" + v.toLocaleString(), rev: true },
+                { label: "Net Revenue", cur: cur.netGross, prev: prev.netGross, icon: "🏆", color: "#166534", bg: "#dcfce7", fmt: v => "$" + v.toLocaleString() },
+                { label: "RPM", cur: cur.rpm, prev: prev.rpm, icon: "📍", color: "#7c3aed", bg: "#faf5ff", fmt: v => v ? "$" + v + "/mi" : "—" },
+                { label: "Miles Driven", cur: cur.allMi, prev: prev.allMi, icon: "🛣", color: "#374151", bg: "#f8fafc", fmt: v => v > 0 ? v.toLocaleString() + " mi" : "—" },
+                { label: "Additional", cur: cur.extraAdded, prev: prev.extraAdded, icon: "⭐", color: "#b45309", bg: "#fffbeb", fmt: v => v > 0 ? "$" + v.toLocaleString() : "$0" },
+            ];
+            const allStates = Object.keys({ ...cur.states, ...prev.states });
+            const maxStat = Math.max(...statCards.map(s => Math.max(s.cur, s.prev)), 1);
+            return (React.createElement("div", { style: { maxWidth: "1400px", margin: "0 auto", padding: "16px" } },
+                (() => {
+                    // Gather combined groups from the CURRENT WEEK ONLY (the week selected in the Dashboard picker).
+                    // Combined Loads are always shown — no toggle required.
+                    const allCombined = ((curWk.groups || []).filter(g => g.isCombined).map(g => ({ ...g, weekLabel: curWk.label || "", weekId: curWk.id, weekGroups: curWk.groups })));
+                    if (allCombined.length === 0)
+                        return null;
+                    // Status style map
+                    const cStMap = { Preplanned: { bg: "#f1f5f9", c: "#475569", bd: "#94a3b8", label: "Preplanned" }, Future: { bg: "#f5f3ff", c: "#5b21b6", bd: "#a78bfa", label: "Future" }, "Not dispatched": { bg: "#fef9c3", c: "#713f12", bd: "#eab308", label: "Not Dispatched" }, Loaded: { bg: "#dcfce7", c: "#14532d", bd: "#22c55e", label: "Loaded" }, Ready: { bg: "#bbf7d0", c: "#065f46", bd: "#16a34a", label: "Ready" } };
+                    const STATUS_ORDER = ["Preplanned", "Not dispatched", "Loaded", "Future", "Ready"];
+                    // Group by combinedStatus
+                    const byStatus = {};
+                    STATUS_ORDER.forEach(s => { byStatus[s] = []; });
+                    allCombined.forEach(g => {
+                        const st = g.combinedStatus || "Preplanned";
+                        if (!byStatus[st])
+                            byStatus[st] = [];
+                        byStatus[st].push(g);
+                    });
+                    return (React.createElement("div", { style: { marginBottom: "24px" } },
+                        React.createElement("div", { style: { fontSize: "16px", fontWeight: "800", color: "#0f1f3d", marginBottom: "14px", display: "flex", alignItems: "center", gap: "8px" } },
+                            "\uD83D\uDD04 Combined Loads",
+                            React.createElement("span", { style: { fontSize: "12px", fontWeight: "600", color: "#64748b", background: "#f1f5f9", padding: "2px 8px", borderRadius: "10px" } },
+                                allCombined.length,
+                                " trailers")),
+                        STATUS_ORDER.filter(st => byStatus[st] && byStatus[st].length > 0).map(st => {
+                            const stStyle = cStMap[st] || { bg: "#f1f5f9", c: "#475569", bd: "#94a3b8", label: st };
+                            return (React.createElement("div", { key: st, style: { marginBottom: "16px" } },
+                                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" } },
+                                    React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", fontWeight: "700", padding: "3px 10px", borderRadius: "12px", background: stStyle.bg, color: stStyle.c, border: `1.5px solid ${stStyle.bd}` } },
+                                        React.createElement("span", { style: { width: "6px", height: "6px", borderRadius: "50%", background: stStyle.bd } }),
+                                        stStyle.label),
+                                    React.createElement("span", { style: { fontSize: "11px", color: "#94a3b8" } },
+                                        byStatus[st].length,
+                                        " trailer",
+                                        byStatus[st].length !== 1 ? "s" : "")),
+                                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: "10px" } }, byStatus[st].map(group => {
+                                    const loads = group.loads || [];
+                                    const grossRate = loads.reduce((s, l) => s + (parseFloat(l.rate) || 0), 0);
+                                    const locCost = loads.reduce((s, l) => {
+                                        if (l.manualLocalCharge !== "" && l.manualLocalCharge != null)
+                                            return s + (parseFloat(l.manualLocalCharge) || 0);
+                                        const { s: shipper } = parseSR(l.sr || "");
+                                        const am = cityMiles(shipper);
+                                        const um = (l.manualPickupMi !== "" && l.manualPickupMi != null) ? parseFloat(l.manualPickupMi) : am;
+                                        return s + (um != null ? localCharge(um) : 0);
+                                    }, 0);
+                                    const netRate = grossRate - locCost;
+                                    const hasDriver = !!(group.groupDriver && group.groupDriver.trim());
+                                    return (React.createElement("div", { key: group.id, style: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: "10px", overflow: "hidden", borderLeft: `4px solid ${stStyle.bd}`, boxShadow: "0 1px 4px rgba(0,0,0,.05)" } },
+                                        React.createElement("div", { style: { background: hasDriver ? "#0f1f3d" : stStyle.bg, padding: "9px 14px", display: "flex", alignItems: "center", gap: "7px", flexWrap: "wrap" } }, hasDriver ? (React.createElement(React.Fragment, null,
+                                            group.groupTruck && React.createElement("span", { style: { fontSize: "11px", fontWeight: "700", color: "#fff", background: "rgba(255,255,255,.15)", padding: "2px 8px", borderRadius: "4px", flexShrink: 0 } },
+                                                "#",
+                                                group.groupTruck),
+                                            group.groupTrailer && React.createElement("span", { style: { fontSize: "11px", fontWeight: "700", color: "#c4b5fd", background: "rgba(167,139,250,.2)", padding: "2px 8px", borderRadius: "4px", flexShrink: 0 } }, group.groupTrailer),
+                                            React.createElement("span", { style: { fontSize: "12px", fontWeight: "600", color: "#86efac", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, group.groupDriver),
+                                            (() => {
+                                                const tk = group.groupTruck && liveTrucks[group.groupTruck];
+                                                if (!tk || !tk.address)
+                                                    return null;
+                                                const parts = tk.address.split(",").map(s => s.trim()).filter(Boolean);
+                                                let short = tk.address;
+                                                if (parts.length >= 2) {
+                                                    const lastPart = parts[parts.length - 1];
+                                                    const state = lastPart.length <= 2 ? lastPart : (parts[parts.length - 2] || "");
+                                                    const city = lastPart.length <= 2 ? parts[parts.length - 2] : parts[parts.length - 3];
+                                                    if (city && state)
+                                                        short = city + ", " + state;
+                                                    else
+                                                        short = parts.slice(-2).join(", ");
+                                                }
+                                                if (short.length > 22)
+                                                    short = short.slice(0, 20) + "…";
+                                                const tip = tk.address + " — " + liveAgo(tk.asOf) + " (truck #" + group.groupTruck + ")";
+                                                return (React.createElement("span", { title: tip, style: { fontSize: "9px", fontWeight: "700", color: "#fde047", background: "rgba(234,179,8,.18)", border: "1px solid rgba(234,179,8,.4)", padding: "2px 6px", borderRadius: "4px", whiteSpace: "nowrap", flexShrink: 0, cursor: "help" } },
+                                                    "\uD83D\uDCCD ",
+                                                    short));
+                                            })(),
+                                            (() => { const mi = group.tripMiles !== "" && group.tripMiles != null ? parseFloat(group.tripMiles) : group.calcTripMi ? parseFloat(group.calcTripMi) : group.autoTripMi ? parseFloat(group.autoTripMi) : null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: "rgba(255,255,255,.45)", background: "rgba(255,255,255,.08)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
+                                                Math.round(mi).toLocaleString(),
+                                                " mi") : null; })())) : (React.createElement(React.Fragment, null,
+                                            React.createElement("span", { style: { fontSize: "11px", fontWeight: "800", color: "#b91c1c", flex: 1, letterSpacing: ".01em" } }, "NO DRIVER ASSIGNED"),
+                                            (() => { const mi = group.tripMiles !== "" && group.tripMiles != null ? parseFloat(group.tripMiles) : group.calcTripMi ? parseFloat(group.calcTripMi) : group.autoTripMi ? parseFloat(group.autoTripMi) : null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: stStyle.c, background: "rgba(0,0,0,.06)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
+                                                Math.round(mi).toLocaleString(),
+                                                " mi") : null; })()))),
+                                        React.createElement("div", { style: { padding: "12px 14px 10px" } },
+                                            !hasDriver && (group.groupTruck || group.groupTrailer) && (React.createElement("div", { style: { display: "flex", gap: "6px", marginBottom: "10px", alignItems: "center" } },
+                                                group.groupTruck && React.createElement("span", { style: { fontSize: "11px", fontWeight: "700", color: "#0f1f3d", background: "#f1f5f9", border: "1px solid #e2e8f0", padding: "2px 8px", borderRadius: "4px" } },
+                                                    "#",
+                                                    group.groupTruck),
+                                                group.groupTrailer && React.createElement("span", { style: { fontSize: "11px", fontWeight: "700", color: "#5b21b6", background: "#ede9fe", border: "1px solid #ddd6fe", padding: "2px 8px", borderRadius: "4px" } }, group.groupTrailer),
+                                                React.createElement("span", { style: { fontSize: "11px", color: "#94a3b8" } },
+                                                    loads.length,
+                                                    "-Stop Load"))),
+                                            (() => {
+                                                // Sort by delivery date first, then pickup, then natural index as tiebreaker
+                                                const sortedLoads = [...loads].sort((a, b) => {
+                                                    const pa = parseTS(a.delivery) || parseTS(a.pickup) || Infinity;
+                                                    const pb = parseTS(b.delivery) || parseTS(b.pickup) || Infinity;
+                                                    if (pa !== pb)
+                                                        return pa - pb;
+                                                    return loads.indexOf(a) - loads.indexOf(b);
+                                                });
+                                                const origin = sortedLoads.length > 0 ? parseSR(sortedLoads[0].sr || "").s : "";
+                                                const cellSt = { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "8px 6px", textAlign: "center", flex: "1 1 0", minWidth: 0 };
+                                                return (React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: "4px", marginBottom: "10px" } },
+                                                    React.createElement("div", { style: cellSt },
+                                                        React.createElement("div", { style: { fontSize: "9px", color: "#94a3b8", fontWeight: "700", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: "3px" } }, "Origin"),
+                                                        React.createElement("div", { style: { fontSize: "11px", fontWeight: "600", color: "#0f1f3d", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, origin || "—")),
+                                                    sortedLoads.map((l, li) => {
+                                                        const sr = parseSR(l.sr || "");
+                                                        return (React.createElement(React.Fragment, { key: l.id },
+                                                            React.createElement("div", { style: { display: "flex", alignItems: "center", paddingTop: "14px", flexShrink: 0 } },
+                                                                React.createElement("span", { style: { fontSize: "14px", color: "#cbd5e1", lineHeight: 1 } }, "\u203A")),
+                                                            React.createElement("div", { style: cellSt },
+                                                                React.createElement("div", { style: { fontSize: "9px", color: "#94a3b8", fontWeight: "700", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: "3px" } },
+                                                                    "Stop ",
+                                                                    li + 1),
+                                                                React.createElement("div", { style: { fontSize: "11px", fontWeight: "600", color: "#0f1f3d", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: "4px" } }, sr.r || sr.s || "—"),
+                                                                l.delivery && React.createElement("span", { style: { display: "inline-block", fontSize: "10px", color: "#475569", background: "#e2e8f0", borderRadius: "3px", padding: "1px 5px" } }, l.delivery))));
+                                                    })));
+                                            })(),
+                                            group.readyTime && (React.createElement("div", { style: { background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "7px", padding: "7px 12px", marginBottom: "10px", display: "flex", alignItems: "center", gap: "8px" } },
+                                                React.createElement("span", { style: { fontSize: "10px", fontWeight: "700", color: "#15803d", textTransform: "uppercase", letterSpacing: ".04em", flexShrink: 0 } }, "Preloaded Ready at a Yard"),
+                                                React.createElement("span", { style: { fontSize: "11px", fontWeight: "600", color: "#15803d" } }, group.readyTime))),
+                                            !hasDriver && (React.createElement("div", { style: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "8px 12px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "10px" } },
+                                                React.createElement("span", { style: { fontSize: "11px", fontWeight: "500", color: "#475569", flex: 1, minWidth: "80px" } }, "Enter your name to claim:"),
+                                                React.createElement("input", { id: `claim-${group.id}`, type: "text", placeholder: "Your name...", onClick: e => e.stopPropagation(), style: { border: "1px solid #e2e8f0", borderRadius: "6px", padding: "5px 9px", fontSize: "11px", color: "#0f1f3d", background: "#fff", outline: "none", width: "130px", flexShrink: 0, fontFamily: "inherit" } }),
+                                                React.createElement("button", { onClick: e => { e.stopPropagation(); onClaim(group.id, `claim-${group.id}`, e.currentTarget); }, style: { background: "#059669", color: "#fff", border: "none", borderRadius: "6px", padding: "5px 14px", fontSize: "11px", fontWeight: "700", cursor: "pointer", flexShrink: 0 } }, "Claim"))),
+                                            React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid #e2e8f0", paddingTop: "9px" } },
+                                                React.createElement("span", { style: { fontSize: "11px", color: "#94a3b8" } }, "Net after local expenses"),
+                                                React.createElement("span", { style: { fontSize: "14px", fontWeight: "700", color: "#15803d" } },
+                                                    "$",
+                                                    Math.round(netRate).toLocaleString())))));
+                                }))));
+                        })));
+                })(),
+                (() => {
+                    // In Transit: current week + admin pressed 📊 Dashboard on the OTR card.
+                    const allInTransit = ((curWk.groups || []).filter(g => g.groupStatus === "In Transit" && g.showOnDashboard).map(g => ({ ...g, weekLabel: curWk.label || "", weekId: curWk.id })));
+                    if (allInTransit.length === 0)
+                        return null;
+                    return (React.createElement("div", { style: { marginBottom: "24px" } },
+                        React.createElement("div", { style: { fontSize: "16px", fontWeight: "800", color: "#0f1f3d", marginBottom: "14px", display: "flex", alignItems: "center", gap: "8px" } },
+                            "\uD83D\uDE9B In Transit",
+                            React.createElement("span", { style: { fontSize: "12px", fontWeight: "600", color: "#64748b", background: "#fed7aa", padding: "2px 8px", borderRadius: "10px" } },
+                                allInTransit.length,
+                                " trailer",
+                                allInTransit.length !== 1 ? "s" : "")),
+                        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: "10px" } }, allInTransit.map(group => {
+                            const loads = group.loads || [];
+                            const grossRate = loads.reduce((s, l) => s + (parseFloat(l.rate) || 0), 0);
+                            const locCost = loads.reduce((s, l) => {
+                                if (l.manualLocalCharge !== "" && l.manualLocalCharge != null)
+                                    return s + (parseFloat(l.manualLocalCharge) || 0);
+                                const { s: shipper } = parseSR(l.sr || "");
+                                const am = cityMiles(shipper);
+                                const um = (l.manualPickupMi !== "" && l.manualPickupMi != null) ? parseFloat(l.manualPickupMi) : am;
+                                return s + (um != null ? localCharge(um) : 0);
+                            }, 0);
+                            const netRate = grossRate - locCost;
+                            return (React.createElement("div", { key: group.id, style: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: "10px", overflow: "hidden", borderLeft: "4px solid #fb923c", boxShadow: "0 1px 4px rgba(0,0,0,.05)" } },
+                                React.createElement("div", { style: { background: "#0f1f3d", padding: "9px 14px", display: "flex", alignItems: "center", gap: "7px", flexWrap: "wrap" } },
+                                    group.groupTruck && React.createElement("span", { style: { fontSize: "11px", fontWeight: "700", color: "#fff", background: "rgba(255,255,255,.15)", padding: "2px 8px", borderRadius: "4px", flexShrink: 0 } },
+                                        "#",
+                                        group.groupTruck),
+                                    group.groupTrailer && React.createElement("span", { style: { fontSize: "11px", fontWeight: "700", color: "#c4b5fd", background: "rgba(167,139,250,.2)", padding: "2px 8px", borderRadius: "4px", flexShrink: 0 } }, group.groupTrailer),
+                                    React.createElement("span", { style: { fontSize: "12px", fontWeight: "600", color: "#86efac", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, group.groupDriver || "—"),
+                                    (() => {
+                                        const tk = group.groupTruck && liveTrucks[group.groupTruck];
+                                        if (!tk || !tk.address)
+                                            return null;
+                                        const parts = tk.address.split(",").map(s => s.trim()).filter(Boolean);
+                                        let short = tk.address;
+                                        if (parts.length >= 2) {
+                                            const lastPart = parts[parts.length - 1];
+                                            const state = lastPart.length <= 2 ? lastPart : (parts[parts.length - 2] || "");
+                                            const city = lastPart.length <= 2 ? parts[parts.length - 2] : parts[parts.length - 3];
+                                            if (city && state)
+                                                short = city + ", " + state;
+                                            else
+                                                short = parts.slice(-2).join(", ");
+                                        }
+                                        if (short.length > 22)
+                                            short = short.slice(0, 20) + "…";
+                                        const tip = tk.address + " — " + liveAgo(tk.asOf) + " (truck #" + group.groupTruck + ")";
+                                        return (React.createElement("span", { title: tip, style: { fontSize: "9px", fontWeight: "700", color: "#fde047", background: "rgba(234,179,8,.18)", border: "1px solid rgba(234,179,8,.4)", padding: "2px 6px", borderRadius: "4px", whiteSpace: "nowrap", flexShrink: 0, cursor: "help" } },
+                                            "\uD83D\uDCCD ",
+                                            short));
+                                    })(),
+                                    (() => { const mi = group.tripMiles !== "" && group.tripMiles != null ? parseFloat(group.tripMiles) : group.calcTripMi ? parseFloat(group.calcTripMi) : group.autoTripMi ? parseFloat(group.autoTripMi) : null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: "rgba(255,255,255,.45)", background: "rgba(255,255,255,.08)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
+                                        Math.round(mi).toLocaleString(),
+                                        " mi") : null; })()),
+                                React.createElement("div", { style: { padding: "12px 14px 10px" } },
+                                    (() => {
+                                        const sortedLoads = [...loads].sort((a, b) => {
+                                            const pa = parseTS(a.delivery) || parseTS(a.pickup) || Infinity;
+                                            const pb = parseTS(b.delivery) || parseTS(b.pickup) || Infinity;
+                                            if (pa !== pb)
+                                                return pa - pb;
+                                            return loads.indexOf(a) - loads.indexOf(b);
+                                        });
+                                        const origin = sortedLoads.length > 0 ? parseSR(sortedLoads[0].sr || "").s : "";
+                                        const cellSt = { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "8px 6px", textAlign: "center", flex: "1 1 0", minWidth: 0 };
+                                        return (React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: "4px", marginBottom: "10px" } },
+                                            React.createElement("div", { style: cellSt },
+                                                React.createElement("div", { style: { fontSize: "9px", color: "#94a3b8", fontWeight: "700", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: "3px" } }, "Origin"),
+                                                React.createElement("div", { style: { fontSize: "11px", fontWeight: "600", color: "#0f1f3d", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, origin || "—")),
+                                            sortedLoads.map((l, li) => {
+                                                const sr = parseSR(l.sr || "");
+                                                return (React.createElement(React.Fragment, { key: l.id },
+                                                    React.createElement("div", { style: { display: "flex", alignItems: "center", paddingTop: "14px", flexShrink: 0 } },
+                                                        React.createElement("span", { style: { fontSize: "14px", color: "#cbd5e1", lineHeight: 1 } }, "\u203A")),
+                                                    React.createElement("div", { style: cellSt },
+                                                        React.createElement("div", { style: { fontSize: "9px", color: "#94a3b8", fontWeight: "700", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: "3px" } },
+                                                            "Stop ",
+                                                            li + 1),
+                                                        React.createElement("div", { style: { fontSize: "11px", fontWeight: "600", color: "#0f1f3d", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: "4px" } }, sr.r || sr.s || "—"),
+                                                        l.delivery && React.createElement("span", { style: { display: "inline-block", fontSize: "10px", color: "#475569", background: "#e2e8f0", borderRadius: "3px", padding: "1px 5px" } }, l.delivery))));
+                                            })));
+                                    })(),
+                                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid #e2e8f0", paddingTop: "9px" } },
+                                        React.createElement("span", { style: { fontSize: "11px", color: "#94a3b8" } }, "Net after local expenses"),
+                                        React.createElement("span", { style: { fontSize: "14px", fontWeight: "700", color: "#15803d" } },
+                                            "$",
+                                            Math.round(netRate).toLocaleString())))));
+                        }))));
+                })(),
+                (() => {
+                    // Delivered: current week + admin pressed 📊 Dashboard on the OTR card.
+                    const allDelivered = ((curWk.groups || []).filter(g => g.groupStatus === "Delivered" && g.showOnDashboard).map(g => ({ ...g, weekLabel: curWk.label || "", weekId: curWk.id })));
+                    if (allDelivered.length === 0)
+                        return null;
+                    return (React.createElement("div", { style: { marginBottom: "24px" } },
+                        React.createElement("div", { style: { fontSize: "16px", fontWeight: "800", color: "#0f1f3d", marginBottom: "14px", display: "flex", alignItems: "center", gap: "8px" } },
+                            "\u2705 Completed",
+                            React.createElement("span", { style: { fontSize: "12px", fontWeight: "600", color: "#15803d", background: "#dcfce7", padding: "2px 8px", borderRadius: "10px" } },
+                                allDelivered.length,
+                                " trailer",
+                                allDelivered.length !== 1 ? "s" : "")),
+                        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: "10px" } }, allDelivered.map(group => {
+                            const loads = group.loads || [];
+                            const grossRate = loads.reduce((s, l) => s + (parseFloat(l.rate) || 0), 0);
+                            const locCost = loads.reduce((s, l) => {
+                                if (l.manualLocalCharge !== "" && l.manualLocalCharge != null)
+                                    return s + (parseFloat(l.manualLocalCharge) || 0);
+                                const { s: shipper } = parseSR(l.sr || "");
+                                const am = cityMiles(shipper);
+                                const um = (l.manualPickupMi !== "" && l.manualPickupMi != null) ? parseFloat(l.manualPickupMi) : am;
+                                return s + (um != null ? localCharge(um) : 0);
+                            }, 0);
+                            const netRate = grossRate - locCost;
+                            return (React.createElement("div", { key: group.id, style: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: "10px", overflow: "hidden", borderLeft: "4px solid #16a34a", boxShadow: "0 1px 4px rgba(0,0,0,.05)" } },
+                                React.createElement("div", { style: { background: "#0f1f3d", padding: "9px 14px", display: "flex", alignItems: "center", gap: "7px", flexWrap: "wrap" } },
+                                    group.groupTruck && React.createElement("span", { style: { fontSize: "11px", fontWeight: "700", color: "#fff", background: "rgba(255,255,255,.15)", padding: "2px 8px", borderRadius: "4px", flexShrink: 0 } },
+                                        "#",
+                                        group.groupTruck),
+                                    group.groupTrailer && React.createElement("span", { style: { fontSize: "11px", fontWeight: "700", color: "#c4b5fd", background: "rgba(167,139,250,.2)", padding: "2px 8px", borderRadius: "4px", flexShrink: 0 } }, group.groupTrailer),
+                                    React.createElement("span", { style: { fontSize: "12px", fontWeight: "600", color: "#86efac", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, group.groupDriver || "—"),
+                                    (() => {
+                                        const tk = group.groupTruck && liveTrucks[group.groupTruck];
+                                        if (!tk || !tk.address)
+                                            return null;
+                                        const parts = tk.address.split(",").map(s => s.trim()).filter(Boolean);
+                                        let short = tk.address;
+                                        if (parts.length >= 2) {
+                                            const lastPart = parts[parts.length - 1];
+                                            const state = lastPart.length <= 2 ? lastPart : (parts[parts.length - 2] || "");
+                                            const city = lastPart.length <= 2 ? parts[parts.length - 2] : parts[parts.length - 3];
+                                            if (city && state)
+                                                short = city + ", " + state;
+                                            else
+                                                short = parts.slice(-2).join(", ");
+                                        }
+                                        if (short.length > 22)
+                                            short = short.slice(0, 20) + "…";
+                                        const tip = tk.address + " — " + liveAgo(tk.asOf) + " (truck #" + group.groupTruck + ")";
+                                        return (React.createElement("span", { title: tip, style: { fontSize: "9px", fontWeight: "700", color: "#fde047", background: "rgba(234,179,8,.18)", border: "1px solid rgba(234,179,8,.4)", padding: "2px 6px", borderRadius: "4px", whiteSpace: "nowrap", flexShrink: 0, cursor: "help" } },
+                                            "\uD83D\uDCCD ",
+                                            short));
+                                    })(),
+                                    (() => { const mi = group.tripMiles !== "" && group.tripMiles != null ? parseFloat(group.tripMiles) : group.calcTripMi ? parseFloat(group.calcTripMi) : group.autoTripMi ? parseFloat(group.autoTripMi) : null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: "rgba(255,255,255,.45)", background: "rgba(255,255,255,.08)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
+                                        Math.round(mi).toLocaleString(),
+                                        " mi") : null; })()),
+                                React.createElement("div", { style: { padding: "12px 14px 10px" } },
+                                    (() => {
+                                        const sortedLoads = [...loads].sort((a, b) => {
+                                            const pa = parseTS(a.delivery) || parseTS(a.pickup) || Infinity;
+                                            const pb = parseTS(b.delivery) || parseTS(b.pickup) || Infinity;
+                                            if (pa !== pb)
+                                                return pa - pb;
+                                            return loads.indexOf(a) - loads.indexOf(b);
+                                        });
+                                        const origin = sortedLoads.length > 0 ? parseSR(sortedLoads[0].sr || "").s : "";
+                                        const cellSt = { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "8px 6px", textAlign: "center", flex: "1 1 0", minWidth: 0 };
+                                        return (React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: "4px", marginBottom: "10px" } },
+                                            React.createElement("div", { style: cellSt },
+                                                React.createElement("div", { style: { fontSize: "9px", color: "#94a3b8", fontWeight: "700", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: "3px" } }, "Origin"),
+                                                React.createElement("div", { style: { fontSize: "11px", fontWeight: "600", color: "#0f1f3d", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, origin || "—")),
+                                            sortedLoads.map((l, li) => {
+                                                const sr = parseSR(l.sr || "");
+                                                return (React.createElement(React.Fragment, { key: l.id },
+                                                    React.createElement("div", { style: { display: "flex", alignItems: "center", paddingTop: "14px", flexShrink: 0 } },
+                                                        React.createElement("span", { style: { fontSize: "14px", color: "#cbd5e1", lineHeight: 1 } }, "\u203A")),
+                                                    React.createElement("div", { style: cellSt },
+                                                        React.createElement("div", { style: { fontSize: "9px", color: "#94a3b8", fontWeight: "700", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: "3px" } },
+                                                            "Stop ",
+                                                            li + 1),
+                                                        React.createElement("div", { style: { fontSize: "11px", fontWeight: "600", color: "#0f1f3d", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: "4px" } }, sr.r || sr.s || "—"),
+                                                        l.delivery && React.createElement("span", { style: { display: "inline-block", fontSize: "10px", color: "#475569", background: "#e2e8f0", borderRadius: "3px", padding: "1px 5px" } }, l.delivery))));
+                                            })));
+                                    })(),
+                                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid #e2e8f0", paddingTop: "9px" } },
+                                        React.createElement("span", { style: { fontSize: "11px", color: "#94a3b8" } }, "Net after local expenses"),
+                                        React.createElement("span", { style: { fontSize: "14px", fontWeight: "700", color: "#15803d" } },
+                                            "$",
+                                            Math.round(netRate).toLocaleString())))));
+                        }))));
+                })(),
+                React.createElement("div", { style: { marginBottom: "20px" } },
+                    React.createElement("div", { style: { fontSize: "22px", fontWeight: "800", color: "#0f1f3d" } }, "\uD83D\uDCCA Weekly Dashboard"),
+                    React.createElement("div", { style: { fontSize: "12px", color: "#64748b", marginTop: "2px" } },
+                        curLabel,
+                        " vs ",
+                        prevLabel)),
+                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: "12px", marginBottom: "20px" } }, [
+                    { label: "Week A", idx: safeCurIdx, setIdx: setDashCurIdx, accent: "#2563eb", accentLight: "#93c5fd", bg: "#1e3a5f", border: "2px solid #2563eb", data: cur, textColor: "#fff", subColor: "#93c5fd", numColors: ["#34d399", "#60a5fa", "#a78bfa", "#fbbf24"] },
+                    { label: "Week B", idx: safePrevIdx, setIdx: setDashPrevIdx, accent: "#475569", accentLight: "#94a3b8", bg: "#1a2e50", border: "1px solid #334155", data: prev, textColor: "#e2e8f0", subColor: "#94a3b8", numColors: ["#6b7280", "#6b7280", "#6b7280", "#6b7280"] }
+                ].map((card) => (React.createElement("div", { key: card.label, style: { background: card.bg, borderRadius: "12px", padding: "16px 20px", border: card.border } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px", gap: "8px", flexWrap: "wrap" } },
+                        React.createElement("span", { style: { fontSize: "13px", fontWeight: "800", color: card.subColor, letterSpacing: ".06em", textTransform: "uppercase" } }, card.label),
+                        React.createElement("select", { value: card.idx, onChange: e => card.setIdx(parseInt(e.target.value)), style: { background: "rgba(255,255,255,0.1)", color: card.textColor, border: "1px solid rgba(255,255,255,0.2)", borderRadius: "6px", padding: "4px 8px", fontSize: "12px", fontWeight: "600", cursor: "pointer", outline: "none", maxWidth: "180px" } }, weeks.map((w, i) => (React.createElement("option", { key: w.id, value: i, style: { background: "#1a2e50", color: "#fff" } }, w.label || ("Week " + (i + 1))))))),
+                    React.createElement("div", { style: { fontSize: "15px", fontWeight: "800", color: card.textColor, marginBottom: "12px" } }, (weeks[card.idx] || {}).label || "—"),
+                    React.createElement("div", { style: { display: "flex", gap: "16px", flexWrap: "wrap" } },
+                        React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: "22px", fontWeight: "900", color: card.numColors[0] } },
+                                "$",
+                                card.data.gross.toLocaleString()),
+                            React.createElement("div", { style: { fontSize: "11px", color: card.subColor, fontWeight: "600" } }, "Gross"),
+                            React.createElement("div", { style: { fontSize: "11px", color: "rgba(255,255,255,.45)", marginTop: "2px" } },
+                                "Net: $",
+                                card.data.netGross.toLocaleString())),
+                        React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: "22px", fontWeight: "900", color: card.numColors[1] } }, card.data.loads),
+                            React.createElement("div", { style: { fontSize: "11px", color: card.subColor, fontWeight: "600" } }, "Loads")),
+                        isAdmin && React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: "22px", fontWeight: "900", color: card.numColors[2] } }, card.data.trailers),
+                            React.createElement("div", { style: { fontSize: "11px", color: card.subColor, fontWeight: "600" } }, "Trailers")),
+                        React.createElement("div", null,
+                            React.createElement("div", { style: { fontSize: "22px", fontWeight: "900", color: card.numColors[3] } }, card.data.rpm ? ("$" + card.data.rpm + "/mi") : "—"),
+                            React.createElement("div", { style: { fontSize: "11px", color: card.subColor, fontWeight: "600" } }, "RPM"))))))),
+                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: "12px", marginBottom: "24px" } }, statCards.map((sc) => (React.createElement("div", { key: sc.label, style: { background: "#fff", borderRadius: "12px", padding: "14px", boxShadow: "0 1px 4px rgba(0,0,0,0.07)", border: "1px solid #e2e8f0" } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" } },
+                        React.createElement("span", { style: { fontSize: "18px" } }, sc.icon),
+                        React.createElement("span", { style: { fontSize: "10px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: ".04em" } }, sc.label)),
+                    React.createElement("div", { style: { fontSize: "22px", fontWeight: "800", color: sc.color } },
+                        sc.fmt(sc.cur),
+                        React.createElement(Arrow, { a: sc.cur, b: sc.prev, rev: sc.rev })),
+                    React.createElement("div", { style: { fontSize: "10px", color: "#94a3b8", marginTop: "4px" } },
+                        "prev: ",
+                        sc.fmt(sc.prev)),
+                    sc.cur > 0 && sc.prev > 0 && (React.createElement("div", { style: { display: "flex", gap: "2px", marginTop: "8px", alignItems: "flex-end", height: "24px" } },
+                        React.createElement("div", { style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" } },
+                            React.createElement("div", { style: { width: "100%", background: sc.color, borderRadius: "2px", height: Math.round(sc.prev / Math.max(sc.cur, sc.prev) * 20) + "px", opacity: .4 } }),
+                            React.createElement("span", { style: { fontSize: "8px", color: "#94a3b8" } }, "prev")),
+                        React.createElement("div", { style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" } },
+                            React.createElement("div", { style: { width: "100%", background: sc.color, borderRadius: "2px", height: Math.round(sc.cur / Math.max(sc.cur, sc.prev) * 20) + "px" } }),
+                            React.createElement("span", { style: { fontSize: "8px", color: sc.color, fontWeight: "700" } }, "now"))))))))));
+        })()));
+}
+window.MobileDashboard = MobileDashboard;
+
+</script>
 
 <script>
 
 
-const DIST={"romeoville":0,"lockport":5,"joliet":8,"bolingbrook":5,"woodridge":8,"darien":15,"burr ridge":12,"willowbrook":10,"hodgkins":18,"bedford park":20,"bridgeview":20,"oak lawn":22,"evergreen park":24,"alsip":18,"blue island":20,"country club hills":20,"markham":22,"harvey":22,"naperville":15,"aurora":20,"batavia":25,"geneva":28,"st. charles":28,"saint charles":28,"north aurora":20,"n aurora":20,"sugar grove":22,"oswego":12,"montgomery":905,"yorkville":15,"plano":22,"sandwich":28,"west chicago":25,"w chicago":25,"carol stream":20,"glendale heights":22,"addison":22,"elmhurst":22,"villa park":22,"lombard":20,"downers grove":15,"westmont":15,"lisle":15,"itasca":22,"wood dale":22,"bensenville":25,"elk grove village":25,"elk grove vlg":25,"bloomingdale":22,"roselle":25,"hanover park":28,"streamwood":28,"bartlett":30,"schaumburg":28,"elgin":35,"hoffman estates":30,"barrington":40,"crystal lake":45,"mchenry":50,"wauconda":48,"lake zurich":45,"mundelein":48,"libertyville":50,"gurnee":52,"waukegan":55,"north chicago":55,"zion":58,"chicago":30,"chicago hts":25,"chicago heights":25,"cicero":22,"berwyn":22,"oak park":25,"melrose park":25,"franklin park":25,"northlake":23,"bellwood":23,"broadview":22,"berkeley":22,"hillside":20,"la grange":18,"la grange park":18,"mccook":20,"forest park":24,"maywood":25,"stone park":25,"rosemont":27,"des plaines":28,"park ridge":28,"niles":28,"skokie":30,"evanston":32,"wheeling":33,"buffalo grove":38,"palatine":35,"arlington heights":33,"mount prospect":30,"rolling meadows":30,"willow springs":12,"palos heights":12,"orland park":15,"tinley park":18,"oak forest":15,"midlothian":22,"homewood":22,"flossmoor":22,"matteson":20,"park forest":22,"crete":25,"sauk village":28,"calumet city":28,"lansing":28,"south holland":25,"dolton":26,"monee":22,"university park":22,"beecher":28,"peotone":20,"channahon":10,"minooka":12,"elwood":10,"manhattan":12,"mokena":14,"new lenox":14,"frankfort":16,"steger":22,"wilmington":892,"braidwood":22,"coal city":20,"diamond":22,"seneca":30,"marseilles":40,"ottawa":62,"la salle":65,"peru":65,"streator":50,"pontiac":70,"bloomington":90,"normal":90,"decatur":628,"springfield":100,"peoria":120,"bartonville":120,"east peoria":120,"morton":120,"mackinaw":110,"goodfield":115,"minonk":100,"kankakee":35,"bourbonnais":35,"bradley":32,"manteno":30,"momence":45,"hoopeston":80,"danville":100,"champaign":110,"urbana":110,"lemont":12,"homer glen":12,"orland hills":15,"carpentersville":38,"dundee":40,"west dundee":40,"hampshire":42,"genoa":50,"dekalb":50,"sycamore":52,"rochelle":65,"dixon":75,"sterling":95,"rock falls":95,"rockford":78,"loves park":80,"machesney park":82,"roscoe":82,"belvidere":60,"marengo":52,"woodstock":55,"antioch":60,"fox lake":58,"round lake":52,"hammond":28,"east chicago":28,"gary":32,"portage":40,"chesterton":50,"valparaiso":45,"hobart":35,"merrillville":35,"merrilville":35,"crown point":32,"dyer":28,"st. john":28,"schererville":30,"munster":28,"highland":30,"michigan city":60,"la porte":65,"laporte":65,"south bend":95,"mishawaka":95,"elkhart":110,"goshen":115,"warsaw":862,"bremen":100,"plymouth":95,"rochester":95,"north judson":65,"knox":85,"logansport":105,"kokomo":120,"indianapolis":175,"anderson":155,"fort wayne":155,"auburn":710,"remington":80,"rensselaer":70,"temperance":55,"kenosha":52,"pleasant prairie":50,"racine":58,"sturtevant":58,"oak creek":65,"franksville":62,"caledonia":62,"milwaukee":70,"west allis":72,"greenfield":72,"new berlin":74,"muskego":70,"franklin":68,"glendale":74,"wauwatosa":72,"butler":72,"menomonee falls":78,"waukesha":78,"brookfield":76,"pewaukee":78,"delafield":85,"oconomowoc":90,"watertown":100,"germantown":78,"sussex":82,"hartland":85,"east troy":70,"elkhorn":75,"lake geneva":80,"delavan":82,"beloit":78,"janesville":85,"edgerton":90,"whitewater":90,"fort atkinson":110,"jefferson":730,"madison":95,"middleton":98,"stoughton":98,"verona":97,"baraboo":140,"beaver dam":115,"fond du lac":125,"oshkosh":130,"appleton":135,"neenah":135,"green bay":155,"sheboygan":130,"brillion":160,"manitowoc":150,"wausau":190,"eau claire":250,"la crosse":250,"hudson":310,"kalamazoo":115,"battle creek":125,"grand rapids":130,"lansing":155,"detroit":290,"ann arbor":280,"davenport":170,"des moines":290,"st. louis":285,"kansas city":480,"fountain inn":840,"spartanburg":782,"rock hill":880,"charlotte":872,"matthews":858,"lugoff":845,"jacksonville":1215,"deltona":1215,"orlando":1270,"tampa":1320,"dothan":985,"birmingham":658,"huntsville":625,"nashville":495,"memphis":545,"knoxville":565,"chattanooga":605,"louisville":330,"lexington":425,"hammond la":950,"baton rouge":1000,"new orleans":1050,"dallas":980,"fort worth":985,"houston":1110,"san antonio":1200,"oklahoma city":720,"tulsa":700,"atlanta":745,"mcdonough":738,"douglasville":730,"college park":748,"alabaster":660,"longwood":1270,"haines city":1295,"lakeland":1295,"ocala":1255,"palm bay":1290,"jupiter":1365,"pensacola":972,"tallahassee":1150,"gainesville":1230,"kissimmee":1300,"sanford":1280,"leesburg":1290,"deland":1270,"daytona beach":1260,"fort lauderdale":1400,"miami":1420,"west palm beach":1380,"port st lucie":1360,"fort myers":1380,"cape coral":1390,"naples":1410,"clearwater":1340,"st petersburg":1345,"sarasota":1360,"bradenton":1355,"punta gorda":1375,"kernersville":825,"lenoir":880,"durham":860,"greensboro":830,"rocky mount":858,"mebane":845,"henderson":858,"faison":855,"jonesville":780,"dudley":852,"winston salem":820,"winston-salem":820,"hickory":865,"concord":860,"gastonia":878,"burlington":840,"high point":832,"goldsboro":855,"wilson":852,"fayetteville":855,"raleigh":858,"cary":840,"asheville":878,"statesville":855,"salisbury":845,"charleston":938,"n charleston":935,"north charleston":935,"greenville":775,"beech island":828,"columbia":840,"florence":878,"myrtle beach":930,"hilton head":960,"gaffney":778,"union":870,"athens":760,"braselton":748,"calhoun":685,"doraville":748,"duluth":745,"griffin":768,"suwanee":740,"gainesville ga":740,"cartersville":730,"conyers":736,"stockbridge":738,"macon":785,"savannah":850,"columbus":790,"albany":860,"valdosta":890,"brunswick":870,"warner robins":810,"kennesaw":712,"smyrna":718,"marietta":716,"roswell":722,"mechanicsville":840,"richmond":840,"norfolk":900,"virginia beach":905,"roanoke":808,"charlottesville":832,"hattiesburg":900,"jackson ms":870,"gulfport":958,"biloxi":962,"murfreesboro":500,"franklin tn":498,"clarksville":530,"cookeville":530,"johnson city":590,"kingsport":590,"bristol":600,"smyrna tn":492,"la vergne":490,"columbus oh":350,"cincinnati":340,"cleveland oh":390,"toledo":310,"akron":400,"dayton":340,"youngstown":430,"philadelphia":780,"pittsburgh":460,"allentown":800,"harrisburg":750,"new york":840,"bronx":845,"brooklyn":850,"buffalo ny":500,"rochester ny":570,"baltimore":760,"hagerstown":730,"newark":820,"jersey city":825,"camden":790,"elizabeth":820,"trenton":800,"flint":310,"warren":295,"sterling heights":295,"dearborn":290,"grand rapids mi":130,"chicago ridge":22,"bridgeview il":20,"justice":18,"lyons":18,"stickney":22,"summit":20,"countryside":15,"fort payne":810,"gadsden":820,"anniston":840,"oxford":675,"talladega":685,"pelham":662,"trussville":835,"pell city":860,"rainbow city":845,"boaz":850,"albertville":848,"centre":830,"rome ga":700,"calhoun ga":670,"dalton":690,"chattanooga tn":620,"lebanon tn":520,"gallatin":525,"hendersonville tn":520,"columbia tn":520,"brentwood":497,"crossville":555,"jackson tn":548,"dyersburg":580,"clarksville tn":530,"paris tn":565,"millington":565,"memphis tn":560,"olive branch":570,"southaven":568,"horn lake":568,"corinth":600,"tupelo":650,"columbus ms":690,"meridian":750,"laurel":900,"hattiesburg ms":960,"picayune":990,"gulfport ms":1000,"biloxi ms":1005,"ocean springs":1010,"pascagoula":1020,"mobile":975,"tillmans corner":975,"theodore":975,"daphne":980,"fairhope":985,"foley":990,"pensacola fl":1020,"pace":1025,"milton fl":1030,"tallahassee fl":1150,"quincy fl":1145,"marianna":1100,"panama city":1060,"destin":1050,"fort walton beach":1048,"niceville":1052,"crestview":1042,"dothan al":1000,"enterprise":825,"ozark":990,"troy al":960,"montgomery al":940,"prattville":940,"millbrook":942,"wetumpka":938,"auburn al":910,"opelika":712,"phenix city":720,"valley al":895,"rome":715,"cleveland":718,"summerville":940,"chapel hill":834,"smithfield nc":850,"morganton":870,"jonesville nc":850,"cleveland tn":600};
+const DIST={"romeoville":0,"lockport":5,"joliet":8,"bolingbrook":5,"woodridge":8,"darien":15,"burr ridge":12,"willowbrook":10,"hodgkins":18,"bedford park":20,"bridgeview":20,"oak lawn":22,"evergreen park":24,"alsip":18,"blue island":20,"country club hills":20,"markham":22,"harvey":22,"naperville":15,"aurora":20,"batavia":25,"geneva":28,"st. charles":28,"saint charles":28,"north aurora":20,"n aurora":20,"sugar grove":22,"oswego":12,"montgomery":905,"montgomery il":24,"yorkville":15,"plano":22,"sandwich":28,"west chicago":25,"w chicago":25,"carol stream":20,"glendale heights":22,"addison":22,"elmhurst":22,"villa park":22,"lombard":20,"downers grove":15,"westmont":15,"lisle":15,"itasca":22,"wood dale":22,"bensenville":25,"elk grove village":25,"elk grove vlg":25,"bloomingdale":22,"roselle":25,"hanover park":28,"streamwood":28,"bartlett":30,"schaumburg":28,"elgin":35,"hoffman estates":30,"barrington":40,"crystal lake":45,"mchenry":50,"wauconda":48,"lake zurich":45,"mundelein":48,"libertyville":50,"gurnee":52,"waukegan":55,"north chicago":55,"zion":58,"chicago":30,"chicago hts":25,"chicago heights":25,"cicero":22,"berwyn":22,"oak park":25,"melrose park":25,"franklin park":25,"northlake":23,"bellwood":23,"broadview":22,"berkeley":22,"hillside":20,"la grange":18,"la grange park":18,"mccook":20,"forest park":24,"maywood":25,"stone park":25,"rosemont":27,"des plaines":28,"park ridge":28,"niles":28,"skokie":30,"evanston":32,"wheeling":33,"buffalo grove":38,"palatine":35,"arlington heights":33,"mount prospect":30,"rolling meadows":30,"willow springs":12,"palos heights":12,"orland park":15,"tinley park":18,"oak forest":15,"midlothian":22,"homewood":22,"flossmoor":22,"matteson":20,"park forest":22,"crete":25,"sauk village":28,"calumet city":28,"lansing":28,"south holland":25,"dolton":26,"monee":22,"university park":22,"beecher":28,"peotone":20,"channahon":10,"minooka":12,"elwood":10,"manhattan":12,"mokena":14,"new lenox":14,"frankfort":16,"steger":22,"wilmington":892,"wilmington il":18,"braidwood":22,"coal city":20,"diamond":22,"seneca":30,"marseilles":40,"ottawa":62,"la salle":65,"peru":65,"streator":50,"pontiac":70,"bloomington":90,"normal":90,"decatur":628,"springfield":100,"peoria":120,"bartonville":120,"east peoria":120,"morton":120,"mackinaw":110,"goodfield":115,"minonk":100,"kankakee":35,"bourbonnais":35,"bradley":32,"manteno":30,"momence":45,"hoopeston":80,"danville":100,"champaign":110,"urbana":110,"lemont":12,"homer glen":12,"orland hills":15,"carpentersville":38,"dundee":40,"west dundee":40,"hampshire":42,"genoa":50,"dekalb":50,"sycamore":52,"rochelle":65,"dixon":75,"sterling":95,"rock falls":95,"rockford":78,"loves park":80,"machesney park":82,"roscoe":82,"belvidere":60,"marengo":52,"woodstock":55,"antioch":60,"fox lake":58,"round lake":52,"hammond":28,"east chicago":28,"gary":32,"portage":40,"chesterton":50,"valparaiso":45,"hobart":35,"merrillville":35,"merrilville":35,"crown point":32,"dyer":28,"st. john":28,"schererville":30,"munster":28,"highland":30,"michigan city":60,"la porte":65,"laporte":65,"south bend":95,"mishawaka":95,"elkhart":110,"goshen":115,"warsaw":862,"bremen":100,"plymouth":95,"rochester":95,"north judson":65,"knox":85,"logansport":105,"kokomo":120,"indianapolis":175,"anderson":155,"fort wayne":155,"auburn":710,"remington":80,"rensselaer":70,"temperance":55,"kenosha":52,"pleasant prairie":50,"racine":58,"sturtevant":58,"oak creek":65,"franksville":62,"caledonia":62,"milwaukee":70,"west allis":72,"greenfield":72,"new berlin":74,"muskego":70,"franklin":68,"glendale":74,"wauwatosa":72,"butler":72,"menomonee falls":78,"waukesha":78,"brookfield":76,"pewaukee":78,"delafield":85,"oconomowoc":90,"watertown":100,"germantown":78,"sussex":82,"hartland":85,"east troy":70,"elkhorn":75,"lake geneva":80,"delavan":82,"beloit":78,"janesville":85,"edgerton":90,"whitewater":90,"fort atkinson":110,"jefferson":730,"madison":95,"middleton":98,"stoughton":98,"verona":97,"baraboo":140,"beaver dam":115,"fond du lac":125,"oshkosh":130,"appleton":135,"neenah":135,"green bay":155,"sheboygan":130,"brillion":160,"manitowoc":150,"wausau":190,"eau claire":250,"la crosse":250,"hudson":310,"kalamazoo":115,"battle creek":125,"grand rapids":130,"lansing mi":155,"detroit":290,"ann arbor":280,"davenport":170,"des moines":290,"st. louis":285,"kansas city":480,"fountain inn":840,"spartanburg":782,"rock hill":880,"charlotte":872,"matthews":858,"lugoff":845,"jacksonville":1215,"deltona":1215,"orlando":1270,"tampa":1320,"dothan":985,"birmingham":658,"huntsville":625,"nashville":495,"memphis":545,"knoxville":565,"chattanooga":605,"louisville":330,"lexington":425,"hammond la":950,"baton rouge":1000,"new orleans":1050,"dallas":980,"fort worth":985,"houston":1110,"san antonio":1200,"oklahoma city":720,"tulsa":700,"atlanta":745,"mcdonough":738,"douglasville":730,"college park":748,"alabaster":660,"longwood":1270,"haines city":1295,"lakeland":1295,"ocala":1255,"palm bay":1290,"jupiter":1365,"pensacola":972,"tallahassee":1150,"gainesville":1230,"kissimmee":1300,"sanford":1280,"leesburg":1290,"deland":1270,"daytona beach":1260,"fort lauderdale":1400,"miami":1420,"west palm beach":1380,"port st lucie":1360,"fort myers":1380,"cape coral":1390,"naples":1410,"clearwater":1340,"st petersburg":1345,"sarasota":1360,"bradenton":1355,"punta gorda":1375,"kernersville":825,"lenoir":880,"durham":860,"greensboro":830,"rocky mount":858,"mebane":845,"henderson":858,"faison":855,"jonesville":780,"dudley":852,"winston salem":820,"winston-salem":820,"hickory":865,"concord":860,"gastonia":878,"burlington":840,"high point":832,"goldsboro":855,"wilson":852,"fayetteville":855,"raleigh":858,"cary":840,"asheville":878,"statesville":855,"salisbury":845,"charleston":938,"n charleston":935,"north charleston":935,"greenville":775,"beech island":828,"columbia":840,"florence":878,"myrtle beach":930,"hilton head":960,"gaffney":778,"union":870,"athens":760,"braselton":748,"calhoun":685,"doraville":748,"duluth":745,"griffin":768,"suwanee":740,"gainesville ga":740,"cartersville":730,"conyers":736,"stockbridge":738,"macon":785,"savannah":850,"columbus":790,"albany":860,"valdosta":890,"brunswick":870,"warner robins":810,"kennesaw":712,"smyrna":718,"marietta":716,"roswell":722,"mechanicsville":840,"richmond":840,"norfolk":900,"virginia beach":905,"roanoke":808,"charlottesville":832,"hattiesburg":900,"jackson ms":870,"gulfport":958,"biloxi":962,"murfreesboro":500,"franklin tn":498,"clarksville":530,"cookeville":530,"johnson city":590,"kingsport":590,"bristol":600,"smyrna tn":492,"la vergne":490,"columbus oh":350,"cincinnati":340,"cleveland oh":390,"toledo":310,"akron":400,"dayton":340,"youngstown":430,"philadelphia":780,"pittsburgh":460,"allentown":800,"harrisburg":750,"new york":840,"bronx":845,"brooklyn":850,"buffalo ny":500,"rochester ny":570,"baltimore":760,"hagerstown":730,"newark":820,"jersey city":825,"camden":790,"elizabeth":820,"trenton":800,"flint":310,"warren":295,"sterling heights":295,"dearborn":290,"grand rapids mi":130,"chicago ridge":22,"bridgeview il":20,"justice":18,"lyons":18,"stickney":22,"summit":20,"countryside":15,"fort payne":810,"gadsden":820,"anniston":840,"oxford":675,"talladega":685,"pelham":662,"trussville":835,"pell city":860,"rainbow city":845,"boaz":850,"albertville":848,"centre":830,"rome ga":700,"calhoun ga":670,"dalton":690,"chattanooga tn":620,"lebanon tn":520,"gallatin":525,"hendersonville tn":520,"columbia tn":520,"brentwood":497,"crossville":555,"jackson tn":548,"dyersburg":580,"clarksville tn":530,"paris tn":565,"millington":565,"memphis tn":560,"olive branch":570,"southaven":568,"horn lake":568,"corinth":600,"tupelo":650,"columbus ms":690,"meridian":750,"laurel":900,"hattiesburg ms":960,"picayune":990,"gulfport ms":1000,"biloxi ms":1005,"ocean springs":1010,"pascagoula":1020,"mobile":975,"tillmans corner":975,"theodore":975,"daphne":980,"fairhope":985,"foley":990,"pensacola fl":1020,"pace":1025,"milton fl":1030,"tallahassee fl":1150,"quincy fl":1145,"marianna":1100,"panama city":1060,"destin":1050,"fort walton beach":1048,"niceville":1052,"crestview":1042,"dothan al":1000,"enterprise":825,"ozark":990,"troy al":960,"montgomery al":940,"prattville":940,"millbrook":942,"wetumpka":938,"auburn al":910,"opelika":712,"phenix city":720,"valley al":895,"rome":715,"cleveland":718,"summerville":940,"chapel hill":834,"smithfield nc":850,"morganton":870,"jonesville nc":850,"cleveland tn":600};
 const CITYLL={"romeoville":[41.627,-88.089],"kernersville":[36.119,-80.069],"lenoir":[35.913,-81.540],"winston salem":[36.099,-80.244],"winston-salem":[36.099,-80.244],"greensboro":[36.073,-79.792],"high point":[35.955,-80.005],"durham":[35.994,-78.899],"raleigh":[35.779,-78.638],"cary":[35.791,-78.781],"chapel hill":[35.913,-79.056],"charlotte":[35.227,-80.843],"gastonia":[35.262,-81.187],"hickory":[35.733,-81.344],"statesville":[35.783,-80.887],"salisbury":[35.671,-80.474],"concord":[35.409,-80.580],"mooresville":[35.574,-80.810],"asheville":[35.595,-82.551],"morganton":[35.745,-81.685],"fayetteville":[35.053,-78.878],"wilmington":[34.226,-77.945],"rocky mount":[35.938,-77.790],"henderson":[36.330,-78.400],"mebane":[36.096,-79.267],"burlington":[36.096,-79.438],"faison":[35.125,-78.128],"jonesville":[36.238,-80.840],"dudley":[35.267,-78.017],"goldsboro":[35.385,-78.007],"wilson":[35.721,-77.916],"kinston":[35.262,-77.581],"jacksonville nc":[34.754,-77.430],"mechanicsville":[37.604,-77.356],"richmond":[37.541,-77.434],"norfolk":[36.851,-76.286],"roanoke":[37.271,-79.942],"rock hill":[34.925,-81.025],"spartanburg":[34.950,-81.932],"greenville sc":[34.852,-82.394],"beech island":[33.465,-81.840],"lugoff":[34.196,-80.670],"charleston":[32.776,-79.931],"columbia":[34.000,-81.035],"florence":[34.198,-79.761],"myrtle beach":[33.689,-78.887],"atlanta":[33.749,-84.388],"college park":[33.653,-84.449],"braselton":[34.113,-83.808],"athens":[33.961,-83.378],"calhoun":[34.503,-84.951],"rome":[34.257,-85.165],"cartersville":[34.166,-84.800],"duluth":[34.003,-84.145],"doraville":[33.900,-84.283],"suwanee":[34.052,-84.066],"kennesaw":[34.023,-84.615],"marietta":[33.953,-84.551],"smyrna":[33.884,-84.514],"roswell":[34.023,-84.362],"douglasville":[33.750,-84.748],"griffin":[33.247,-84.261],"conyers":[33.668,-84.018],"stockbridge":[33.538,-84.234],"mcdonough":[33.446,-84.147],"macon":[32.840,-83.633],"savannah":[32.076,-81.089],"valdosta":[30.833,-83.279],"columbus":[32.461,-84.989],"albany":[31.578,-84.156],"fort payne":[34.444,-85.720],"gadsden":[34.014,-85.989],"anniston":[33.659,-85.832],"oxford":[33.614,-85.836],"talladega":[33.436,-86.104],"montgomery":[32.361,-86.279],"dothan":[31.223,-85.390],"mobile":[30.695,-88.043],"huntsville":[34.730,-86.586],"decatur":[34.606,-86.983],"pelham":[33.297,-86.793],"birmingham":[33.521,-86.803],"nashville":[36.162,-86.782],"murfreesboro":[35.845,-86.390],"franklin tn":[35.925,-86.869],"brentwood":[35.998,-86.783],"smyrna tn":[36.004,-86.519],"la vergne":[36.018,-86.582],"cookeville":[36.163,-85.501],"chattanooga":[35.046,-85.309],"knoxville":[35.961,-83.921],"memphis":[35.149,-90.052],"jackson tn":[35.615,-88.814],"clarksville":[36.532,-87.359],"jacksonville":[30.332,-81.656],"orlando":[28.538,-81.379],"tampa":[27.947,-82.458],"longwood":[28.703,-81.339],"haines city":[28.114,-81.629],"lakeland":[28.039,-81.950],"ocala":[29.188,-82.130],"palm bay":[28.034,-80.589],"jupiter":[26.934,-80.096],"pensacola":[30.421,-87.217],"tallahassee":[30.438,-84.281],"deltona":[28.900,-81.264],"gainesville":[29.652,-82.325],"sarasota":[27.336,-82.531],"clearwater":[27.966,-82.800],"st petersburg":[27.773,-82.640],"bradenton":[27.499,-82.575],"fort lauderdale":[26.122,-80.143],"miami":[25.774,-80.194],"west palm beach":[26.715,-80.053],"port st lucie":[27.293,-80.351],"hattiesburg":[31.327,-89.290],"gulfport":[30.367,-89.092],"biloxi":[30.396,-88.886],"mobile al":[30.695,-88.043],"milwaukee":[43.049,-87.906],"germantown":[43.226,-88.111],"beloit":[42.508,-89.032],"pleasant prairie":[42.526,-87.903],"kenosha":[42.585,-87.823],"new berlin":[43.038,-88.108],"oak creek":[42.886,-87.907],"racine":[42.726,-87.783],"sturtevant":[42.699,-87.893],"franksville":[42.678,-87.905],"east troy":[42.780,-88.402]};
 function haversineRd(ll1,ll2){var R=3959,dLat=(ll2[0]-ll1[0])*Math.PI/180,dLon=(ll2[1]-ll1[1])*Math.PI/180,a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(ll1[0]*Math.PI/180)*Math.cos(ll2[0]*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2),d=R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));return Math.round(d*(d<100?1.12:d<300?1.18:1.22));}
 function interCityMi(city1,city2){var c1=(city1||"").toLowerCase().split(",")[0].trim(),c2=(city2||"").toLowerCase().split(",")[0].trim(),ll1=CITYLL[c1],ll2=CITYLL[c2];if(ll1&&ll2)return haversineRd(ll1,ll2);return null;}
@@ -325,12 +1697,33 @@ const XDOCK_ADDRESSES=[{city:"Jacksonville, FL",addr:"680 Edgewood Ave N Suite B
 // Override via localStorage "fcbv2_sheetsUrl" if you use a different deployment.
 var SHEETS_URL=localStorage.getItem("fcbv2_sheetsUrl")||"https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec";
 var SHEETS_TOKEN=localStorage.getItem("fcbv2_sheetsToken")||"";
+// Session token issued by Apps Script after it checks the PIN. Same key and
+// format as board.html, so a browser signed in on one is signed in on both.
+// With AUTH_ENFORCED on, nothing that reads or writes the sheet works without it.
+var SESSION_KEY="fcbv2_session";
+function sessionToken(){try{return localStorage.getItem(SESSION_KEY)||"";}catch(e){return "";}}
+function setSessionToken(t){try{t?localStorage.setItem(SESSION_KEY,t):localStorage.removeItem(SESSION_KEY);}catch(e){}}
+function withTok(url){var t=sessionToken();if(!t)return url;return url+(url.indexOf("?")>=0?"&":"?")+"tok="+encodeURIComponent(t);}
+// Token is "role.expiry.name.signature"; the server checks the signature, the
+// phone only reads the role to decide which tabs to show.
+function roleFromToken(){var t=sessionToken();return t?String(t).split(".")[0]:"";}
+function isAuthRequired(d){return !!(d&&!Array.isArray(d)&&d.ok===false&&d.error==="auth_required");}
+// The phone keeps its own cache. fcbv2_localdata belongs to board.html, which
+// lives on the same site, so writing it here would overwrite the desktop cache.
+var MOBILE_CACHE_KEY="fcbv2_mobile_cache";
+function readCache(){try{var d=JSON.parse(localStorage.getItem(MOBILE_CACHE_KEY)||"null");return d&&Array.isArray(d.weeks)?d.weeks:[];}catch(e){return [];}}
+function writeCache(w){try{localStorage.setItem(MOBILE_CACHE_KEY,JSON.stringify({weeks:w,cachedAt:Date.now()}));}catch(e){}}
+function clearCache(){try{localStorage.removeItem(MOBILE_CACHE_KEY);}catch(e){}}
 
 // SAMSARA LIVE TRUCK LOCATIONS — fetched in parallel with the sheet data, refreshed every 60s.
 // Shape: { "459": {address, lat, lng, asOf}, "462": {...}, ... }
 var liveTrucks = {};
 // Statuses where we hide the live pill — load is already at yard/dock/loaded/delivered.
 var STATUS_HIDE_PILL = {"Yard":1,"Dock":1,"Loaded":1,"Delivered":1};
+
+// Every value that reaches innerHTML comes from the sheet, Samsara or a driver's
+// claim box. It all goes through esc() -- text and attribute context alike.
+function esc(v){return v==null?'':String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 
 // "5 min ago" formatter for the hover tooltip
 function liveAgo(ts) {
@@ -383,7 +1776,7 @@ function livePillFor(truckNum, status, darkBg) {
   if (short.length > 24) short = short.slice(0, 22) + "\u2026";
   var tip = (tk.address || "") + " \u2014 " + liveAgo(tk.asOf) + " (truck #" + truckNum + ")";
   var cls = darkBg ? "live-pill dark" : "live-pill";
-  return '<span class="' + cls + '" title="' + tip.replace(/"/g,'&quot;') + '">\uD83D\uDCCD ' + short + '</span>';
+  return '<span class="' + cls + '" title="' + esc(tip) + '">\uD83D\uDCCD ' + esc(short) + '</span>';
 }
 
 
@@ -405,13 +1798,20 @@ function cityMiles(s){
   // ZIP lookup
   var zm=s.match(/\b(\d{5})\b/);if(zm&&ZIPDIST[zm[1]])return ZIPDIST[zm[1]].miles;
   var c=s.split(",")[0].trim().toLowerCase();
-  // Admin override
+  // State from the part after the comma: "Lansing, MI 48901" -> "mi", "Lansing, Michigan" -> "mi".
+  // The table already carries state-qualified keys ("lansing mi", "montgomery al", "columbus oh");
+  // without reading the state they were unreachable and two towns sharing a name were priced
+  // off each other.
+  var st=(s.split(",")[1]||"").trim().toLowerCase().replace(/[^a-z]/g,"").slice(0,2);
+  // Admin override — state-qualified first, then bare
+  if(st&&DIST_OVERRIDES[c+" "+st]!==undefined)return DIST_OVERRIDES[c+" "+st];
   if(DIST_OVERRIDES[c]!==undefined)return DIST_OVERRIDES[c];
-  // Exact DIST table
+  // Exact DIST table — state-qualified first, then bare
+  if(st&&DIST[c+" "+st]!==undefined)return DIST[c+" "+st];
   if(DIST[c]!==undefined)return DIST[c];
   // Fuzzy match
   for(var k of Object.keys(DIST))if((c.includes(k)||k.includes(c))&&k.length>4)return DIST[k];
-  // Cache miss -- log it with haversine estimate
+  // Cache miss — log it with haversine estimate
   if(c&&!DIST_MISS_LOG[c]){
     var hub=CITYLL["romeoville"]||[41.648,-88.089];
     var parts=s.split(",");
@@ -425,9 +1825,37 @@ function cityMiles(s){
   return null;
 }
 const TIERS=[[10,200],[25,250],[50,300],[75,350],[100,400],[125,500],[150,550],[175,600],[200,650],[225,700]];
-function localCharge(m){if(m==null||m==="")return null;const v=parseFloat(m);if(isNaN(v)||v<0)return null;if(v===0)return 200;for(const[mx,c]of TIERS)if(v<=mx)return c;return 700;}
+// Loads beyond LOCAL_MAX_MI from the Romeoville hub are not local runs, so no
+// local charge is applied — localCharge returns null and every consumer treats
+// that as "not counted" rather than as $0.
+const LOCAL_MAX_MI=250;
+function localCharge(m){if(m==null||m==="")return null;const v=parseFloat(m);if(isNaN(v)||v<0)return null;if(v>LOCAL_MAX_MI)return null;if(v===0)return 200;for(const[mx,c]of TIERS)if(v<=mx)return c;return 700;}
 function parsePickupDate(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return null;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);d.setHours(0,0,0,0);return d;}
-function parseTS(s=""){const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return Infinity;const d=new Date(+dm[3],+dm[1]-1,+dm[2]);const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);if(tm){let h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}else{d.setHours(0,0,0,0);}return d.getTime();}
+function parseTS(s=""){
+  const dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if(!dm)return Infinity;
+  const d=new Date(+dm[3],+dm[1]-1,+dm[2]);
+  // Try 12-hour first: "3PM", "3:30 PM", "3:30PM"
+  const tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);
+  if(tm){
+    let h=+tm[1],m=+(tm[2]||0);
+    if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;
+    if(tm[3].toUpperCase()==="AM"&&h===12)h=0;
+    d.setHours(h,m);
+  } else {
+    // Fall back to 24-hour: "15:00", "09:30". Rate-con parser writes this format.
+    // Guard invalid ranges (25:00, 08:99) — if bad, default to midnight.
+    const tm24=s.match(/(\d{1,2}):(\d{2})/);
+    if(tm24){
+      const h=+tm24[1],m=+tm24[2];
+      if(h>=0&&h<=23&&m>=0&&m<=59)d.setHours(h,m);
+      else d.setHours(0,0,0,0);
+    } else {
+      d.setHours(0,0,0,0);
+    }
+  }
+  return d.getTime();
+}
 function parseSR(t=""){const i=t.indexOf(" - ");return i<0?{s:t.trim(),r:""}:{s:t.slice(0,i).trim(),r:t.slice(i+3).trim()};}
 
 // SHA-256 PIN hashing -- uses Web Crypto when available (HTTPS), falls back to djb2 on file://
@@ -519,7 +1947,7 @@ function sheetsLoad(role,sessToken){
   // Append role as query param so Apps Script can filter sensitive fields
   var sep=url.indexOf("?")>=0?"&":"?";
   var roleUrl=url+(role?sep+"role="+encodeURIComponent(role):"")+(sessToken?("&st="+encodeURIComponent(sessToken)):"");
-  return fetch(roleUrl,{redirect:"follow",headers:headers})
+  return fetch(withTok(roleUrl),{redirect:"follow",headers:headers})
     .then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});
 }
 function compressPhotoForCloud(photo){
@@ -564,7 +1992,7 @@ function sheetsSave(data){
       });
     });
   });
-  Promise.all(photoPromises).then(function(results){
+  return Promise.all(photoPromises).then(function(results){
     // Deep clone weeks and inject compressed photos
     var weeksCopy=JSON.parse(JSON.stringify(weeks));
     results.forEach(function(compressed,idx){
@@ -577,49 +2005,54 @@ function sheetsSave(data){
     if(saveToken)saveHeaders["X-App-Token"]=saveToken;
     // Use SHEETS_URL which has the hardcoded fallback
     var _url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
-    if(_url)fetch(_url,{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
+    if(_url)fetch(withTok(_url),{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
   }).catch(function(){
     var saveToken=localStorage.getItem("fcbv2_sheetsToken")||"";
     var saveHeaders={"Content-Type":"text/plain;charset=utf-8"};
     if(saveToken)saveHeaders["X-App-Token"]=saveToken;
     var payload=Object.assign({},data,{savedAt:savedAt});
     var _url=localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;
-    if(_url)fetch(_url,{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
+    if(_url)fetch(withTok(_url),{method:"POST",mode:"no-cors",headers:saveHeaders,body:JSON.stringify({data:payload})});
   });
 }
 
 
 
 
-
-//                                                            
+//                                                               
 // MOBILE BOARD APP
-//                                                            
+//                                                               
 
 var weeks = [];
 var isAdmin = false;
 var activeWeekIdx = 0;
 var activeAdminTab = 'dashboard';
 
-//     AUTH                                                    
+//     AUTH                                                      
 function toggleAdminLogin() {
-  if (isAdmin) {
-    isAdmin = false;
-    var btn = document.getElementById('admin-toggle-btn');
-    btn.className = 'admin-btn';
-    btn.textContent = '  Admin';
-    btn.onclick = toggleAdminLogin;
-    document.getElementById('admin-nav').style.display = 'none';
-    document.getElementById('viewer-nav').style.display = 'flex';
-    switchAdminTab('dashboard');
-    renderAll();
-  } else {
-    showLoginOverlay();
-  }
+  if (isAdmin) signOut();
+  else showLoginOverlay();
 }
 
-function showLoginOverlay() {
+// Header, nav and tab visibility follow the role in the session token.
+function applyRole() {
+  var role = roleFromToken();
+  isAdmin = role === 'admin';
+  var btn = document.getElementById('admin-toggle-btn');
+  if (isAdmin) { btn.className = 'logout-btn'; btn.textContent = 'Sign out'; }
+  else { btn.className = 'admin-btn'; btn.textContent = role ? 'Admin' : 'Sign in'; }
+  document.getElementById('admin-nav').style.display = isAdmin ? 'flex' : 'none';
+  document.getElementById('viewer-nav').style.display = isAdmin ? 'none' : 'flex';
+  document.getElementById('viewer-signout-btn').style.display = (role && !isAdmin) ? 'flex' : 'none';
+  if (!isAdmin && activeAdminTab !== 'dashboard') switchAdminTab('dashboard');
+}
+
+function showLoginOverlay(msg) {
   document.getElementById('login-overlay').style.display = 'flex';
+  // Without a session there is nothing to go back to, so no Cancel.
+  document.getElementById('login-cancel-btn').style.display = sessionToken() ? 'block' : 'none';
+  document.getElementById('login-public-btn').style.display = sessionToken() ? 'none' : 'block';
+  document.getElementById('login-err').textContent = msg || '';
   setTimeout(function() { document.getElementById('pin-input').focus(); }, 100);
 }
 
@@ -633,69 +2066,73 @@ function clearLoginErr() {
   document.getElementById('login-err').textContent = '';
 }
 
+// The PIN is checked by Apps Script, never on the phone. Nothing about the PIN
+// is stored here -- only the signed session token the server returns.
+var loginBusy = false;
 function attemptLogin() {
   var pin = document.getElementById('pin-input').value.trim();
-  if (!pin) return;
-
-  // Read all possible stored PIN formats
-  var storedPlain  = localStorage.getItem('fcbv2_adminPin') || '';
-  var storedHash   = localStorage.getItem('fcbv2_adminPinHash') || '';
-
-  // Step 1: Try plain text comparison immediately (no async needed)
-  if (storedPlain && pin === storedPlain) {
-    loginSuccess();
-    return;
-  }
-
-  // Step 2: If no plain text match, try hash comparison
-  if (typeof hashPin === 'function') {
-    hashPin(pin).then(function(hash) {
-      if (storedHash && hash === storedHash) {
+  if (!pin || loginBusy) return;
+  loginBusy = true;
+  var err = document.getElementById('login-err');
+  var btn = document.getElementById('login-btn');
+  err.textContent = 'Checking...';
+  btn.disabled = true;
+  var base = localStorage.getItem('fcbv2_sheetsUrl') || SHEETS_URL;
+  fetch(base + '?action=login&pin=' + encodeURIComponent(pin), {redirect: 'follow'})
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(j) {
+      if (j && j.ok && j.token) {
+        setSessionToken(j.token);
         loginSuccess();
         return;
       }
-      // Step 3: Re-try plain text after hash (in case storedPlain was set after initial read)
-      var reCheck = localStorage.getItem('fcbv2_adminPin') || '';
-      if (reCheck && pin === reCheck) {
-        loginSuccess();
-        return;
-      }
-      document.getElementById('login-err').textContent = 'Incorrect PIN — try again';
+      err.textContent = 'Incorrect PIN — try again';
       document.getElementById('pin-input').value = '';
-    }).catch(function() {
-      // hashPin failed — fall back to plain text only
-      var fallback = localStorage.getItem('fcbv2_adminPin') || '';
-      if (fallback && pin === fallback) {
-        loginSuccess();
-      } else {
-        document.getElementById('login-err').textContent = 'Incorrect PIN — try again';
-        document.getElementById('pin-input').value = '';
-      }
-    });
-  } else {
-    // hashPin not available — plain text only
-    document.getElementById('login-err').textContent = 'Incorrect PIN — try again';
-    document.getElementById('pin-input').value = '';
-  }
+    })
+    .catch(function() {
+      err.textContent = 'Could not reach the board — check your connection and try again';
+    })
+    .then(function() { loginBusy = false; btn.disabled = false; });
+}
+
+function enterPublicMode() {
+  publicMode = true;
+  hideLoginOverlay();
+  document.getElementById('hdr-sub').textContent = 'Market info — sign in for the board';
+  renderAll();
 }
 
 function loginSuccess() {
-  isAdmin = true;
+  publicMode = false;
   hideLoginOverlay();
-  var btn = document.getElementById('admin-toggle-btn');
-  btn.className = 'logout-btn';
-  btn.textContent = '  Logout';
-  btn.onclick = toggleAdminLogin;
-  document.getElementById('admin-nav').style.display = 'flex';
-  document.getElementById('viewer-nav').style.display = 'none';
+  applyRole();
   renderAll();
+  refreshData();
+}
+
+// Signing out drops the session and the phone's cached copy of the board, so a
+// shared phone does not keep showing loads after the driver hands it back.
+function signOut() {
+  setSessionToken('');
+  clearCache();
+  weeks = [];
+  liveTrucks = {};
+  ['planned-content', 'combined-content', 'otr-content', 'search-results'].forEach(function(id) {
+    var el = document.getElementById(id); if (el) el.innerHTML = '';
+  });
+  if (searchQuery) clearSearch();
+  applyRole();
+  renderAll();
+  setSync('err');
+  document.getElementById('hdr-sub').textContent = 'Signed out';
+  showLoginOverlay();
 }
 
 document.getElementById('pin-input').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') attemptLogin();
 });
 
-//     NAVIGATION                                              
+//     NAVIGATION                                                
 function switchAdminTab(tab) {
   activeAdminTab = tab;
   document.querySelectorAll('.nav-tab').forEach(function(t) {
@@ -713,14 +2150,14 @@ function scrollToTop() {
   window.scrollTo({top: 0, behavior: 'smooth'});
 }
 
-//     WEEK SELECTOR                                            
+//     WEEK SELECTOR                                             
 function renderWeekTabs() {
   var container = document.getElementById('week-tabs');
   if (!weeks.length) { container.innerHTML = ''; return; }
   container.innerHTML = weeks.map(function(w, i) {
     var active = i === activeWeekIdx ? ' active' : '';
     return '<div class="week-chip' + active + '" onclick="selectWeek(' + i + ')">' +
-           (w.label || 'Week ' + (i+1)) + '</div>';
+           esc(w.label || 'Week ' + (i+1)) + '</div>';
   }).join('');
 }
 
@@ -730,7 +2167,7 @@ function selectWeek(idx) {
   renderAll();
 }
 
-//     RENDER ALL                                               
+//     RENDER ALL                                                
 function renderAll() {
   renderWeekTabs();
   renderDashboard();
@@ -741,7 +2178,7 @@ function renderAll() {
   }
 }
 
-//     HELPERS                                                  
+//     HELPERS                                                   
 function getWeek() {
   return weeks[activeWeekIdx] || {groups:[], localDeliveries:[], accessorials:[]};
 }
@@ -792,7 +2229,7 @@ function sortByDelivery(loads) {
   });
 }
 
-//     COMBINED CARD                                            
+//     COMBINED CARD                                             
 function renderCombinedCard(g) {
   var loads = g.loads || [];
   var sorted = sortByDelivery(loads);
@@ -801,16 +2238,16 @@ function renderCombinedCard(g) {
   var net = Math.round(gross - locCost);
   var hasDriver = !!(g.groupDriver && g.groupDriver.trim());
   var mi = getMiles(g);
-  var inputId = 'claim-inp-' + g.id;
+  var inputId = 'claim-inp-' + esc(g.id);
 
   var h = '<div class="ccard">';
 
   // Header
   h += '<div class="ccard-header' + (hasDriver ? '' : ' no-driver') + '">';
   if (hasDriver) {
-    if (g.groupTruck) h += '<span class="ccard-truck">#' + g.groupTruck + '</span>';
-    if (g.groupTrailer) h += '<span class="ccard-trailer">T' + g.groupTrailer + '</span>';
-    h += '<span class="ccard-driver">' + g.groupDriver + '</span>';
+    if (g.groupTruck) h += '<span class="ccard-truck">#' + esc(g.groupTruck) + '</span>';
+    if (g.groupTrailer) h += '<span class="ccard-trailer">T' + esc(g.groupTrailer) + '</span>';
+    h += '<span class="ccard-driver">' + esc(g.groupDriver) + '</span>';
   } else {
     h += '<span style="font-size:14px">  </span><span class="ccard-nodrv">NO DRIVER ASSIGNED</span>';
   }
@@ -834,7 +2271,7 @@ function renderCombinedCard(g) {
     h += '<span style="font-size:16px"> </span>';
     h += '<span class="claim-label">Available   enter name to claim:</span>';
     h += '<input class="claim-input" id="' + inputId + '" type="text" placeholder="Your name...">';
-    h += '<button class="claim-btn" data-gid="' + g.id + '" data-inp="' + inputId + '" onclick="claimLoad(this.dataset.gid,this.dataset.inp)">  Claim</button>';
+    h += '<button class="claim-btn" data-gid="' + esc(g.id) + '" data-inp="' + inputId + '" onclick="claimLoad(this.dataset.gid,this.dataset.inp,this)">Claim</button>';
     h += '</div>';
   }
 
@@ -846,57 +2283,88 @@ function renderCombinedCard(g) {
     var stCls = statusClass(l.status || '');
     h += '<div class="stop-row">';
     h += '<div class="stop-num">' + (li+1) + '</div>';
-    h += '<div class="stop-info"><div class="stop-city">' + dest + '</div>';
+    h += '<div class="stop-info"><div class="stop-city">' + esc(dest) + '</div>';
     h += '<div class="stop-dates">';
-    if (l.pickup) h += '<span class="stop-date">  ' + l.pickup + '</span>';
-    if (l.delivery) h += '<span class="stop-date">  ' + l.delivery + '</span>';
+    if (l.pickup) h += '<span class="stop-date">  ' + esc(l.pickup) + '</span>';
+    if (l.delivery) h += '<span class="stop-date">  ' + esc(l.delivery) + '</span>';
     h += '</div></div>';
     // Per-load local truck pill (e.g. local driver for the pickup leg)
     if (l.localTruck) h += livePillFor(l.localTruck, l.status||'', false);
-    if (l.status) h += '<span class="stop-status ' + stCls + '">' + l.status + '</span>';
+    if (l.status) h += '<span class="stop-status ' + stCls + '">' + esc(l.status) + '</span>';
     h += '</div>';
   });
   h += '</div></div>';
   return h;
 }
 
-//     CLAIM LOAD                                               
-function claimLoad(groupId, inputId) {
+//     CLAIM LOAD                                                
+function claimLoad(groupId, inputId, btn) {
   var inp = document.getElementById(inputId);
   var name = (inp ? inp.value : '').trim();
   if (!name) { if (inp) inp.focus(); return; }
-
-  var wkIdx = -1;
-  for (var i = 0; i < weeks.length; i++) {
-    if ((weeks[i].groups || []).some(function(g) { return String(g.id) === String(groupId); })) {
-      wkIdx = i; break;
-    }
+  if (!sessionToken()) { showLoginOverlay('Sign in to claim a load'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Claiming...'; }
+  function done(msg) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Claim'; }
+    if (msg) alert(msg);
   }
-  if (wkIdx < 0) return;
-
-  weeks[wkIdx].groups = weeks[wkIdx].groups.map(function(g) {
-    if (String(g.id) !== String(groupId)) return g;
-    return Object.assign({}, g, {groupDriver: name, securedBy: name, securedAt: Date.now()});
+  // Re-read the board from the sheet and change only this one trailer. The save
+  // then uploads what the server already had -- PINs, dispatchers, everyone
+  // else's edits -- instead of this phone's copy, which may be an hour old.
+  sheetsLoad('viewer', '').then(function(data) {
+    if (isAuthRequired(data)) { setSessionToken(''); applyRole(); done(); showLoginOverlay('Session expired — sign in again'); return; }
+    if (!data || Array.isArray(data) || !Array.isArray(data.weeks)) { done('Could not read the board. Nothing was claimed. Try again.'); return; }
+    var target = null;
+    data.weeks.forEach(function(w) {
+      (w.groups || []).forEach(function(g) { if (String(g.id) === String(groupId)) target = g; });
+    });
+    if (!target) { done('This load is no longer on the board.'); refreshData(); return; }
+    var holder = String(target.groupDriver || '').trim();
+    if (holder && holder.toLowerCase() !== name.toLowerCase()) {
+      done('Already claimed by ' + holder + '.'); refreshData(); return;
+    }
+    target.groupDriver = name;
+    target.securedBy = name;
+    target.securedAt = Date.now();
+    return sheetsSave(data).then(function() {
+      applyServerData(data);
+      done();
+      // The POST is no-cors, so its result cannot be read. Re-read shortly to
+      // show what the sheet actually holds.
+      setTimeout(refreshData, 2500);
+    });
+  }).catch(function() {
+    done('No connection — nothing was claimed. Try again.');
   });
-
-  localStorage.setItem('fcbv2_localdata', JSON.stringify({weeks: weeks}));
-
-  var local = JSON.parse(localStorage.getItem('fcbv2_localdata') || '{}');
-  sheetsSave({
-    weeks: weeks,
-    customDrivers: local.customDrivers || [],
-    customTrucks: local.customTrucks || [],
-    customTrailers: local.customTrailers || [],
-    dispatchers: local.dispatchers || [],
-    truckAssignments: local.truckAssignments || {},
-    dispatcherEmails: local.dispatcherEmails || [],
-    adminPin: localStorage.getItem('fcbv2_adminPin') || '',
-    viewerPin: localStorage.getItem('fcbv2_viewerPin') || ''
-  }).then(function() { renderAll(); }).catch(function() { renderAll(); });
 }
 
-//     DASHBOARD                                                
+//     DASHBOARD                                                 
+// board.html's Dashboard tab and Market info, rendered with React.
+var dashRoot = null;
+var publicMode = false;   // "Market info only" chosen on the sign-in screen
 function renderDashboard() {
+  var el = document.getElementById('dash-content');
+  if (!(window.React && window.ReactDOM && window.MobileDashboard)) { renderDashboardBasic(); return; }
+  try {
+    if (!dashRoot) { el.innerHTML = ''; dashRoot = ReactDOM.createRoot(el); }
+    dashRoot.render(React.createElement(window.MobileDashboard, {
+      key: 'lane' + laneVersion,
+      weeks: weeks,
+      isAdmin: isAdmin,
+      signedIn: !!sessionToken(),
+      liveTrucks: liveTrucks,
+      onClaim: claimLoad,
+      curIdx: activeWeekIdx,
+      setCurIdx: selectWeek
+    }));
+  } catch (e) {
+    dashRoot = null;
+    renderDashboardBasic();
+  }
+}
+
+// The phone's own dashboard, kept as the fallback when React cannot load.
+function renderDashboardBasic() {
   var w = getWeek();
   var groups = w.groups || [];
   var loads = groups.reduce(function(a, g) { return a.concat(g.loads || []); }, []);
@@ -962,7 +2430,7 @@ function statCard(icon, val, label, sub) {
     '</div>';
 }
 
-//     PLANNED (admin)                                          
+//     PLANNED (admin)                                           
 function renderPlanned() {
   var w = getWeek();
   var groups = (w.groups||[]).filter(function(g){ return !g.isCombined && g.groupStatus!=='In Transit' && g.groupStatus!=='Delivered'; });
@@ -979,8 +2447,8 @@ function renderPlanned() {
       h += '<div class="ptrailer-hdr">';
       h += '<span class="ptrailer-tnum">T'+(gi+1)+'</span>';
       if (stops > 1) h += '<span class="ptrailer-stops">'+stops+' stops</span>';
-      if (g.groupTruck) h += '<span class="ptrailer-truck">#'+g.groupTruck+'</span>';
-      if (g.groupTrailer) h += '<span class="ptrailer-trailer">T'+g.groupTrailer+'</span>';
+      if (g.groupTruck) h += '<span class="ptrailer-truck">#'+esc(g.groupTruck)+'</span>';
+      if (g.groupTrailer) h += '<span class="ptrailer-trailer">T'+esc(g.groupTrailer)+'</span>';
       // OTR truck live pill (group-level) — kept since this is the trailer's truck
       if (g.groupTruck) h += livePillFor(g.groupTruck, '', false);
       if (totalGross > 0) h += '<span class="ptrailer-gross">$'+Math.round(totalGross).toLocaleString()+'</span>';
@@ -1001,13 +2469,12 @@ function renderPlanned() {
         // Banner row: # | route | broker | load# (copy) | status
         h += '<div class="pstop-banner">';
         h += '<div class="pstop-num">'+(li+1)+'</div>';
-        h += '<div class="pstop-route">'+(sr.s||'')+(sr.r?' → '+sr.r:'')+'</div>';
-        if (brokerName) h += '<span class="pstop-broker">'+brokerName+'</span>';
+        h += '<div class="pstop-route">'+esc(sr.s||'')+(sr.r?' → '+esc(sr.r):'')+'</div>';
+        if (brokerName) h += '<span class="pstop-broker">'+esc(brokerName)+'</span>';
         if (loadNum) {
-          var safeNum = String(loadNum).replace(/'/g, "\\'");
-          h += '<span class="pstop-loadnum" onclick="copyLoadNum(this, \''+safeNum+'\')" title="Tap to copy">#'+loadNum+'</span>';
+          h += '<span class="pstop-loadnum" data-num="'+esc(loadNum)+'" onclick="copyLoadNum(this, this.dataset.num)" title="Tap to copy">#'+esc(loadNum)+'</span>';
         }
-        if (l.status) h += '<span class="pstop-status '+stCls+'">'+l.status+'</span>';
+        if (l.status) h += '<span class="pstop-status '+stCls+'">'+esc(l.status)+'</span>';
         h += '</div>';
         // Details grid: pickup, delivery, weight, truck, trailer, rate.
         // NO driver name (per spec), NO local charge (per spec).
@@ -1029,7 +2496,7 @@ function renderPlanned() {
 }
 
 function fld(label, val) {
-  return '<div class="prow-field"><div class="prow-field-label">'+label+'</div><div class="prow-field-val">'+val+'</div></div>';
+  return '<div class="prow-field"><div class="prow-field-label">'+label+'</div><div class="prow-field-val">'+esc(val)+'</div></div>';
 }
 
 // Tap-to-copy helper for load numbers. Visual flash on success via the data-copied
@@ -1072,7 +2539,7 @@ function renderCombined() {
   document.getElementById('combined-content').innerHTML = h;
 }
 
-//     OTR (admin)                                              
+//     OTR (admin)                                               
 function renderOTR() {
   var w = getWeek();
   var otr = (w.groups||[]).filter(function(g){ return g.groupStatus==='In Transit'||g.groupStatus==='Delivered'; });
@@ -1090,12 +2557,12 @@ function renderOTR() {
       var mi = getMiles(g);
       h += '<div class="otr-card">';
       h += '<div class="otr-card-hdr">';
-      if (g.groupTruck) h += '<span class="otr-truck">#'+g.groupTruck+'</span>';
-      h += '<span class="otr-driver">'+(g.groupDriver||'No driver')+'</span>';
+      if (g.groupTruck) h += '<span class="otr-truck">#'+esc(g.groupTruck)+'</span>';
+      h += '<span class="otr-driver">'+esc(g.groupDriver||'No driver')+'</span>';
       // Live location pill for the OTR truck — always show when GPS data exists.
       if (g.groupTruck) h += livePillFor(g.groupTruck, '', true);
       if (mi) h += '<span style="font-size:10px;color:rgba(255,255,255,.4);margin-right:4px">'+mi.toLocaleString()+' mi</span>';
-      h += '<span class="otr-status-badge" style="background:'+sc.bg+';color:'+sc.c+';border:1px solid '+sc.bd+'">'+g.groupStatus+'</span>';
+      h += '<span class="otr-status-badge" style="background:'+sc.bg+';color:'+sc.c+';border:1px solid '+sc.bd+'">'+esc(g.groupStatus)+'</span>';
       h += '</div>';
       loads.forEach(function(l,li){
         var sr = parseSR(l.sr||'');
@@ -1110,18 +2577,17 @@ function renderOTR() {
         if (!loadNum && l.loadNum) loadNum = String(l.loadNum).trim();
         h += '<div class="otr-stop-row">';
         h += '<div style="width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:rgba(255,255,255,.5);flex-shrink:0">'+(li+1)+'</div>';
-        h += '<div style="flex:1;min-width:0"><div class="otr-stop-city">'+(sr.r||sr.s||' ')+'</div>';
-        if (l.delivery) h += '<div class="otr-stop-del">  '+l.delivery+'</div>';
+        h += '<div style="flex:1;min-width:0"><div class="otr-stop-city">'+esc(sr.r||sr.s||' ')+'</div>';
+        if (l.delivery) h += '<div class="otr-stop-del">  '+esc(l.delivery)+'</div>';
         h += '</div>';
         // No per-stop local-truck pill — only the OTR truck pill at the top of the card.
-        if (l.status) h += '<span class="stop-status '+stCls+'">'+l.status+'</span>';
+        if (l.status) h += '<span class="stop-status '+stCls+'">'+esc(l.status)+'</span>';
         // Broker + tap-to-copy load# on a second line under the stop
         if (brokerName || loadNum) {
           h += '<div class="otr-stop-meta">';
-          if (brokerName) h += '<span class="otr-broker">'+brokerName+'</span>';
+          if (brokerName) h += '<span class="otr-broker">'+esc(brokerName)+'</span>';
           if (loadNum) {
-            var safeNum = String(loadNum).replace(/'/g, "\\'");
-            h += '<span class="otr-loadnum" onclick="copyLoadNum(this, \''+safeNum+'\')" title="Tap to copy">#'+loadNum+'</span>';
+            h += '<span class="otr-loadnum" data-num="'+esc(loadNum)+'" onclick="copyLoadNum(this, this.dataset.num)" title="Tap to copy">#'+esc(loadNum)+'</span>';
           }
           h += '</div>';
         }
@@ -1133,7 +2599,7 @@ function renderOTR() {
   document.getElementById('otr-content').innerHTML = h;
 }
 
-//     DATA LOADING                                             
+//     DATA LOADING                                              
 function setSync(state) {
   var dot = document.getElementById('sync-dot');
   dot.className = 'sync-dot'+(state==='loading'?' loading':state==='err'?' err':'');
@@ -1144,7 +2610,7 @@ function refreshData() {
   document.getElementById('hdr-sub').textContent = 'Syncing...';
   // Kick off Samsara fetch in parallel — non-blocking, refreshes liveTrucks then re-renders.
   // Failures are silent (pills just won't show) and don't affect the main sheet load.
-  fetch(SHEETS_URL + '?action=samsaraLocations', {redirect:'follow'})
+  fetch(withTok((localStorage.getItem('fcbv2_sheetsUrl') || SHEETS_URL) + '?action=samsaraLocations'), {redirect:'follow'})
     .then(function(r){ return r.json(); })
     .then(function(j){
       if (j && j.ok && Array.isArray(j.trucks)) {
@@ -1165,40 +2631,73 @@ function refreshData() {
       }
     })
     .catch(function(){ /* silent — pills just won't show this cycle */ });
+  if (!sessionToken()) {
+    setSync('err');
+    document.getElementById('hdr-sub').textContent = publicMode ? 'Market info — sign in for the board' : 'Sign in to load the board';
+    if (!publicMode && document.getElementById('login-overlay').style.display !== 'flex') showLoginOverlay();
+    return;
+  }
   sheetsLoad('viewer','').then(function(data){
-    var raw = Array.isArray(data) ? data : (data.weeks||[]);
-    weeks = raw.map(function(w){
-      return Object.assign({},w,{groups:(w.groups||[]).map(function(g){
-        return Object.assign({},g,{loads:(g.loads||[]).map(function(l){
-          var c=Object.assign({},l); delete c.tripPrice; return c;
-        })});
-      })});
-    });
-    var payload = (typeof data === 'object' && !Array.isArray(data)) ? Object.assign({},data,{weeks:weeks}) : {weeks:weeks};
-    localStorage.setItem('fcbv2_localdata', JSON.stringify(payload));
-    // Extract adminPin to its own key so mobile login can find it
-    if (data && data.adminPin) {
-      localStorage.setItem('fcbv2_adminPin', data.adminPin);
+    if (isAuthRequired(data)) {
+      // Expired or rejected session. Keep the cached board; ask for the PIN.
+      setSessionToken('');
+      applyRole();
+      setSync('err');
+      document.getElementById('hdr-sub').textContent = 'Session expired — sign in again';
+      showLoginOverlay('Session expired — sign in again');
+      return;
     }
-    if (data && data.viewerPin) {
-      localStorage.setItem('fcbv2_viewerPin', data.viewerPin);
-    }
-    activeWeekIdx = 0;
+    if (!data || (!Array.isArray(data) && !Array.isArray(data.weeks))) throw new Error('unexpected response');
+    applyServerData(data);
+    activeWeekIdx = Math.min(activeWeekIdx, Math.max(0, weeks.length - 1));
     setSync('ok');
     document.getElementById('hdr-sub').textContent = weeks[0] ? (weeks[0].label||'Week 1') : 'No data';
     renderAll();
   }).catch(function(){
     setSync('err');
-    document.getElementById('hdr-sub').textContent = 'Could not connect to Sheets';
-    var local = localStorage.getItem('fcbv2_localdata');
-    if (local) {
-      try { var d=JSON.parse(local); weeks=Array.isArray(d)?d:(d.weeks||[]); } catch(e){}
-    }
+    document.getElementById('hdr-sub').textContent = 'Offline — showing last loaded board';
+    if (!weeks.length) weeks = readCache();
     renderAll(); // Always render even on error
   });
 }
 
-//     INIT                                                     
+// Keep only what the screens use. PINs and the rest of the payload are not
+// cached on the phone.
+function applyServerData(data) {
+  var raw = Array.isArray(data) ? data : (data.weeks||[]);
+  weeks = raw.map(function(w){
+    return Object.assign({},w,{groups:(w.groups||[]).map(function(g){
+      return Object.assign({},g,{loads:(g.loads||[]).map(function(l){
+        var c=Object.assign({},l); delete c.tripPrice; delete c.photos; return c;
+      })});
+    })});
+  });
+  writeCache(weeks);
+}
+
+// Lane history (LANE_HIST) and city coordinates (MKT_GEO) live in board.html,
+// 733 KB. Rather than carry a second copy, read them from the desktop file,
+// which the browser caches. Parsed as JSON; nothing from that file is run.
+var laneVersion = 0;
+function loadLaneData() {
+  if (window.LANE_HIST && window.MKT_GEO) return;
+  fetch('board.html', {cache: 'force-cache'})
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+    .then(function(t) {
+      function grab(name) {
+        var m = t.match(new RegExp('var ' + name + '=(\\{[\\s\\S]*?\\});\\s*\\n'));
+        return m ? JSON.parse(m[1]) : null;
+      }
+      var h = grab('LANE_HIST'), g = grab('MKT_GEO');
+      if (h && Array.isArray(h.loads)) window.LANE_HIST = h;
+      if (g) window.MKT_GEO = g;
+      laneVersion++;
+      renderDashboard();
+    })
+    .catch(function() { /* lane panel then works from this week's board only */ });
+}
+
+//     INIT                                                      
 // SEARCH
 var searchQuery = '';
 
@@ -1227,9 +2726,9 @@ function clearSearch() {
   clearBtn.style.display = 'none';
   resultsDiv.style.display = 'none';
   weekWrap.style.display = 'block';
-  mainSections.forEach(function(s){ s.style.display = 'none'; });
-  var active = document.getElementById('sec-' + (activeAdminTab || 'dashboard'));
-  if (active) active.style.display = 'block';
+  // Drop the inline display onSearch set, so the .section/.active classes that
+  // switchAdminTab toggles decide visibility again.
+  mainSections.forEach(function(s){ s.style.display = ''; });
 }
 
 function renderSearchResults(q) {
@@ -1254,7 +2753,7 @@ function renderSearchResults(q) {
     });
   });
   if (!matches.length) {
-    resultsDiv.innerHTML = '<div class="empty"><div class="empty-icon">    </div><div class="empty-text">No results for "' + q + '"</div></div>';
+    resultsDiv.innerHTML = '<div class="empty"><div class="empty-icon">    </div><div class="empty-text">No results for "' + esc(q) + '"</div></div>';
     return;
   }
   var html = '<div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:8px;">' + matches.length + ' result' + (matches.length !== 1 ? 's' : '') + '</div>';
@@ -1267,21 +2766,21 @@ function renderSearchResults(q) {
         : '<span style="font-size:9px;background:#dbeafe;color:#1e40af;padding:1px 5px;border-radius:3px;font-weight:700">PLANNED</span>';
     html += '<div class="search-result-card">';
     html += '<div class="search-result-hdr">';
-    if (m.truck) html += '<span style="font-size:10px;font-weight:800;color:#fff;background:rgba(255,255,255,.12);padding:2px 6px;border-radius:4px">#' + m.truck + '</span>';
-    if (m.trailer) html += '<span style="font-size:10px;font-weight:800;color:#c4b5fd;background:rgba(167,139,250,.15);padding:2px 6px;border-radius:4px">T' + m.trailer + '</span>';
-    html += '<span style="font-size:11px;font-weight:700;color:#86efac;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (m.driver || 'No driver') + '</span>';
+    if (m.truck) html += '<span style="font-size:10px;font-weight:800;color:#fff;background:rgba(255,255,255,.12);padding:2px 6px;border-radius:4px">#' + esc(m.truck) + '</span>';
+    if (m.trailer) html += '<span style="font-size:10px;font-weight:800;color:#c4b5fd;background:rgba(167,139,250,.15);padding:2px 6px;border-radius:4px">T' + esc(m.trailer) + '</span>';
+    html += '<span style="font-size:11px;font-weight:700;color:#86efac;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(m.driver || 'No driver') + '</span>';
     html += typeTag + '</div>';
     html += '<div style="padding:8px 12px">';
-    html += '<div style="font-size:11px;color:#64748b;margin-bottom:1px">' + m.shipper + '</div>';
-    html += '<div style="font-size:13px;font-weight:700;color:#0f1f3d;margin-bottom:6px">&#8594; ' + m.receiver + '</div>';
+    html += '<div style="font-size:11px;color:#64748b;margin-bottom:1px">' + esc(m.shipper) + '</div>';
+    html += '<div style="font-size:13px;font-weight:700;color:#0f1f3d;margin-bottom:6px">&#8594; ' + esc(m.receiver) + '</div>';
     html += '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">';
-    if (m.pickup) html += '<span style="font-size:10px;color:#0369a1;background:#e0f2fe;padding:1px 6px;border-radius:3px">' + m.pickup + '</span>';
-    if (m.delivery) html += '<span style="font-size:10px;color:#64748b;background:#f1f5f9;padding:1px 6px;border-radius:3px">' + m.delivery + '</span>';
+    if (m.pickup) html += '<span style="font-size:10px;color:#0369a1;background:#e0f2fe;padding:1px 6px;border-radius:3px">' + esc(m.pickup) + '</span>';
+    if (m.delivery) html += '<span style="font-size:10px;color:#64748b;background:#f1f5f9;padding:1px 6px;border-radius:3px">' + esc(m.delivery) + '</span>';
     if (m.rate) html += '<span style="font-size:10px;font-weight:700;color:#059669">$' + parseFloat(m.rate||0).toLocaleString() + '</span>';
-    if (m.status) html += '<span class="stop-status ' + stCls + '">' + m.status + '</span>';
-    if (m.week) html += '<span style="font-size:9px;color:#94a3b8;margin-left:auto">' + m.week + '</span>';
+    if (m.status) html += '<span class="stop-status ' + stCls + '">' + esc(m.status) + '</span>';
+    if (m.week) html += '<span style="font-size:9px;color:#94a3b8;margin-left:auto">' + esc(m.week) + '</span>';
     html += '</div>';
-    if (m.broker) html += '<div style="font-size:10px;color:#94a3b8;margin-top:4px">' + m.broker + '</div>';
+    if (m.broker) html += '<div style="font-size:10px;color:#94a3b8;margin-top:4px">' + esc(m.broker) + '</div>';
     html += '</div></div>';
   });
   resultsDiv.innerHTML = html;
@@ -1289,11 +2788,11 @@ function renderSearchResults(q) {
 
 (function init(){
   // Always render immediately (even with empty weeks) to replace the spinner
-  var local = localStorage.getItem('fcbv2_localdata');
-  if (local) {
-    try { var d=JSON.parse(local); weeks=Array.isArray(d)?d:(d.weeks||[]); } catch(e){}
-  }
+  if (sessionToken()) weeks = readCache();
+  else clearCache();
+  applyRole();
   renderAll(); // Always render - replaces spinner with either data or empty state
+  loadLaneData();
   refreshData(); // Then fetch fresh from Sheets
   setInterval(refreshData, 60000);
 })();
