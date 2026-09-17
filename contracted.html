@@ -79,6 +79,7 @@
   .clb-save--saving { background: rgba(251,191,36,.18); color: #fbbf24; }
   .clb-save--saved  { background: rgba(74,222,128,.15); color: #86efac; }
   .clb-save--error  { background: rgba(248,113,113,.18); color: #fca5a5; }
+  .clb-save--retrying { background: rgba(251,191,36,.18); color: #fbbf24; }
 
   /* ---- Summary chips ---- */
   .clb-summary {
@@ -1252,6 +1253,26 @@ function adoptServerLoads(target, serverRaw, ids) {
       loads: (w.loads || []).map(l => (l && want[l.id] && serverLoads[l.id]) ? serverLoads[l.id] : l)
     }))
   };
+}
+
+// 2026-09-17: Apps Script regularly APPLIES a write and then fails to return a
+// usable response — a Google HTML error page under concurrent load, a quota
+// blip, a lock hiccup. The client sees an exception and used to announce "NOT
+// SAVED" even though the sheet had been updated. This checks the server for the
+// fields we just sent, so a failure is only reported when the change really is
+// missing.
+function patchesLanded(serverRaw, sentPatches) {
+  const ids = Object.keys(sentPatches || {});
+  if (!ids.length) return false;                 // nothing field-level to verify
+  const server = normalizeData(serverRaw);
+  const byId = {};
+  (server.weeks || []).forEach(w => (w.loads || []).forEach(l => { if (l && l.id) byId[l.id] = l; }));
+  return ids.every(id => {
+    const l = byId[id];
+    if (!l) return false;
+    return Object.keys(sentPatches[id]).every(f =>
+      JSON.stringify(l[f]) === JSON.stringify(sentPatches[id][f]));
+  });
 }
 
 // Which week holds a given load, for addressing a patch.
@@ -2750,6 +2771,7 @@ function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddL
     saveStatus === "saving" ? "Saving…" :
     saveStatus === "saved"  ? "Saved " + timeAgo(lastSync) :
     saveStatus === "error"  ? "Save failed" :
+    saveStatus === "retrying" ? "Retrying…" :
     "Synced";
 
   // Storage usage — informational. Weeks are now chunked across as many
@@ -3101,10 +3123,14 @@ function App() {
   //   circular reference a direct call would create.
   const patchNotSupportedRef = useRef(false);
   const retryDelayRef        = useRef(0);
+  const retryAttemptsRef     = useRef(0);   // consecutive genuinely-failed writes
   const schedulePersistRef   = useRef(() => {});
   const [compatMode, setCompatMode] = useState(false);
   // Which loads have changes that are NOT yet on the sheet, so a card can say so
-  // instead of looking identical to a saved one.
+  // instead of looking identical to a saved one. Only surfaced once a write has
+  // genuinely failed (see where this is passed to BucketSection): flagging cards
+  // during the normal one-second save debounce made every keystroke flash
+  // "NOT SAVED", which is the noise that makes a real warning get ignored.
   const [unsavedIds, setUnsavedIds] = useState({});
   dataRef.current = data;
 
@@ -3196,6 +3222,7 @@ function App() {
             needsFullSaveRef.current = false;
           }
           retryDelayRef.current = 0;
+          retryAttemptsRef.current = 0;
           syncUnsaved();
           setSaveStatus("saved");
           setLastSync(Date.now());
@@ -3224,19 +3251,42 @@ function App() {
         clearSentPatches(sentPatches);
         needsFullSaveRef.current = false;
         retryDelayRef.current = 0;
+        retryAttemptsRef.current = 0;
         syncUnsaved();
         setSaveStatus("saved");
         setLastSync(Date.now());
       } catch (e) {
-        // 2026-09-17: a failed write used to just set a small "Save failed" pill
-        // and stop. Nothing retried, and the card went on showing the claim as
-        // though it had saved — so a dispatcher believed they owned a load that
-        // no one else could see. Now it retries with backoff and the board says
-        // plainly that the change is not on the sheet.
         pendingLogRef.current.unshift(...logs);
+        console.warn("Write did not return cleanly:", e && e.message);
+
+        // ---- Did it actually fail? ----
+        // Apps Script often applies the write and THEN fails to answer properly.
+        // Ask the sheet before telling anyone their change was lost: announcing
+        // a false failure is its own bug, and it trains people to ignore the
+        // warning that matters.
+        try {
+          const check = await apiLoad();
+          if (patchesLanded(check, sentPatches)) {
+            noteServerIds(check);
+            clearSentPatches(sentPatches);
+            needsFullSaveRef.current = false;
+            retryDelayRef.current = 0;
+            retryAttemptsRef.current = 0;
+            setData(mergeClientData(check, dataRef.current));
+            syncUnsaved();
+            setSaveStatus("saved");
+            setLastSync(Date.now());
+            return;                       // it landed — nothing to report
+          }
+        } catch (verifyErr) { /* couldn't check — fall through and retry */ }
+
+        // ---- It really isn't there. Retry, and stay quiet the first time. ----
+        // A single blip is normal for Apps Script and recovers in seconds. The
+        // loud banner is reserved for changes that are genuinely still missing
+        // after a retry, so dispatchers keep trusting it.
+        retryAttemptsRef.current += 1;
         syncUnsaved();
-        setSaveStatus("error");
-        console.error("Save failed:", e);
+        setSaveStatus(retryAttemptsRef.current >= 2 ? "error" : "retrying");
         const next = retryDelayRef.current ? Math.min(retryDelayRef.current * 2, 30000) : 2000;
         retryDelayRef.current = next;
         schedulePersistRef.current(next);
@@ -3727,7 +3777,7 @@ function App() {
           allTrucks={allTrucks}
           truckAssignments={data.truckAssignments || {}}
           checkDuplicate={checkDuplicate}
-          unsavedIds={unsavedIds}
+          unsavedIds={saveStatus === "error" ? unsavedIds : null}
           role={session.role}
           userName={session.name}
           onChange={onLoadChange}
