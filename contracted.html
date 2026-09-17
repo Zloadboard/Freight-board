@@ -520,6 +520,43 @@
     50%      { opacity: .3; }
   }
 
+  /* ---- 2026-09-17: unsaved-write warning. A failed write used to show only a
+     small grey pill while the card still looked claimed, so a dispatcher
+     believed they owned a load nobody else could see. This is deliberately
+     loud. ---- */
+  .clb-unsaved {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 2px solid #dc2626;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin: 10px 0;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .clb-unsaved__dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: #dc2626;
+    animation: clb-pulse 1s ease-in-out infinite;
+    flex: 0 0 auto;
+  }
+  .clb-unsaved__sub { font-weight: 500; opacity: .9; }
+  .clb-compat {
+    background: #fff7ed; color: #9a3412; border: 1px solid #fb923c;
+    border-radius: 8px; padding: 8px 14px; margin: 10px 0;
+    font-size: 12px; font-weight: 600;
+  }
+  /* Per-card marker — the claim badge is the thing people misread, so the card
+     itself has to say the change isn't on the sheet. */
+  .clb-card--unsaved { outline: 2px solid #dc2626; outline-offset: 1px; }
+  .clb-card__unsaved {
+    display: inline-block; margin-left: 6px; padding: 1px 6px;
+    border-radius: 999px; background: #dc2626; color: #fff;
+    font-size: 10px; font-weight: 800; letter-spacing: .03em;
+    vertical-align: middle;
+  }
+
   /* ---- Modal ---- */
   .clb-modal-bg {
     position: fixed; inset: 0;
@@ -2421,7 +2458,7 @@ function PhotosSlot({ load, onChange }) {
 // COMPONENTS — LOAD CARD
 // ============================================================
 
-function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, checkDuplicate, role, userName, expanded, onToggle, onChange, onDelete }) {
+function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, checkDuplicate, unsaved, role, userName, expanded, onToggle, onChange, onDelete }) {
   const [pendingDriver, setPendingDriver] = useState(load.otrDriver || "");
   // 2026-09-12: now that polling no longer stops while a field has focus, an
   // incoming merge could yank text out from under the cursor mid-word. Only
@@ -2493,10 +2530,14 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
                     (load.status === "Delivered" ? " clb-card--delivered" : "") +
                     (load.status === "Canceled"  ? " clb-card--canceled"  : "") +
                     (load.waitingUpdate ? " clb-card--waiting" : "") +
+                    (unsaved ? " clb-card--unsaved" : "") +
                     claimVariant}
          style={{ "--bucket-color": bucketColor }}>
       <div className="clb-card__head" onClick={onToggle}>
         <span className="clb-card__caret">{expanded ? "▼" : "▶"}</span>
+        {/* 2026-09-17: a claim that hasn't reached the sheet must not look like
+            one that has — that is exactly how a load got double-claimed. */}
+        {unsaved && <span className="clb-card__unsaved" title="This change is not on the board yet — other dispatchers cannot see it.">NOT SAVED</span>}
         <button
           type="button"
           className={"clb-card__waiting" + (load.waitingUpdate ? " clb-card__waiting--on" : "")}
@@ -2661,7 +2702,7 @@ function LoadCard({ load, bucket, allDrivers, allTrucks, truckAssignments, check
 // COMPONENTS — BUCKET
 // ============================================================
 
-function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, allTrucks, truckAssignments, checkDuplicate, role, userName, onChange, onDelete }) {
+function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, allTrucks, truckAssignments, checkDuplicate, unsavedIds, role, userName, onChange, onDelete }) {
   if (!loads.length) return null;
   const total = loads.reduce((s, l) => s + (parseFloat(l.rate) || 0), 0);
   return (
@@ -2681,6 +2722,7 @@ function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, al
             allTrucks={allTrucks}
             truckAssignments={truckAssignments}
             checkDuplicate={checkDuplicate}
+            unsaved={!!(unsavedIds && unsavedIds[l.id])}
             role={role}
             userName={userName}
             expanded={expandedIds.has(l.id)}
@@ -3050,7 +3092,27 @@ function App() {
   // saved cannot be patched — there is nothing there to patch — so it forces a
   // full save instead of silently losing the edit.
   const serverIdsRef = useRef({});
+  // 2026-09-17 — write reliability.
+  // patchNotSupportedRef: set once the deployed Apps Script answers "Unknown
+  //   action" to patchLoads, i.e. the script was code-saved but never deployed
+  //   as a new version. The board then falls back to whole-board saves.
+  // retryDelayRef:  current backoff for a failed write (2s → 30s cap).
+  // schedulePersistRef: lets the failure handler re-arm persist without the
+  //   circular reference a direct call would create.
+  const patchNotSupportedRef = useRef(false);
+  const retryDelayRef        = useRef(0);
+  const schedulePersistRef   = useRef(() => {});
+  const [compatMode, setCompatMode] = useState(false);
+  // Which loads have changes that are NOT yet on the sheet, so a card can say so
+  // instead of looking identical to a saved one.
+  const [unsavedIds, setUnsavedIds] = useState({});
   dataRef.current = data;
+
+  const syncUnsaved = useCallback(() => {
+    const ids = {};
+    Object.keys(pendingPatchRef.current || {}).forEach(id => { ids[id] = true; });
+    setUnsavedIds(ids);
+  }, []);
 
   const noteServerIds = useCallback((serverData) => {
     const ids = {};
@@ -3072,7 +3134,7 @@ function App() {
     });
   };
 
-  const persist = useCallback(() => {
+  const persist = useCallback((delayMs) => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
       const logs = pendingLogRef.current.splice(0);   // take and clear
@@ -3084,7 +3146,14 @@ function App() {
       try {
 
         // ---------- Field patches: the common path ----------
-        if (!fullSave) {
+        // 2026-09-17: `patchNotSupported` is the compatibility escape hatch. If
+        // the deployed Apps Script predates the patchLoads action it answers
+        // "Unknown action", the write fails, and — before this — the claim
+        // silently never reached the sheet while the card still showed it as
+        // claimed. Now the first such answer flips the board back to whole-board
+        // saves for the rest of the session and the write is retried
+        // immediately, so the board keeps working whatever is deployed.
+        if (!fullSave && !patchNotSupportedRef.current) {
           const cur = dataRef.current;
           const patches = patchIds.map(id => ({
             weekId: weekIdForLoad(cur, id),
@@ -3092,7 +3161,22 @@ function App() {
             fields: sentPatches[id],
             at:     Date.now()
           }));
-          const resp = await apiPatchLoads(patches, logs);
+          let resp;
+          try {
+            resp = await apiPatchLoads(patches, logs);
+          } catch (patchErr) {
+            if (/unknown action/i.test(patchErr && patchErr.message || "")) {
+              patchNotSupportedRef.current = true;
+              setCompatMode(true);
+              console.warn("Apps Script does not support patchLoads — falling back to whole-board saves. " +
+                           "Deploy the current Code.gs as a NEW DEPLOYMENT VERSION to re-enable field-level saves.");
+              needsFullSaveRef.current = true;
+              pendingLogRef.current.unshift(...logs);
+              schedulePersistRef.current(0);     // retry straight away as a full save
+              return;
+            }
+            throw patchErr;                       // a real failure — handled below
+          }
           if (resp && resp.data) {
             noteServerIds(resp.data);
             clearSentPatches(sentPatches);
@@ -3111,6 +3195,8 @@ function App() {
             if (r2 && r2.data) { noteServerIds(r2.data); setData(mergeClientData(r2.data, dataRef.current)); }
             needsFullSaveRef.current = false;
           }
+          retryDelayRef.current = 0;
+          syncUnsaved();
           setSaveStatus("saved");
           setLastSync(Date.now());
           return;
@@ -3137,16 +3223,28 @@ function App() {
         }
         clearSentPatches(sentPatches);
         needsFullSaveRef.current = false;
+        retryDelayRef.current = 0;
+        syncUnsaved();
         setSaveStatus("saved");
         setLastSync(Date.now());
       } catch (e) {
-        // Re-queue the logs so a retried save still records them.
+        // 2026-09-17: a failed write used to just set a small "Save failed" pill
+        // and stop. Nothing retried, and the card went on showing the claim as
+        // though it had saved — so a dispatcher believed they owned a load that
+        // no one else could see. Now it retries with backoff and the board says
+        // plainly that the change is not on the sheet.
         pendingLogRef.current.unshift(...logs);
+        syncUnsaved();
         setSaveStatus("error");
         console.error("Save failed:", e);
+        const next = retryDelayRef.current ? Math.min(retryDelayRef.current * 2, 30000) : 2000;
+        retryDelayRef.current = next;
+        schedulePersistRef.current(next);
       }
-    }, SAVE_DEBOUNCE_MS);
+    }, delayMs === undefined ? SAVE_DEBOUNCE_MS : delayMs);
   }, []);
+
+  schedulePersistRef.current = persist;
 
   const mutate = useCallback((next) => {
     setData({ ...next, updatedAt: Date.now() });
@@ -3206,6 +3304,7 @@ function App() {
     if (Object.keys(changed).length) {
       pendingPatchRef.current[updatedLoad.id] =
         Object.assign({}, pendingPatchRef.current[updatedLoad.id] || {}, changed);
+      syncUnsaved();
     }
     mutate(updateCurrentWeekLoads(dataRef.current, loads =>
       loads.map(l => l.id === updatedLoad.id ? { ...updatedLoad, updatedAt: Date.now() } : l)
@@ -3584,6 +3683,22 @@ function App() {
         storageSize={storageSize}
         online={online}
       />
+      {saveStatus === "error" && (
+        <div className="clb-unsaved">
+          <span className="clb-unsaved__dot"></span>
+          <span>
+            NOT SAVED — these changes are not on the board yet and other dispatchers cannot see them.
+            <span className="clb-unsaved__sub"> Retrying automatically. Keep this tab open.</span>
+          </span>
+        </div>
+      )}
+      {compatMode && (
+        <div className="clb-compat">
+          ⚠ Running in compatibility mode — the Apps Script deployment is out of date, so saves are
+          slower and less precise. Deploy the current Code.gs as a <strong>new deployment version</strong>
+          (Deploy → Manage deployments → edit → Version: New version) to fix it.
+        </div>
+      )}
       {reconnecting && (
         <div className="clb-reconnect">
           <span className="clb-reconnect__dot"></span>
@@ -3612,6 +3727,7 @@ function App() {
           allTrucks={allTrucks}
           truckAssignments={data.truckAssignments || {}}
           checkDuplicate={checkDuplicate}
+          unsavedIds={unsavedIds}
           role={session.role}
           userName={session.name}
           onChange={onLoadChange}
