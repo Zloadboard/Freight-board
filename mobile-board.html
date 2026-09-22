@@ -1239,10 +1239,9 @@ function MobileDashboard({ weeks, isAdmin, signedIn, liveTrucks, onClaim, curIdx
                 const acc = (w.accessorials || []).reduce((s, a) => s + (parseFloat(a.amount) || 0), 0);
                 const localDel = (w.localDeliveries || []).length;
                 const trailers = grps.length;
-                const allMi = grps.reduce((s, g) => {
-                    const raw = g.tripMiles !== "" && g.tripMiles != null ? parseFloat(g.tripMiles) : g.calcTripMi ? parseFloat(g.calcTripMi) : g.autoTripMi ? parseFloat(g.autoTripMi) : 0;
-                    return s + (isNaN(raw) ? 0 : raw);
-                }, 0);
+                // Only hand-typed trailers used to reach this total, while gross
+                // counted every load, so RPM divided by a fraction of the miles.
+                const allMi = grps.reduce((s, g) => s + groupMiles(g), 0);
                 const netGross = gross - loc + acc;
                 const rpm = allMi > 0 ? Math.round((netGross / allMi) * 100) / 100 : 0;
                 const drivers = {};
@@ -1362,11 +1361,11 @@ function MobileDashboard({ weeks, isAdmin, signedIn, liveTrucks, onClaim, curIdx
                                                     "\uD83D\uDCCD ",
                                                     short));
                                             })(),
-                                            (() => { const mi = group.tripMiles !== "" && group.tripMiles != null ? parseFloat(group.tripMiles) : group.calcTripMi ? parseFloat(group.calcTripMi) : group.autoTripMi ? parseFloat(group.autoTripMi) : null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: "rgba(255,255,255,.45)", background: "rgba(255,255,255,.08)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
+                                            (() => { const mi = groupMiles(group) || null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: "rgba(255,255,255,.45)", background: "rgba(255,255,255,.08)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
                                                 Math.round(mi).toLocaleString(),
                                                 " mi") : null; })())) : (React.createElement(React.Fragment, null,
                                             React.createElement("span", { style: { fontSize: "11px", fontWeight: "800", color: "#b91c1c", flex: 1, letterSpacing: ".01em" } }, "NO DRIVER ASSIGNED"),
-                                            (() => { const mi = group.tripMiles !== "" && group.tripMiles != null ? parseFloat(group.tripMiles) : group.calcTripMi ? parseFloat(group.calcTripMi) : group.autoTripMi ? parseFloat(group.autoTripMi) : null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: stStyle.c, background: "rgba(0,0,0,.06)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
+                                            (() => { const mi = groupMiles(group) || null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: stStyle.c, background: "rgba(0,0,0,.06)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
                                                 Math.round(mi).toLocaleString(),
                                                 " mi") : null; })()))),
                                         React.createElement("div", { style: { padding: "12px 14px 10px" } },
@@ -1474,7 +1473,7 @@ function MobileDashboard({ weeks, isAdmin, signedIn, liveTrucks, onClaim, curIdx
                                             "\uD83D\uDCCD ",
                                             short));
                                     })(),
-                                    (() => { const mi = group.tripMiles !== "" && group.tripMiles != null ? parseFloat(group.tripMiles) : group.calcTripMi ? parseFloat(group.calcTripMi) : group.autoTripMi ? parseFloat(group.autoTripMi) : null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: "rgba(255,255,255,.45)", background: "rgba(255,255,255,.08)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
+                                    (() => { const mi = groupMiles(group) || null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: "rgba(255,255,255,.45)", background: "rgba(255,255,255,.08)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
                                         Math.round(mi).toLocaleString(),
                                         " mi") : null; })()),
                                 React.createElement("div", { style: { padding: "12px 14px 10px" } },
@@ -1565,7 +1564,7 @@ function MobileDashboard({ weeks, isAdmin, signedIn, liveTrucks, onClaim, curIdx
                                             "\uD83D\uDCCD ",
                                             short));
                                     })(),
-                                    (() => { const mi = group.tripMiles !== "" && group.tripMiles != null ? parseFloat(group.tripMiles) : group.calcTripMi ? parseFloat(group.calcTripMi) : group.autoTripMi ? parseFloat(group.autoTripMi) : null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: "rgba(255,255,255,.45)", background: "rgba(255,255,255,.08)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
+                                    (() => { const mi = groupMiles(group) || null; return mi ? React.createElement("span", { style: { fontSize: "10px", color: "rgba(255,255,255,.45)", background: "rgba(255,255,255,.08)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 } },
                                         Math.round(mi).toLocaleString(),
                                         " mi") : null; })()),
                                 React.createElement("div", { style: { padding: "12px 14px 10px" } },
@@ -1937,6 +1936,21 @@ function calcGroup(g){
   const rpm=(tm&&tm>0)?+((gross-loc)/tm).toFixed(2):(bestAutoMi&&bestAutoMi>0)?+((gross-loc)/bestAutoMi).toFixed(2):null;
   return{...g,calcTripMi:tm,autoTripMi:bestAutoMi||null,rcvrs,rpm,gross,loc,loads:sdFinal};
 }
+// Trailer miles for a group as it comes off the sheet. calcTripMi and autoTripMi
+// are produced by calcGroup and are never saved, so reading them off a stored
+// group yields nothing for every trailer without a hand-typed tripMiles. Route
+// through calcGroup instead, which is the figure the desktop board shows.
+function groupMiles(g){
+  if(!g)return 0;
+  var man=(g.tripMiles!==""&&g.tripMiles!=null)?parseFloat(g.tripMiles):NaN;
+  if(isFinite(man)&&man>0)return man;
+  if(!Array.isArray(g.loads))return 0;
+  try{
+    var cg=calcGroup(g);
+    var mi=cg.calcTripMi||cg.autoTripMi;
+    return (typeof mi==="number"&&isFinite(mi)&&mi>0)?mi:0;
+  }catch(e){return 0;}
+}
 function sheetsLoad(role,sessToken){
   var headers={};
   var appToken=localStorage.getItem("fcbv2_sheetsToken")||"";
@@ -2215,17 +2229,20 @@ function calcLocCost(loads) {
 }
 
 function getMiles(g) {
-  if (g.tripMiles !== '' && g.tripMiles != null) return Math.round(parseFloat(g.tripMiles));
-  if (g.calcTripMi) return Math.round(parseFloat(g.calcTripMi));
-  if (g.autoTripMi) return Math.round(parseFloat(g.autoTripMi));
-  return null;
+  var mi = groupMiles(g);
+  return mi > 0 ? Math.round(mi) : null;
 }
 
 function sortByDelivery(loads) {
+  // Same comparator the React dashboard uses, so a trailer's stops are numbered
+  // the same way on the Combined and OTR cards as on the Dashboard. new Date()
+  // could not read a time off "M/D/YYYY 15:00" and read a year-less "06/12" as
+  // June 2001; Infinity - Infinity is NaN, so undated loads had no defined order.
   return loads.slice().sort(function(a, b) {
-    var ta = new Date((a.delivery || '').split(' ')[0]).getTime() || Infinity;
-    var tb = new Date((b.delivery || '').split(' ')[0]).getTime() || Infinity;
-    return ta - tb;
+    var ta = parseTS(a.delivery) || parseTS(a.pickup) || Infinity;
+    var tb = parseTS(b.delivery) || parseTS(b.pickup) || Infinity;
+    if (ta !== tb) return ta - tb;
+    return loads.indexOf(a) - loads.indexOf(b);
   });
 }
 
