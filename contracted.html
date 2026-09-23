@@ -791,6 +791,14 @@ const ADMIN_PASSCODE = "12345";
 const POLL_INTERVAL_MS  = 3000;
 const SAVE_DEBOUNCE_MS  = 1000;
 
+// 2026-09-23: build stamp. Bump this on every release. The board re-fetches
+// its own HTML every few minutes and compares; a tab running an older build
+// reloads itself as soon as it has nothing unsaved and nobody is typing. This
+// exists because a single old tab left open on someone's second monitor kept
+// overwriting other dispatchers' work for a week after each fix shipped.
+const BUILD = "2026-09-23";
+const BUILD_CHECK_MS = 5 * 60 * 1000;
+
 // Reused from freight board for consistency (will share when merged)
 const DRIVERS = ["Ahmed Omar","Alex Oyaro","Allan Zebron","Ananias Lisimwege","Austen Powers","Badrudin Siraji","Baldwine Telfort","Bassirou Diouf","Benard Nyamanya","Betwel Onchabo","Claude Michael","Daniel Mwangi","Denis Ntore","Dennis Onsomu","Dominic Muchiri","Dominic Nyangau","Douglas Russo","Edward Kirui","Edwens Sykvestre","Egidijus Matulis","Elhadji Diagne","Elhadji Sene","Elkanah Machuka","Emilis Ibianskas","Erlandas Mastavicius","Evans Nyangechi","Fakhre Alam","Faustin Nkuriyingoma","Fred Nyangau","Gassendy Alcemora","Gideon Githinji","Haron Ombui","Hassan Mupenzi","Jackson Nshimiye","Jamil Hussaini","Jean Ndutiye","Jeff Mecha","John Johnson","Joshua Onditi","Jusin Maniraguha","Kennedy Nyangena","Khoda Nabizada","Leonard Zigirinshuti","Linas Greiciunas","Luc Mpangaje","Martin Kariuki","Mayom Akeeg","Michael Mutua","Moussa Sow","Nkurikiye Damascene","Oleh Lashkevych","Palvinson Phizema","Papy Gakona","Paul Ngotho","Rudatinya Ganza","Samwel Masamo","Sefu Mutabazi","Seth Munyangeri","Simolien Etienne","Sterling Yves","Sumaile Abedi","Taban Tor","Teresia Mungai","Theron Mack","Tiberius Mose","Twizere Brown","Victor Machoka","Vincent Okero","Willy Rukundo","Wycliff Osumo","Zach Barker"];
 
@@ -1229,7 +1237,13 @@ function applyPendingPatches(target, serverRaw, patches) {
         const fields = l && patches[l.id];
         const sl = l && serverLoads[l.id];
         if (!fields || !sl) return l;                 // nothing pending, or a load the server hasn't seen yet
-        return { ...sl, ...fields, updatedAt: Date.now() };
+        // 2026-09-23: keep the SERVER's stamp rather than Date.now(). Stamping
+        // "now" made the local copy win every merge for as long as anything on
+        // the load was pending — so another dispatcher's change to a different
+        // field on the same load stayed invisible, and a transient revert could
+        // not be repaired by the poll. Equal stamps still win the merge (>=),
+        // which is all a whole-board save needs.
+        return { ...sl, ...fields, updatedAt: sl.updatedAt || Date.now() };
       })
     }))
   };
@@ -1239,7 +1253,11 @@ function applyPendingPatches(target, serverRaw, patches) {
 // successful patch: the server stamps `updatedAt` with ITS clock, and a
 // dispatcher laptop running a few seconds fast would otherwise keep winning the
 // merge and re-clobber those loads on the next whole-board save.
-function adoptServerLoads(target, serverRaw, ids) {
+// 2026-09-23: `stamps` is the newest server updatedAt already seen per load.
+// A response whose copy is OLDER than that is a late arrival from an earlier
+// write and is ignored — adopting it is exactly how a just-typed trailer
+// vanished and a status snapped back.
+function adoptServerLoads(target, serverRaw, ids, stamps) {
   if (!ids || !ids.length) return target;
   const want = {};
   ids.forEach(id => { want[id] = true; });
@@ -1250,9 +1268,25 @@ function adoptServerLoads(target, serverRaw, ids) {
     ...target,
     weeks: (target.weeks || []).map(w => ({
       ...w,
-      loads: (w.loads || []).map(l => (l && want[l.id] && serverLoads[l.id]) ? serverLoads[l.id] : l)
+      loads: (w.loads || []).map(l => {
+        if (!l || !want[l.id] || !serverLoads[l.id]) return l;
+        const sl = serverLoads[l.id];
+        const known = (stamps && stamps[l.id]) || 0;
+        if ((sl.updatedAt || 0) < known) return l;        // stale response — keep what we have
+        return sl;
+      })
     }))
   };
+}
+
+// Record the newest server stamp seen for every load in a server payload.
+function noteServerStamps(serverRaw, stamps) {
+  const server = normalizeData(serverRaw);
+  (server.weeks || []).forEach(w => (w.loads || []).forEach(l => {
+    if (!l || !l.id) return;
+    const at = l.updatedAt || 0;
+    if (!stamps[l.id] || at > stamps[l.id]) stamps[l.id] = at;
+  }));
 }
 
 // 2026-09-17: Apps Script regularly APPLIES a write and then fails to return a
@@ -3124,6 +3158,11 @@ function App() {
   const patchNotSupportedRef = useRef(false);
   const retryDelayRef        = useRef(0);
   const retryAttemptsRef     = useRef(0);   // consecutive genuinely-failed writes
+  const inFlightRef          = useRef(false); // a write is waiting on Apps Script
+  const rerunRef             = useRef(false); // an edit arrived during that wait
+  // Newest server `updatedAt` seen per load, from every poll and response. A
+  // response carrying an OLDER copy than this is stale and must not be adopted.
+  const serverStampRef       = useRef({});
   const schedulePersistRef   = useRef(() => {});
   const [compatMode, setCompatMode] = useState(false);
   // Which loads have changes that are NOT yet on the sheet, so a card can say so
@@ -3145,6 +3184,7 @@ function App() {
     ((serverData && serverData.weeks) || []).forEach(w =>
       (w.loads || []).forEach(l => { if (l && l.id) ids[l.id] = true; }));
     serverIdsRef.current = ids;
+    noteServerStamps(serverData, serverStampRef.current);   // every payload teaches us what "newest" is
   }, []);
 
   // Remove the field values we just wrote, leaving anything typed during the
@@ -3163,6 +3203,18 @@ function App() {
   const persist = useCallback((delayMs) => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
+      // 2026-09-23 FIX — ONE WRITE IN FLIGHT AT A TIME.
+      // The timer used to fire a second write while the first was still
+      // waiting on Apps Script. Both were applied to the sheet in order, but
+      // their RESPONSES could come back out of order, and the stale one then
+      // forced an older copy of the load over the screen: a trailer that had
+      // just been typed vanished, a status snapped back to "Need to Drop". The
+      // next poll repaired it seconds later — unless the dispatcher touched the
+      // card in between and re-sent the reverted value for real. Reproduced
+      // deterministically (slow response for write 1, fast for write 2).
+      // Anything edited while a write is out simply rides the next write.
+      if (inFlightRef.current) { rerunRef.current = true; return; }
+      inFlightRef.current = true;
       const logs = pendingLogRef.current.splice(0);   // take and clear
       const sentPatches = JSON.parse(JSON.stringify(pendingPatchRef.current));
       const patchIds = Object.keys(sentPatches);
@@ -3209,7 +3261,7 @@ function App() {
             // Take the server's copy of what we just patched (its clock decides,
             // not ours), then lay back anything typed during the round-trip.
             let next = adoptServerLoads(
-              mergeClientData(resp.data, dataRef.current), resp.data, patchIds);
+              mergeClientData(resp.data, dataRef.current), resp.data, patchIds, serverStampRef.current);
             next = applyPendingPatches(next, resp.data, pendingPatchRef.current);
             setData(next);
           }
@@ -3243,12 +3295,40 @@ function App() {
         const snapshot = { ...base, updatedAt: Date.now() };
         if (logs.length) snapshot._log = logs;
 
-        const resp = await apiSave(snapshot);
+        let resp = await apiSave(snapshot);
+
+        // 2026-09-23: CONFLICT RETRY for whole-board saves (compatibility mode).
+        // The old Apps Script merges whole loads by timestamp. If another
+        // dispatcher wrote the same load between our pre-read and our write,
+        // the server keeps THEIR copy and drops our fields — measured 4 of 6
+        // runs: a truck number vanished, a status snapped back to Need to Drop.
+        // The response tells us: if the fields we just sent aren't in it, rebase
+        // them onto the server's newest copy (which now includes their change)
+        // and write once more. Both sides survive. Two attempts is enough; a
+        // third collision in a row is not something that happens on a board
+        // with a handful of dispatchers.
+        for (let attempt = 0; attempt < 2 && resp && resp.data && patchIds.length &&
+                              !patchesLanded(resp.data, sentPatches); attempt++) {
+          noteServerIds(resp.data);
+          const rebased = applyPendingPatches(mergeClientData(resp.data, dataRef.current), resp.data, sentPatches);
+          resp = await apiSave({ ...rebased, updatedAt: Date.now() });
+        }
+
+        clearSentPatches(sentPatches);
         if (resp && resp.data) {
           noteServerIds(resp.data);
-          setData(mergeClientData(resp.data, dataRef.current));
+          // 2026-09-23: the SCREEN must show what the SHEET has. Under the old
+          // Apps Script (compatibility mode) a whole-board save can lose a
+          // field to another dispatcher's concurrent write — and the local copy
+          // used to carry on showing the value the sheet no longer had, so the
+          // dispatcher saw a truck number that nobody else could see. Adopt the
+          // server's copy of what we sent (stale-guarded), then lay back
+          // anything typed during the round-trip.
+          let next = mergeClientData(resp.data, dataRef.current);
+          next = adoptServerLoads(next, resp.data, patchIds, serverStampRef.current);
+          next = applyPendingPatches(next, resp.data, pendingPatchRef.current);
+          setData(next);
         }
-        clearSentPatches(sentPatches);
         needsFullSaveRef.current = false;
         retryDelayRef.current = 0;
         retryAttemptsRef.current = 0;
@@ -3290,6 +3370,10 @@ function App() {
         const next = retryDelayRef.current ? Math.min(retryDelayRef.current * 2, 30000) : 2000;
         retryDelayRef.current = next;
         schedulePersistRef.current(next);
+      } finally {
+        inFlightRef.current = false;
+        // Something was edited while this write was out — send it now.
+        if (rerunRef.current) { rerunRef.current = false; schedulePersistRef.current(0); }
       }
     }, delayMs === undefined ? SAVE_DEBOUNCE_MS : delayMs);
   }, []);
@@ -3442,12 +3526,27 @@ function App() {
 
     let updatedWeeks = cur.weeks.slice();
     let newWeekLoads = [];
+    let tombstones = cur.tombstones || [];
     if (carry && curWeek) {
       const incomplete = curWeek.loads.filter(l => !isClosed(l));
       const completed  = curWeek.loads.filter(l =>  isClosed(l));
-      // Strip ids so duplicates don't collide between weeks
+      // Carried loads get fresh ids so the two weeks never collide.
       newWeekLoads = incomplete.map(l => ({ ...l, id: uid(), createdAt: Date.now(), updatedAt: Date.now() }));
       updatedWeeks = updatedWeeks.map(w => w.id !== curWeek.id ? w : { ...w, loads: completed });
+      // 2026-09-23 FIX: the OLD ids must be tombstoned. Both merges (client and
+      // Apps Script) are unions — leaving a load out of a week is not a
+      // deletion, and the server put every carried load straight back into the
+      // old week. Every rollover produced a ghost copy of every open load, so
+      // a dispatcher could edit last week's ghost while everyone else looked at
+      // this week's real one. Tombstones are the only thing a merge honours.
+      const now = Date.now();
+      const carriedIds = new Set(incomplete.map(l => l.id));
+      tombstones = tombstones.filter(t => !carriedIds.has(t.id))
+        .concat(incomplete.map(l => ({ id: l.id, at: now })));
+      pendingLogRef.current.push({
+        at: now, by: (session && session.name) || "unknown", action: "rollover",
+        ref: label.trim(), details: `carried ${incomplete.length} open load${incomplete.length === 1 ? "" : "s"} forward`
+      });
     }
 
     const newWeek = {
@@ -3462,10 +3561,11 @@ function App() {
     mutateStructural({
       ...cur,
       weeks: [...updatedWeeks, newWeek],
-      currentWeekId: newWeek.id
+      currentWeekId: newWeek.id,
+      tombstones
     });
     setExpandedIds(new Set());
-  }, [mutate]);
+  }, [mutate, session]);
 
   const editCurrentWeek = useCallback(() => {
     const cur = dataRef.current;
@@ -3633,6 +3733,40 @@ function App() {
     return byKey;
   }, [data, search, today, tomorrow, buckets]);
 
+  // ---- 2026-09-23: self-updating build check ----
+  // Re-fetch this page's own HTML (cache-busted) and compare BUILD. When a
+  // newer build is live: show a banner, and reload automatically the moment
+  // it is safe — nothing unsaved, no write in flight, no field focused.
+  const [newBuild, setNewBuild] = useState("");
+  useEffect(() => {
+    if (typeof location === "undefined" || !/^https?:/.test(location.protocol)) return;
+    let dead = false;
+    const check = async () => {
+      try {
+        const url = location.href.split("#")[0].split("?")[0] + "?b=" + Date.now();
+        const res = await fetch(url, { cache: "no-store" });
+        const txt = await res.text();
+        const m = txt.match(/const BUILD = "([^"]+)"/);
+        if (!dead && m && m[1] && m[1] !== BUILD) setNewBuild(m[1]);
+      } catch (e) { /* offline or blocked — try again next time */ }
+    };
+    const t = setInterval(check, BUILD_CHECK_MS);
+    const onVis = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVis);
+    setTimeout(check, 20000);   // first check shortly after load
+    return () => { dead = true; clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
+  }, []);
+  useEffect(() => {
+    if (!newBuild) return;
+    const t = setInterval(() => {
+      const busy = inFlightRef.current || needsFullSaveRef.current ||
+                   Object.keys(pendingPatchRef.current || {}).length > 0;
+      const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+      if (!busy && !typing) location.reload();
+    }, 3000);
+    return () => clearInterval(t);
+  }, [newBuild]);
+
   // ---- Online/offline detection ----
   const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine !== false : true);
   useEffect(() => {
@@ -3742,11 +3876,20 @@ function App() {
           </span>
         </div>
       )}
+      {newBuild && (
+        <div className="clb-compat" style={{ background: "#eff6ff", color: "#1e3a8a", borderColor: "#60a5fa" }}>
+          ⬆ A newer board version is live ({newBuild}; this tab is {BUILD}). It will reload itself
+          as soon as nothing is being typed — or <a href="#" onClick={e => { e.preventDefault(); location.reload(); }}
+          style={{ color: "#1d4ed8", fontWeight: 800 }}>reload now</a>.
+        </div>
+      )}
       {compatMode && (
         <div className="clb-compat">
-          ⚠ Running in compatibility mode — the Apps Script deployment is out of date, so saves are
-          slower and less precise. Deploy the current Code.gs as a <strong>new deployment version</strong>
-          (Deploy → Manage deployments → edit → Version: New version) to fix it.
+          ⚠ <strong>Compatibility mode — the Apps Script deployment is out of date.</strong> While it
+          stays this way, two dispatchers editing the same load at the same time <strong>can lose each
+          other's changes</strong> (measured: 3 of 6 runs). Deploy the current Code.gs as a
+          <strong>new deployment version</strong> (Deploy → Manage deployments → edit → Version: New
+          version) — this bar disappears when it's done.
         </div>
       )}
       {reconnecting && (
