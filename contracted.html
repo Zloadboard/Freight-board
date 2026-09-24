@@ -796,7 +796,7 @@ const SAVE_DEBOUNCE_MS  = 1000;
 // reloads itself as soon as it has nothing unsaved and nobody is typing. This
 // exists because a single old tab left open on someone's second monitor kept
 // overwriting other dispatchers' work for a week after each fix shipped.
-const BUILD = "2026-09-23";
+const BUILD = "2026-09-25";
 const BUILD_CHECK_MS = 5 * 60 * 1000;
 
 // Reused from freight board for consistency (will share when merged)
@@ -1828,13 +1828,35 @@ function applyParsedToLoad(load, parsed) {
 // API
 // ============================================================
 
+// 2026-09-25: every backend call has a deadline. A fetch to Apps Script can
+// hang with no answer at all (stalled redirect, dead connection), and since
+// pass 5 only one write runs at a time — so ONE hung request silently froze
+// every later write on that tab: claims showed on the dispatcher's screen,
+// never reached the sheet, and the pill sat on "Saving…" with no red banner.
+// Reproduced. A deadline turns a hang into an ordinary failure, which retries.
+const WRITE_TIMEOUT_MS = 25000;
+const READ_TIMEOUT_MS  = 15000;
+function withDeadline(promise, ms, what) {
+  let t;
+  const timeout = new Promise((_, rej) => { t = setTimeout(() => {
+    const err = new Error((what || "Request") + " timed out after " + Math.round(ms / 1000) + "s");
+    err.transient = true; rej(err);
+  }, ms); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
+function fetchWithDeadline(url, opts, ms) {
+  const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  const o = Object.assign({}, opts || {}, ctrl ? { signal: ctrl.signal } : {});
+  const p = (async () => { const r = await fetch(url, o); return await r.text(); })();
+  return withDeadline(p, ms, "Backend request").catch(e => { if (ctrl) { try { ctrl.abort(); } catch (x) {} } throw e; });
+}
+
 async function apiCall(payload) {
-  const res = await fetch(APPS_SCRIPT_URL, {
+  const text = await fetchWithDeadline(APPS_SCRIPT_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(payload)
-  });
-  const text = await res.text();
+  }, WRITE_TIMEOUT_MS);
   // Apps Script sometimes returns a Google HTML error page instead of JSON
   // (quota hit, service blip, lock timeout). Detect and surface as a
   // clearly-transient error so callers can retry.
@@ -1854,8 +1876,7 @@ async function apiCall(payload) {
 }
 
 async function apiLoad() {
-  const res = await fetch(APPS_SCRIPT_URL + "?action=load");
-  const text = await res.text();
+  const text = await fetchWithDeadline(APPS_SCRIPT_URL + "?action=load", undefined, READ_TIMEOUT_MS);
   if (text.trim().startsWith("<")) {
     const err = new Error("Backend temporarily unavailable");
     err.transient = true;
@@ -1989,8 +2010,7 @@ function ActivityModal({ onClose }) {
     let dead = false;
     (async () => {
       try {
-        const res = await fetch(APPS_SCRIPT_URL + "?action=getAuditLog");
-        const text = await res.text();
+        const text = await fetchWithDeadline(APPS_SCRIPT_URL + "?action=getAuditLog", undefined, READ_TIMEOUT_MS);
         if (text.trim().startsWith("<")) throw new Error("Backend temporarily unreachable");
         const j = JSON.parse(text);
         if (!j.ok) throw new Error(j.error || "Load failed");
@@ -2799,7 +2819,7 @@ function BucketSection({ bucket, loads, expandedIds, setExpanded, allDrivers, al
 // COMPONENTS — HEADER
 // ============================================================
 
-function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onImportFromFreight, onSwitchWeek, onNewWeek, onEditWeek, onArchiveWeek, onDeleteWeek, onChangePasscode, hasAccessPasscode, onOpenActivity, storageSize, online }) {
+function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddLoad, onLogout, onImportFromFreight, onSwitchWeek, onNewWeek, onUndoNewWeek, onEditWeek, onArchiveWeek, onDeleteWeek, onChangePasscode, hasAccessPasscode, onOpenActivity, storageSize, online }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const saveLbl =
     saveStatus === "saving" ? "Saving…" :
@@ -2857,7 +2877,7 @@ function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddL
           ⚠ Offline
         </span>
       )}
-      <span className={"clb-save clb-save--" + saveStatus}>● {saveLbl}</span>
+      <span className={"clb-save clb-save--" + saveStatus} title={"Board build " + BUILD}>● {saveLbl} · v{BUILD.slice(5)}</span>
       {sizeLevel && (
         <span className="clb-save" style={sizeColors[sizeLevel]} title={sizeTitle}>
           {sizeKb} KB
@@ -2891,6 +2911,13 @@ function Header({ data, session, saveStatus, lastSync, search, setSearch, onAddL
                     style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13, fontWeight:600 }}>
               + Start new week
             </button>
+            {session && session.role === "admin" && (
+              <button onClick={() => { setMenuOpen(false); onUndoNewWeek(); }}
+                      title="Move every load in this week back into the previous week and leave this week empty. For undoing a new week started by mistake."
+                      style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13 }}>
+                ↩ Undo new week (move loads back)
+              </button>
+            )}
             <button onClick={() => { setMenuOpen(false); onEditWeek(); }}
                     style={{ display:"block", width:"100%", textAlign:"left", padding:"8px 12px", background:"none", border:"none", fontSize:13 }}>
               ✏️ Edit current week…
@@ -3061,17 +3088,29 @@ function App() {
     apiLoadWithRetry(3, 1500)
       .then(d => {
         if (dead) return;
-        // 2026-09-12 FIX: this was the one path that REPLACED state instead of
-        // merging. The board paints instantly from cache, and this fetch can
-        // take 5s+ on a cold Apps Script (3 attempts, 1.5s apart) — anything a
-        // dispatcher did in that window was visually reverted when it landed.
-        // Merge against whatever is on screen, exactly like the poll does.
-        const merged = dataRef.current
-          ? mergeClientData(d, dataRef.current)
-          : normalizeData(d);
+        // 2026-09-25 FIX — THE SERVER IS THE TRUTH ON STARTUP.
+        // Pass 1 changed this path to MERGE the cached paint with the server
+        // (to protect an edit made in the seconds before the fetch landed).
+        // But the cache held whatever the screen last showed — including a
+        // claim that had never reached the sheet — and its newer timestamp
+        // won the merge. So a phantom claim survived every reload, looked
+        // real to that dispatcher, was never sent (nothing pending), and the
+        // pill said "Synced". Reproduced: Justin's case exactly.
+        // Now: server data is the base; only edits made in THIS session, since
+        // the paint, ride on top. The view's week choice is kept.
+        const server = normalizeData(d);
         noteServerIds(d);
+        let merged;
+        if (needsFullSaveRef.current && dataRef.current) {
+          merged = mergeClientData(d, dataRef.current);        // a structural change was made against the cache paint
+        } else {
+          merged = applyPendingPatches(server, d, pendingPatchRef.current);
+        }
+        if (dataRef.current && dataRef.current.currentWeekId &&
+            server.weeks.some(w => w.id === dataRef.current.currentWeekId)) {
+          merged = { ...merged, currentWeekId: dataRef.current.currentWeekId };
+        }
         setData(merged);
-        saveCacheToLocal(merged);
         setReconnecting(false);
         if (!cached) restoreSession();
       })
@@ -3107,8 +3146,17 @@ function App() {
     if (!data || !session) return;
     const timer = setInterval(async () => {
       if (saveStatusRef.current === "saving") return;
+      // 2026-09-24: one poll in flight at a time, and a poll that comes back
+      // OLDER than something we've already seen is thrown away. Apps Script
+      // can take longer than the poll interval, so two polls overlapped and the
+      // slower one — carrying a copy from before our last write — could land
+      // just after that write's response and put the older copy back on screen
+      // for a second. Same family as the save-response race, one door left open.
+      if (pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
       try {
         const fresh  = await apiLoad();
+        if ((fresh.updatedAt || 0) < lastServerUpdatedAtRef.current) return;   // stale — a newer poll/response already landed
         // Reconcile at field level: take the server's newest copy of any load
         // we have uncommitted edits on, then lay our own changed fields back
         // over it. Otherwise our local stamp wins the whole load and we never
@@ -3122,6 +3170,8 @@ function App() {
         setReconnecting(false);
       } catch (e) {
         setReconnecting(true);
+      } finally {
+        pollInFlightRef.current = false;
       }
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
@@ -3129,9 +3179,10 @@ function App() {
 
   // ---- Cache last-known-good data to localStorage whenever it changes ----
   // So if Apps Script is unreachable next session, we can show this snapshot.
-  useEffect(() => {
-    if (data) saveCacheToLocal(data);
-  }, [data]);
+  // 2026-09-25: the cache now holds ONLY what the server has confirmed — see
+  // noteServerIds. Caching the screen state let a never-saved claim outlive
+  // every reload.
+
 
   // ---- Debounced save ----
   const saveTimerRef = useRef(null);
@@ -3163,6 +3214,12 @@ function App() {
   // Newest server `updatedAt` seen per load, from every poll and response. A
   // response carrying an OLDER copy than this is stale and must not be adopted.
   const serverStampRef       = useRef({});
+  const pollInFlightRef      = useRef(false);  // one poll at a time
+  // Newest top-level server updatedAt seen from any poll or write response.
+  // The server stamps this on every write, so anything older is a late arrival.
+  const lastServerUpdatedAtRef = useRef(0);
+  const inFlightSinceRef     = useRef(0);      // when the current write started
+  const [savingSince, setSavingSince] = useState(0);
   const schedulePersistRef   = useRef(() => {});
   const [compatMode, setCompatMode] = useState(false);
   // Which loads have changes that are NOT yet on the sheet, so a card can say so
@@ -3185,6 +3242,9 @@ function App() {
       (w.loads || []).forEach(l => { if (l && l.id) ids[l.id] = true; }));
     serverIdsRef.current = ids;
     noteServerStamps(serverData, serverStampRef.current);   // every payload teaches us what "newest" is
+    const top = (serverData && serverData.updatedAt) || 0;
+    if (top > lastServerUpdatedAtRef.current) lastServerUpdatedAtRef.current = top;
+    saveCacheToLocal(normalizeData(serverData));           // server-confirmed state only
   }, []);
 
   // Remove the field values we just wrote, leaving anything typed during the
@@ -3215,6 +3275,8 @@ function App() {
       // Anything edited while a write is out simply rides the next write.
       if (inFlightRef.current) { rerunRef.current = true; return; }
       inFlightRef.current = true;
+      inFlightSinceRef.current = Date.now();
+      setSavingSince(Date.now());
       const logs = pendingLogRef.current.splice(0);   // take and clear
       const sentPatches = JSON.parse(JSON.stringify(pendingPatchRef.current));
       const patchIds = Object.keys(sentPatches);
@@ -3372,6 +3434,8 @@ function App() {
         schedulePersistRef.current(next);
       } finally {
         inFlightRef.current = false;
+        inFlightSinceRef.current = 0;
+        setSavingSince(0);
         // Something was edited while this write was out — send it now.
         if (rerunRef.current) { rerunRef.current = false; schedulePersistRef.current(0); }
       }
@@ -3520,8 +3584,13 @@ function App() {
     const cur = dataRef.current;
     const curWeek = getCurrentWeek(cur);
     const isClosed = l => l.status === "Delivered" || l.status === "Canceled";
-    const carry = curWeek && curWeek.loads.some(l => !isClosed(l))
-      ? window.confirm("Carry forward any open (non-Delivered, non-Canceled) loads from the current week into the new week?")
+    const openCount = curWeek ? curWeek.loads.filter(l => !isClosed(l)).length : 0;
+    const carry = openCount > 0
+      ? window.confirm("Carry forward the " + openCount + " open load" + (openCount === 1 ? "" : "s") +
+                       " from \"" + curWeek.label + "\" into the new week?\n\n" +
+                       "They will leave \"" + curWeek.label + "\" and appear in \"" + label.trim() + "\".\n" +
+                       "(Undo later: ⋯ menu → Undo new week.)\n\n" +
+                       "OK = carry them forward.   Cancel = start the new week empty.")
       : false;
 
     let updatedWeeks = cur.weeks.slice();
@@ -3563,6 +3632,77 @@ function App() {
       weeks: [...updatedWeeks, newWeek],
       currentWeekId: newWeek.id,
       tombstones
+    });
+    setExpandedIds(new Set());
+  }, [mutate, session]);
+
+  // ---- 2026-09-24: Undo a new week ----
+  // "I started a new week by mistake and carried everything into it." Moves
+  // every load in the week being viewed back into the previous week and leaves
+  // this one empty. Admin only. Same rules as the undoRollover script:
+  //   • loads get fresh ids and the old ids are tombstoned — the only way a
+  //     move survives the union merge, so a tab that still shows them here
+  //     can't put them back;
+  //   • if the previous week still has a copy of the same load number (older
+  //     boards left ghosts), the NEWER copy wins.
+  const undoNewWeek = useCallback(() => {
+    const cur = dataRef.current;
+    const from = getCurrentWeek(cur);
+    if (!from) return;
+    const older = (cur.weeks || [])
+      .filter(w => w.id !== from.id && (w.createdAt || 0) < (from.createdAt || 0))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const to = older[0];
+    if (!to) { window.alert("There's no earlier week to move these loads back into."); return; }
+    const loads = from.loads || [];
+    if (!loads.length) { window.alert("\"" + from.label + "\" has no loads to move."); return; }
+
+    const norm = l => String((l && l.loadNum) || "").trim().toLowerCase();
+    const toLoads = (to.loads || []).slice();
+    let moved = 0, merged = 0;
+    loads.forEach(L => {
+      const n = norm(L);
+      const gi = n ? toLoads.findIndex(x => norm(x) === n) : -1;
+      if (gi >= 0) merged++; else moved++;
+    });
+    const ok = window.confirm(
+      "Move ALL " + loads.length + " load" + (loads.length === 1 ? "" : "s") + " from \"" + from.label + "\"\n" +
+      "back into \"" + to.label + "\"?\n\n" +
+      "• \"" + from.label + "\" will be left empty (the week itself stays).\n" +
+      "• Claims, statuses and drivers travel with the loads.\n" +
+      (merged ? "• " + merged + " load number" + (merged === 1 ? " is" : "s are") + " already in \"" + to.label + "\" — the newer copy is kept.\n" : "") +
+      "\nUse this to undo a \"Start new week\" that was done by mistake."
+    );
+    if (!ok) return;
+
+    const now = Date.now();
+    const tomb = {};
+    (cur.tombstones || []).forEach(t => { if (t && t.id) tomb[t.id] = t.at || 0; });
+    loads.forEach(L => {
+      const n = norm(L);
+      const gi = n ? toLoads.findIndex(x => norm(x) === n) : -1;
+      if (gi >= 0) {
+        const ghost = toLoads[gi];
+        const keep = (L.updatedAt || 0) >= (ghost.updatedAt || 0) ? L : ghost;
+        toLoads.splice(gi, 1, { ...keep, id: uid(), createdAt: ghost.createdAt || keep.createdAt || now, updatedAt: now });
+        tomb[ghost.id] = now; tomb[L.id] = now;
+      } else {
+        toLoads.push({ ...L, id: uid(), updatedAt: now });
+        tomb[L.id] = now;
+      }
+    });
+    Object.keys(pendingPatchRef.current).forEach(id => { if (tomb[id]) delete pendingPatchRef.current[id]; });
+    pendingLogRef.current.push({
+      at: now, by: (session && session.name) || "unknown", action: "undo-rollover",
+      ref: to.label, details: "moved " + loads.length + " loads back from \"" + from.label + "\""
+    });
+    mutateStructural({
+      ...cur,
+      weeks: cur.weeks.map(w =>
+        w.id === from.id ? { ...w, loads: [], updatedAt: now } :
+        w.id === to.id   ? { ...w, loads: toLoads, updatedAt: now } : w),
+      tombstones: Object.keys(tomb).map(id => ({ id, at: tomb[id] })),
+      currentWeekId: to.id
     });
     setExpandedIds(new Set());
   }, [mutate, session]);
@@ -3733,6 +3873,33 @@ function App() {
     return byKey;
   }, [data, search, today, tomorrow, buckets]);
 
+  // ---- 2026-09-25: write watchdog ----
+  // Belt and braces over the request deadlines: if a write has somehow been
+  // "in flight" for over a minute, release the lock and let the retry path
+  // take over, rather than freezing every later write on this tab.
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (inFlightRef.current && inFlightSinceRef.current && Date.now() - inFlightSinceRef.current > 60000) {
+        console.warn("Write watchdog: releasing a write stuck for >60s and retrying.");
+        inFlightRef.current = false;
+        inFlightSinceRef.current = 0;
+        setSavingSince(0);
+        retryAttemptsRef.current += 1;
+        syncUnsaved();
+        setSaveStatus(retryAttemptsRef.current >= 2 ? "error" : "retrying");
+        schedulePersistRef.current(1000);
+      }
+    }, 5000);
+    return () => clearInterval(t);
+  }, []);
+  // "Saving…" that drags on is worth saying out loud.
+  const [slowSave, setSlowSave] = useState(false);
+  useEffect(() => {
+    if (!savingSince) { setSlowSave(false); return; }
+    const t = setTimeout(() => setSlowSave(true), 10000);
+    return () => clearTimeout(t);
+  }, [savingSince]);
+
   // ---- 2026-09-23: self-updating build check ----
   // Re-fetch this page's own HTML (cache-busted) and compare BUILD. When a
   // newer build is live: show a banner, and reload automatically the moment
@@ -3858,6 +4025,7 @@ function App() {
         onImportFromFreight={importFromFreight}
         onSwitchWeek={switchWeek}
         onNewWeek={createNewWeek}
+        onUndoNewWeek={undoNewWeek}
         onEditWeek={editCurrentWeek}
         onArchiveWeek={archiveCurrentWeek}
         onDeleteWeek={deleteCurrentWeek}
@@ -3867,6 +4035,12 @@ function App() {
         storageSize={storageSize}
         online={online}
       />
+      {slowSave && saveStatus === "saving" && (
+        <div className="clb-compat">
+          ⏳ Saving is taking longer than usual — your last change is <strong>not on the board yet</strong>.
+          Keep this tab open; it will retry on its own.
+        </div>
+      )}
       {saveStatus === "error" && (
         <div className="clb-unsaved">
           <span className="clb-unsaved__dot"></span>
