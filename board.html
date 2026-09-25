@@ -1258,64 +1258,82 @@ const GB_DAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 // Each side is now an ARRAY of legs — a day can carry more than one delivery
 // and/or more than one pickup ("squeeze an extra load in"), not just one of
 // each. Every existing day still has at least one element on each side.
-const gbBlankDeliveredLeg=()=>({city:"",miles:"",gross:"",confirmed:false,entered:false,late:false,lateReason:""});
-const gbBlankPickedUpLeg=()=>({city:"",broker:"",loadNum:"",confirmed:false,entered:false,late:false,lateReason:""});
-const gbBlankDay=()=>({delivered:[gbBlankDeliveredLeg()],pickedUp:[gbBlankPickedUpLeg()],notes:"",off:false});
-const gbNormLeg=(leg,blank)=>({...blank(),...(leg||{})});
-// Reads any of three historical shapes and always returns arrays:
+// Matches how Zygimantas already runs his real weekly sheet: a plain list of
+// stop-lines per day — no fixed delivered/picked-up split, no separate late
+// flag or reason field. Status lives in a color (matching his own paper
+// convention: red=not driving, yellow=detention/layover, green=not
+// dispatched yet, cyan=truck not covered). "entered" is the ONE checkbox —
+// it means the load has been entered into the accounting/billing system,
+// not "delivered". Miles/gross are ONE number per day, not per stop.
+const GB_COLORS=["default","red","yellow","green","cyan"];
+const gbBlankStop=()=>({text:"",loadNum:"",entered:false,color:"default"});
+const gbBlankDay=()=>({stops:[gbBlankStop(),gbBlankStop()],miles:"",gross:"",localCharge:"",notes:""});
+const gbBlankDays=()=>{const o={};GB_DAYS.forEach(d=>o[d]=gbBlankDay());return o;};
+
+// Reads any of four historical shapes and always returns the current one:
 //   1. very old flat {pickup,delivery,miles,gross,notes}
-//   2. mid shape — delivered/pickedUp as a single object, not an array
-//   3. current shape — delivered/pickedUp already arrays of legs
-// Nothing already typed is lost migrating between any of these.
+//   2. mid shape — delivered/pickedUp as a single object (confirmed/entered)
+//   3. array-of-legs shape — delivered[]/pickedUp[] with confirmed/entered/late
+//   4. current shape — a flat stops[] list plus day-level miles/gross
+// Nothing already typed is lost migrating from any earlier shape into this one.
 function gbDayNorm(x){
   if(!x)return gbBlankDay();
+  if(Array.isArray(x.stops))return{
+    stops:x.stops.length?x.stops.map(st=>({...gbBlankStop(),...st})):[gbBlankStop(),gbBlankStop()],
+    miles:x.miles!=null?x.miles:"",gross:x.gross!=null?x.gross:"",
+    localCharge:x.localCharge!=null?x.localCharge:"",notes:x.notes||""
+  };
   if(!x.delivered&&!x.pickedUp)return{
     // A legitimate "0" (a logged repositioning move with no revenue) must
     // survive migration — ||"" would treat 0 the same as missing and blank it.
-    delivered:[{...gbBlankDeliveredLeg(),city:x.delivery||"",miles:x.miles!=null?x.miles:"",gross:x.gross!=null?x.gross:""}],
-    pickedUp:[{...gbBlankPickedUpLeg(),city:x.pickup||""}],
-    notes:x.notes||"",off:!!x.off
+    stops:[{...gbBlankStop(),text:x.delivery||""},{...gbBlankStop(),text:x.pickup||""}],
+    miles:x.miles!=null?x.miles:"",gross:x.gross!=null?x.gross:"",localCharge:"",notes:x.notes||""
   };
-  // Older saves may still carry a "deliversOn" field from a since-removed
-  // multi-day picker — spreading it through here is harmless (unused, never
-  // rendered or written again) rather than something to strip out.
-  let dArr=Array.isArray(x.delivered)?x.delivered:(x.delivered?[x.delivered]:[]);
-  let pArr=Array.isArray(x.pickedUp)?x.pickedUp:(x.pickedUp?[x.pickedUp]:[]);
-  if(!dArr.length)dArr=[{}];
-  if(!pArr.length)pArr=[{}];
+  // Mid shape and array-of-legs shape both land here. Every delivered/pickedUp
+  // leg becomes one stop-line; a leg's own confirmed+entered collapses to the
+  // new single "entered" flag (either one being true is enough to carry
+  // forward — there's no way to lose information by being generous here).
+  // Their miles/gross SUM into the new day-level totals.
+  const dArr=Array.isArray(x.delivered)?x.delivered:(x.delivered?[x.delivered]:[]);
+  const pArr=Array.isArray(x.pickedUp)?x.pickedUp:(x.pickedUp?[x.pickedUp]:[]);
+  const stops=[];
+  let m=0,g=0,anyM=false,anyG=false;
+  dArr.forEach(l=>{
+    if(!l)return;
+    stops.push({...gbBlankStop(),text:l.city||"",entered:!!(l.confirmed||l.entered)});
+    if(l.miles!=null&&l.miles!==""){m+=Number(l.miles)||0;anyM=true;}
+    if(l.gross!=null&&l.gross!==""){g+=Number(l.gross)||0;anyG=true;}
+  });
+  pArr.forEach(l=>{
+    if(!l)return;
+    stops.push({...gbBlankStop(),text:l.city||"",loadNum:l.loadNum||"",entered:!!(l.confirmed||l.entered)});
+  });
   return{
-    delivered:dArr.map(l=>gbNormLeg(l,gbBlankDeliveredLeg)),
-    pickedUp:pArr.map(l=>gbNormLeg(l,gbBlankPickedUpLeg)),
-    notes:x.notes||"",off:!!x.off
+    stops:stops.length?stops:[gbBlankStop(),gbBlankStop()],
+    miles:anyM?m:"",gross:anyG?g:"",localCharge:"",notes:x.notes||""
   };
 }
-const gbBlankDays=()=>{const o={};GB_DAYS.forEach(d=>o[d]=gbBlankDay());return o;};
 
-// A slot only counts as a real load once something's typed into it — every
-// day starts with one empty delivered/pickedUp slot, and those shouldn't
-// count toward "how much of this week is done."
-function gbLegHasContent(leg,isDeliv){
-  return isDeliv?!!(leg.city||leg.miles||leg.gross):!!(leg.city||leg.broker||leg.loadNum);
-}
-// Rolls up every driver/day/leg in a week into one status, so a week's tab
-// can show at a glance how much of it is wrapped up without opening it.
+// A stop only counts as a real load once something's typed into it — the
+// two blank starter lines every day begins with shouldn't count toward
+// "how much of this week is entered."
+function gbStopHasContent(st){return !!(st.text||st.loadNum);}
+// Rolls up every driver/day/stop in a week, so a week's tab can show at a
+// glance how much of it has been entered for billing without opening it.
 function gbWeekStatus(week){
   const drivers=week.generalBoardDrivers||[];
-  let total=0,done=0,late=0;
+  let total=0,done=0;
   drivers.forEach(d=>{
     GB_DAYS.forEach(day=>{
       const x=gbDayNorm(d.days?.[day]);
-      [[x.delivered,true],[x.pickedUp,false]].forEach(([legs,isDeliv])=>{
-        legs.forEach(leg=>{
-          if(!gbLegHasContent(leg,isDeliv))return;
-          total++;
-          if(leg.confirmed&&leg.entered)done++;
-          if(leg.late)late++;
-        });
+      x.stops.forEach(st=>{
+        if(!gbStopHasContent(st))return;
+        total++;
+        if(st.entered)done++;
       });
     });
   });
-  return{total,done,late};
+  return{total,done,late:0};
 }
 
 // Distinct gradient per driver so rows are told apart at a glance. Cycles by
@@ -3454,88 +3472,53 @@ function EmailRecipientModal({emails,group,onCancel,onSend}){
 // (multiple loads in one day), so this renders compact and stacks. Status
 // is a badge, never blur/opacity — the whole point is staying readable at
 // every state, since broker and load # need to be scannable even once done.
-function GBLegBox({kind,leg,canRemove,isViewer,off,rpmTxt,onField,onRemove}){
-  const isDeliv=kind==="delivered";
-  const confirmed=!!leg.confirmed,entered=!!leg.entered,late=!!leg.late;
-  const n=(confirmed?1:0)+(entered?1:0);
-  const locked=n===2; // both boxes checked — settled, lock the fields
-  // Fully done turns the WHOLE box a distinct solid green — not just the small
-  // badge — so a completed load is obvious scanning across a row, without
-  // having to stop and read anything. Delivered/picked-up only keep their
-  // separate pale green/blue coloring before that point, to tell them apart.
-  const bg=n===2?"#dcfce7":off?"#3b1020":(isDeliv?"#f0fdf4":"#eff6ff");
-  const border=n===2?"#4ade80":off?"#9d174d":(isDeliv?"#bbf7d0":"#bfdbfe");
-  const labelColor=n===2?"#166534":off?"#fda4af":(isDeliv?"#166534":"#1d4ed8");
-  const fieldSt={width:"100%",border:"1px solid "+(off?"#9d174d":"#cbd5e1"),background:off?"#3b1020":"#fff",
-    color:off?"#fda4af":"#0f1f3d",borderRadius:"5px",padding:"3px 4px",fontSize:"10px",fontFamily:"inherit",
-    lineHeight:"1.25",outline:"none",boxSizing:"border-box"};
+// ─── GENERAL BOARD STOP LINE ────────────────────────────────────────────
+// One line per load: a colored dot (click cycles the 5-state palette,
+// matching how Zygimantas already color-codes his own sheet), the city or
+// status text, and ONE checkbox — entered into the billing system, nothing
+// else. Load # is hidden until the line is clicked, to keep the resting
+// view as close to a plain spreadsheet row as possible.
+const GB_COLOR_HEX={default:"#fff",red:"#fecaca",yellow:"#fef3c7",green:"#bbf7d0",cyan:"#cffafe"};
+const GB_COLOR_TEXT={default:"#0f1f3d",red:"#991b1b",yellow:"#92400e",green:"#166534",cyan:"#155e75"};
+const GB_COLOR_TITLE={default:"Click to set a status color",red:"Not driving",yellow:"Detention / layover",green:"Not dispatched yet",cyan:"Truck not covered"};
+function GBStopLine({stop,canRemove,isViewer,onField,onCycleColor,onRemove}){
+  const[open,setOpen]=useState(false);
+  const bg=GB_COLOR_HEX[stop.color]||GB_COLOR_HEX.default;
+  const fg=GB_COLOR_TEXT[stop.color]||GB_COLOR_TEXT.default;
   return(
-    <div style={{background:bg,border:"1px solid "+border,borderRadius:"6px",padding:"4px",marginBottom:"3px"}}>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"4px",marginBottom:"2px"}}>
-        <div style={{display:"flex",alignItems:"center",gap:"3px",flexWrap:"wrap",minWidth:0}}>
-          <span style={{fontSize:"8px",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",color:labelColor}}>
-            {isDeliv?"Delivered":"Picked up"}
-          </span>
-          {n===2&&<span style={{fontSize:"8px",fontWeight:"800",color:"#166534",background:"#dcfce7",padding:"1px 5px",borderRadius:"999px"}}>Done</span>}
-          {n===1&&<span style={{fontSize:"8px",fontWeight:"800",color:"#92400e",background:"#fef3c7",padding:"1px 5px",borderRadius:"999px"}}>Partial</span>}
-          {late&&<span style={{fontSize:"8px",fontWeight:"800",color:"#991b1b",background:"#fee2e2",padding:"1px 5px",borderRadius:"999px"}}>Late</span>}
-        </div>
-        {canRemove&&!isViewer&&
-          <button onClick={onRemove} title="Remove this load" style={{background:"none",border:"none",color:"#94a3b8",fontSize:"11px",cursor:"pointer",padding:0,lineHeight:1,flexShrink:0}}>✕</button>}
-      </div>
-
-      <div style={{display:"flex",gap:"7px",marginBottom:"3px",flexWrap:"wrap"}}>
-        <label title={isDeliv?"Delivered":"Picked up"} style={{display:"flex",alignItems:"center",gap:"2px",cursor:isViewer?"default":"pointer"}}>
-          <input type="checkbox" checked={confirmed} disabled={isViewer} onChange={e=>onField("confirmed",e.target.checked)}
+    <div style={{background:bg,border:"1px solid "+(stop.color==="default"?"#e2e8f0":fg+"33"),borderRadius:"4px",padding:"2px 3px",marginBottom:"2px"}}>
+      <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
+        <button onClick={onCycleColor} disabled={isViewer} title={GB_COLOR_TITLE[stop.color]}
+          style={{width:"10px",height:"10px",borderRadius:"50%",flexShrink:0,padding:0,cursor:isViewer?"default":"pointer",
+                  background:stop.color==="default"?"#fff":fg,border:"1px solid "+(stop.color==="default"?"#cbd5e1":fg)}}/>
+        <input value={stop.text} disabled={isViewer} placeholder="City / status"
+          onChange={e=>onField("text",e.target.value)}
+          style={{flex:1,minWidth:0,background:"transparent",border:"none",color:fg,fontSize:"10px",fontWeight:"600",outline:"none",padding:"1px 0"}}/>
+        {!isViewer&&
+          <button onClick={()=>setOpen(o=>!o)} title={stop.loadNum?"Load #"+stop.loadNum:"Add a load #"}
+            style={{background:"none",border:"none",color:fg,opacity:stop.loadNum?.85:.4,fontSize:"9px",fontWeight:"700",cursor:"pointer",padding:0,flexShrink:0,whiteSpace:"nowrap"}}>
+            {stop.loadNum?"#"+stop.loadNum:"#"}
+          </button>}
+        <label title="Entered into the billing system" style={{display:"flex",alignItems:"center",flexShrink:0,cursor:isViewer?"default":"pointer"}}>
+          <input type="checkbox" checked={!!stop.entered} disabled={isViewer}
+            onChange={e=>onField("entered",e.target.checked)}
             style={{width:"11px",height:"11px",cursor:isViewer?"default":"pointer",accentColor:"#166534"}}/>
-          <span style={{fontSize:"8px",color:"#64748b"}}>Done</span>
         </label>
-        <label title="Entered into the system" style={{display:"flex",alignItems:"center",gap:"2px",cursor:isViewer?"default":"pointer"}}>
-          <input type="checkbox" checked={entered} disabled={isViewer} onChange={e=>onField("entered",e.target.checked)}
-            style={{width:"11px",height:"11px",cursor:isViewer?"default":"pointer",accentColor:"#7c3aed"}}/>
-          <span style={{fontSize:"8px",color:"#64748b"}}>Entered</span>
-        </label>
-        <label title="Running late" style={{display:"flex",alignItems:"center",gap:"2px",cursor:isViewer?"default":"pointer"}}>
-          <input type="checkbox" checked={late} disabled={isViewer} onChange={e=>onField("late",e.target.checked)}
-            style={{width:"11px",height:"11px",cursor:isViewer?"default":"pointer",accentColor:"#dc2626"}}/>
-          <span style={{fontSize:"8px",color:"#64748b"}}>Late</span>
-        </label>
+        {canRemove&&!isViewer&&
+          <button onClick={onRemove} title="Remove this line" style={{background:"none",border:"none",color:fg,opacity:.5,fontSize:"10px",cursor:"pointer",padding:0,flexShrink:0}}>✕</button>}
       </div>
-
-      {late&&(
-        <input value={leg.lateReason||""} disabled={isViewer} placeholder="Reason for delay"
-          onChange={e=>onField("lateReason",e.target.value)}
-          style={{...fieldSt,border:"1px solid #fecaca",color:"#991b1b",marginBottom:"3px"}}/>
-      )}
-
-      {isDeliv?(
-        <>
-          <textarea value={leg.city} disabled={isViewer||locked} placeholder="City, ST"
-            onChange={e=>onField("city",e.target.value)}
-            style={{...fieldSt,resize:"none",height:"24px",overflow:"auto",marginBottom:"3px"}}/>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px"}}>
-            <input type="number" min="0" value={leg.miles} disabled={isViewer||locked} placeholder="Mi"
-              onChange={e=>onField("miles",e.target.value)} style={fieldSt}/>
-            <input type="number" min="0" value={leg.gross} disabled={isViewer||locked} placeholder="$"
-              onChange={e=>onField("gross",e.target.value)} style={{...fieldSt,color:off?"#fda4af":"#059669",fontWeight:"700"}}/>
-          </div>
-          {rpmTxt&&<div style={{fontSize:"9px",color:"#b45309",fontWeight:"700",textAlign:"right",marginTop:"2px"}}>{rpmTxt}</div>}
-        </>
-      ):(
-        <>
-          <input value={leg.city} disabled={isViewer||locked} placeholder="City, ST"
-            onChange={e=>onField("city",e.target.value)} style={{...fieldSt,marginBottom:"3px"}}/>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px"}}>
-            <input value={leg.broker} disabled={isViewer||locked} placeholder="Broker"
-              onChange={e=>onField("broker",e.target.value)} style={fieldSt}/>
-            <input value={leg.loadNum} disabled={isViewer||locked} placeholder="Load #"
-              onChange={e=>onField("loadNum",e.target.value)} style={fieldSt}/>
-          </div>
-        </>
+      {open&&!isViewer&&(
+        <div style={{display:"flex",gap:"4px",marginTop:"2px",paddingLeft:"14px"}}>
+          <input value={stop.loadNum} placeholder="Load #" autoFocus
+            onChange={e=>onField("loadNum",e.target.value)}
+            style={{flex:1,background:"rgba(255,255,255,.6)",border:"1px solid "+fg+"55",borderRadius:"3px",color:fg,fontSize:"9px",padding:"1px 4px",outline:"none"}}/>
+        </div>
       )}
     </div>
   );
 }
+
+
 
 function App(){
   // A claim link short-circuits the whole board: no sign-in, no board data,
@@ -3642,6 +3625,8 @@ function App(){
   const[distOverrides,setDistOverrides]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_distoverrides")||"{}");}catch(e){return{};}});
   const[emailPick,setEmailPick]=useState(null); // {group, emails} while the picker is open
   const[xdockPrompt,setXdockPrompt]=useState(null); // {gid, lid} while asking for the crossdock city
+  // Which day-cell notes are expanded, keyed "driverId|day" — a view toggle only, never saved.
+  const[gbNoteOpen,setGbNoteOpen]=useState({});
 
   // Builds the payload and posts it. Recipients come from the picker, so the
   // same routine serves "everyone" and "just these two".
@@ -4088,7 +4073,9 @@ function App(){
               finalArch=Object.values(byId);
             }
             setArchivedWeeks(finalArch);
-            try{localStorage.setItem("fcbv2_archive",JSON.stringify(finalArch));}catch(ex){}
+            // Keep the FULL list in memory (so the Archive tab shows everything
+            // Sheets has) but cache only the most recent slice locally.
+            try{localStorage.setItem("fcbv2_archive",JSON.stringify(finalArch.slice(0,GB_ARCHIVE_LOCAL_CAP)));}catch(ex){}
           })();
           if(data.customDrivers)setCustomDrivers(data.customDrivers); if(Array.isArray(data.terminatedDrivers))setTerminatedDrivers(data.terminatedDrivers);
           // Dispatcher emails: Sheets is the source of truth once it has data.
@@ -4572,8 +4559,16 @@ function App(){
   // archiveWeek updates React state on both sides of the write, so a
   // QuotaExceededError mid-handler left the board internally inconsistent and
   // silently lost the archived week on reload.
+  // Archiving a week used to write the FULL archive to localStorage every
+  // time — so archiving didn't free any browser storage, it just relocated
+  // the bytes from the active-weeks cache to this one, which then grew
+  // forever with no cap. Sheets already keeps the complete, authoritative
+  // archive (sheetsSave below is unchanged and still sends all of it) — the
+  // local copy only exists for fast offline reload, so it only needs the
+  // handful of weeks someone would actually reopen soon.
+  const GB_ARCHIVE_LOCAL_CAP=6;
   const writeArchive=useCallback((arch)=>{
-    try{localStorage.setItem("fcbv2_archive",JSON.stringify(arch));setStorageFull(false);return true;}
+    try{localStorage.setItem("fcbv2_archive",JSON.stringify(arch.slice(0,GB_ARCHIVE_LOCAL_CAP)));setStorageFull(false);return true;}
     catch(e){
       console.warn("Archive could not be written — this browser's storage is full.",e);
       setStorageFull(true);
@@ -5565,10 +5560,8 @@ function App(){
   const gbAddDriver=()=>setGBDrivers([...gbDrivers,mkGBDriver({},gbDrivers.length)]);
   const gbRemoveDriver=(id)=>{if(!confirm("Remove this driver from the General Board?"))return;setGBDrivers(gbDrivers.filter(d=>d.id!==id));};
   const gbSetDriverField=(id,f,v)=>setGBDrivers(gbDrivers.map(d=>d.id!==id?d:{...d,[f]:v}));
-  // path is "delivered.<idx>.city" / "...miles" / "...gross" / "...confirmed" /
-  // "...entered" / "...late" / "...lateReason", the same shapes under "pickedUp.<idx>.",
-  // or the flat "notes" (day-level, not per-leg).
-  const gbOffText=(x)=>[...x.delivered,...x.pickedUp].map(l=>l.city||"").join(" ");
+  // path is "stops.<idx>.text" / "...loadNum" / "...entered" / "...color",
+  // or the flat "miles" / "gross" / "notes" (one value per day, not per stop).
   const gbSetDayField=(id,day,path,v)=>setGBDrivers(gbDrivers.map(d=>{
     if(d.id!==id)return d;
     const cur=gbDayNorm(d.days?.[day]);
@@ -5576,37 +5569,45 @@ function App(){
     const parts=path.split(".");
     if(parts.length===3){
       const[section,idxStr,f]=parts, idx=+idxStr;
-      next={...cur,[section]:cur[section].map((leg,i)=>i!==idx?leg:{...leg,[f]:v})};
+      next={...cur,[section]:cur[section].map((st,i)=>i!==idx?st:{...st,[f]:v})};
     }else{
       next={...cur,[parts[0]]:v};
     }
-    // A day is "off" if ANY leg's city says so — an off day has no real
-    // pickup or delivery, so whichever field the driver typed OFF into works.
-    next.off=/off|vacation/i.test(gbOffText(next));
     return{...d,days:{...d.days,[day]:next}};
   }));
-  // Appends a blank leg to one side of one day — "+ Add delivery" / "+ Add pickup".
-  const gbAddLeg=(id,day,section)=>setGBDrivers(gbDrivers.map(d=>{
+  // Appends a blank stop-line to a day — "+ Add load".
+  const gbAddStop=(id,day)=>setGBDrivers(gbDrivers.map(d=>{
     if(d.id!==id)return d;
     const cur=gbDayNorm(d.days?.[day]);
-    const blank=section==="delivered"?gbBlankDeliveredLeg():gbBlankPickedUpLeg();
-    return{...d,days:{...d.days,[day]:{...cur,[section]:[...cur[section],blank]}}};
+    return{...d,days:{...d.days,[day]:{...cur,stops:[...cur.stops,gbBlankStop()]}}};
   }));
-  // Removes one leg. Always leaves at least one slot per side, same as every
-  // day starts with — there's no such thing as a day with zero delivery slots.
-  const gbRemoveLeg=(id,day,section,idx)=>setGBDrivers(gbDrivers.map(d=>{
+  // Removes one stop-line. Always leaves at least one, same as every day
+  // starts with — there's no such thing as a day with zero lines.
+  const gbRemoveStop=(id,day,idx)=>setGBDrivers(gbDrivers.map(d=>{
     if(d.id!==id)return d;
     const cur=gbDayNorm(d.days?.[day]);
-    if(cur[section].length<=1)return d;
-    const next={...cur,[section]:cur[section].filter((_,i)=>i!==idx)};
-    next.off=/off|vacation/i.test(gbOffText(next));
-    return{...d,days:{...d.days,[day]:next}};
+    if(cur.stops.length<=1)return d;
+    return{...d,days:{...d.days,[day]:{...cur,stops:cur.stops.filter((_,i)=>i!==idx)}}};
   }));
+  // Cycles a stop's color through the fixed 5-state palette on each click —
+  // matches picking a background color in a spreadsheet, just one click
+  // instead of a menu.
+  const gbCycleColor=(id,day,idx)=>setGBDrivers(gbDrivers.map(d=>{
+    if(d.id!==id)return d;
+    const cur=gbDayNorm(d.days?.[day]);
+    const st=cur.stops[idx]; if(!st)return d;
+    const next=GB_COLORS[(GB_COLORS.indexOf(st.color)+1)%GB_COLORS.length];
+    return{...d,days:{...d.days,[day]:{...cur,stops:cur.stops.map((s,i)=>i!==idx?s:{...s,color:next})}}};
+  }));
+  // Net of any local charge — when the OTR driver drops at the yard and a
+  // local driver finishes the delivery, that local leg's cost comes out of
+  // this day's gross before it counts toward totals or rate per mile.
+  const gbNetGross=(x)=>(Number(x.gross)||0)-(Number(x.localCharge)||0);
   const gbDriverTotals=(d)=>{
     let m=0,g=0;
     GB_DAYS.forEach(day=>{
       const x=gbDayNorm(d.days?.[day]);
-      x.delivered.forEach(leg=>{m+=Number(leg.miles)||0; g+=Number(leg.gross)||0;});
+      m+=Number(x.miles)||0; g+=gbNetGross(x);
     });
     return{m,g,r:m>0?(g/m).toFixed(2):"—"};
   };
@@ -5616,7 +5617,7 @@ function App(){
     return{drivers:gbDrivers.length,m,g,r:m>0?"$"+(g/m).toFixed(2):"—"};
   })();
   const gbExportJSON=()=>{
-    const payload={version:6,weekLabel:week.label,dispatcher:"Zygis",dispatchColor:"blue",
+    const payload={version:8,weekLabel:week.label,dispatcher:"Zygis",dispatchColor:"blue",
       drivers:gbDrivers.map(d=>{
         const t=gbDriverTotals(d);
         const days={};GB_DAYS.forEach(day=>{days[day]=gbDayNorm(d.days?.[day]);});
@@ -5628,28 +5629,19 @@ function App(){
     URL.revokeObjectURL(a.href);
   };
   const gbExportCSV=()=>{
-    const rows=[["week","driverName","phone","homeBase","truck","trailer","day","leg",
-                 "deliveredCity","miles","gross","rpm","deliveredConfirmed","deliveredEntered","deliveredLate","deliveredLateReason",
-                 "pickedUpCity","broker","loadNum","pickedUpConfirmed","pickedUpEntered","pickedUpLate","pickedUpLateReason","notes"]];
+    const rows=[["week","driverName","phone","homeBase","truck","trailer","day","line",
+                 "text","loadNum","enteredForBilling","color","dayMiles","dayGross","localCharge","netGross","dayRpm","notes"]];
     gbDrivers.forEach(d=>{
       GB_DAYS.forEach(day=>{
         const x=gbDayNorm(d.days?.[day]);
-        // Pair delivered/pickedUp by index up to whichever side has more legs
-        // that day — leaves the shorter side blank on the extra rows rather
-        // than forcing them to match up.
-        const maxLegs=Math.max(x.delivered.length,x.pickedUp.length);
-        for(let i=0;i<maxLegs;i++){
-          const dl=x.delivered[i],pu=x.pickedUp[i];
-          const hasContent=(dl&&(dl.city||dl.miles||dl.gross))||(pu&&(pu.city||pu.broker||pu.loadNum))||(i===0&&x.notes);
-          if(!hasContent)continue;
-          const m=dl?Number(dl.miles)||0:0,g=dl?Number(dl.gross)||0:0;
+        const m=Number(x.miles)||0,net=gbNetGross(x),rpm=m>0?(net/m).toFixed(2):"";
+        x.stops.forEach((st,i)=>{
+          if(!gbStopHasContent(st)&&!(i===0&&(x.miles||x.gross||x.notes)))return;
           rows.push([week.label,d.name,d.phone,d.home,d.truck,d.trailer,day,i+1,
-            dl?dl.city||"":"",dl?dl.miles||"":"",dl?dl.gross||"":"",m>0?(g/m).toFixed(2):"",
-            dl&&dl.confirmed?"Y":"N",dl&&dl.entered?"Y":"N",dl&&dl.late?"Y":"N",dl?dl.lateReason||"":"",
-            pu?pu.city||"":"",pu?pu.broker||"":"",pu?pu.loadNum||"":"",
-            pu&&pu.confirmed?"Y":"N",pu&&pu.entered?"Y":"N",pu&&pu.late?"Y":"N",pu?pu.lateReason||"":"",
-            i===0?(x.notes||""):""]);
-        }
+            st.text||"",st.loadNum||"",st.entered?"Y":"N",st.color||"default",
+            i===0?(x.miles||""):"",i===0?(x.gross||""):"",i===0?(x.localCharge||""):"",
+            i===0?net:"",i===0?rpm:"",i===0?(x.notes||""):""]);
+        });
       });
     });
     const csv=rows.map(r=>r.map(v=>{v=String(v??"");return /[",\n]/.test(v)?`"${v.replace(/"/g,'""')}"`:v;}).join(",")).join("\n");
@@ -9969,7 +9961,7 @@ ${accRows.length>0?`
             const active=i===activeWeek;
             return(
               <button key={w.id} onClick={()=>setActiveWeek(i)}
-                title={st.total?`${st.done} of ${st.total} loads done`+(st.late?`, ${st.late} late`:""):"No loads logged yet"}
+                title={st.total?`${st.done} of ${st.total} loads entered for billing`:"No loads logged yet"}
                 style={{padding:"6px 13px",borderRadius:"999px",border:"1px solid "+(active?"#2563eb":"#e2e8f0"),
                         background:active?"#2563eb":"#fff",color:active?"#fff":"#64748b",
                         fontSize:"12px",fontWeight:"700",cursor:"pointer",outline:"none",
@@ -9977,7 +9969,6 @@ ${accRows.length>0?`
                 <span style={{width:"7px",height:"7px",borderRadius:"50%",background:dot,flexShrink:0,
                               border:active?"1px solid rgba(255,255,255,.6)":"none"}}/>
                 {w.label}
-                {st.late>0&&<span style={{fontSize:"10px",color:active?"#fecaca":"#dc2626",fontWeight:"800"}}>⚠</span>}
               </button>
             );
           })}
@@ -10071,52 +10062,72 @@ ${accRows.length>0?`
                     </td>
                     {GB_DAYS.map(day=>{
                       const x=gbDayNorm(d.days?.[day]);
-                      const off=!!x.off;
                       const hasNote=!!(x.notes&&String(x.notes).trim());
-                      const inSt={width:"100%",border:"1px solid "+(off?"#9d174d":"#cbd5e1"),background:off?"#3b1020":"#fff",color:off?"#fda4af":"#0f1f3d",borderRadius:"5px",padding:"3px 4px",fontSize:"10px",fontFamily:"inherit",lineHeight:"1.25",outline:"none",boxSizing:"border-box"};
-                      const lblSt={display:"block",fontSize:"8px",fontWeight:"700",textTransform:"uppercase",letterSpacing:".04em",marginBottom:"1px"};
+                      const mi_=Number(x.miles)||0,gr_=Number(x.gross)||0;
+                      const lc_=Number(x.localCharge)||0;
+                      const hasLC=x.localCharge!==""&&x.localCharge!=null;
+                      const net_=gr_-lc_;
+                      const rpmTxt=mi_>0?("$"+(net_/mi_).toFixed(2)):null;
+                      const inSt={width:"100%",border:"1px solid #cbd5e1",background:"#fff",color:"#0f1f3d",borderRadius:"5px",padding:"3px 4px",fontSize:"10px",fontFamily:"inherit",lineHeight:"1.25",outline:"none",boxSizing:"border-box"};
                       return(
-                        <td key={day} style={{padding:"4px",border:"1px solid #e2e8f0",verticalAlign:"top",background:off?"#fef2f2":"#fff"}}>
-                          <div style={{display:"grid",gap:"4px"}}>
+                        <td key={day} style={{padding:"4px",border:"1px solid #e2e8f0",verticalAlign:"top",background:"#fff"}}>
+                          <div style={{display:"grid",gap:"3px"}}>
 
-                            {/* DELIVERED legs — a day can hold more than one delivery. Status is
-                                a badge (never blur), so broker/load#/rate stay readable at every
-                                state — the whole reason for the checkboxes is to look back later. */}
-                            {x.delivered.map((leg,idx)=>{
-                              const mi_=Number(leg.miles)||0,gr_=Number(leg.gross)||0;
-                              const rpmTxt=mi_>0?("$"+(gr_/mi_).toFixed(2)):null;
-                              return(
-                                <GBLegBox key={"d"+idx} kind="delivered" leg={leg} canRemove={idx>0} isViewer={isViewer} off={off} rpmTxt={rpmTxt}
-                                  onField={(f,v)=>gbSetDayField(d.id,day,`delivered.${idx}.${f}`,v)}
-                                  onRemove={()=>gbRemoveLeg(d.id,day,"delivered",idx)}/>
-                              );
-                            })}
-                            {!isViewer&&
-                              <button onClick={()=>gbAddLeg(d.id,day,"delivered")}
-                                style={{width:"100%",fontSize:"9px",fontWeight:"700",color:"#166534",background:"none",border:"1px dashed #bbf7d0",borderRadius:"5px",padding:"3px",cursor:"pointer",marginBottom:"2px"}}>
-                                + Add delivery
-                              </button>}
-
-                            {/* PICKED UP legs — same pattern, for multiple pickups in one day. */}
-                            {x.pickedUp.map((leg,idx)=>(
-                              <GBLegBox key={"p"+idx} kind="pickedUp" leg={leg} canRemove={idx>0} isViewer={isViewer} off={off}
-                                onField={(f,v)=>gbSetDayField(d.id,day,`pickedUp.${idx}.${f}`,v)}
-                                onRemove={()=>gbRemoveLeg(d.id,day,"pickedUp",idx)}/>
+                            {/* One plain line per load — a colored dot for status, the city/status
+                                text, and one checkbox for "entered into the billing system". Click
+                                a line to reveal its load #, otherwise it's hidden. */}
+                            {x.stops.map((stop,idx)=>(
+                              <GBStopLine key={idx} stop={stop} canRemove={idx>1} isViewer={isViewer}
+                                onField={(f,v)=>gbSetDayField(d.id,day,`stops.${idx}.${f}`,v)}
+                                onCycleColor={()=>gbCycleColor(d.id,day,idx)}
+                                onRemove={()=>gbRemoveStop(d.id,day,idx)}/>
                             ))}
                             {!isViewer&&
-                              <button onClick={()=>gbAddLeg(d.id,day,"pickedUp")}
-                                style={{width:"100%",fontSize:"9px",fontWeight:"700",color:"#1d4ed8",background:"none",border:"1px dashed #bfdbfe",borderRadius:"5px",padding:"3px",cursor:"pointer",marginBottom:"2px"}}>
-                                + Add pickup
+                              <button onClick={()=>gbAddStop(d.id,day)}
+                                style={{width:"100%",fontSize:"9px",fontWeight:"700",color:"#64748b",background:"none",border:"1px dashed #cbd5e1",borderRadius:"5px",padding:"2px",cursor:"pointer",marginBottom:"2px"}}>
+                                + Add load
                               </button>}
 
-                            <div><label style={{...lblSt,color:"#94a3b8"}}>Notes</label>
-                              <textarea value={x.notes} disabled={isViewer} onChange={e=>gbSetDayField(d.id,day,"notes",e.target.value)}
-                                placeholder="Add note…"
-                                style={{...inSt,resize:"none",height:"22px",overflow:"auto",
-                                        borderStyle:hasNote?"solid":"dashed",
-                                        borderColor:hasNote?"#a78bfa":(off?"#9d174d":"#cbd5e1"),
-                                        background:hasNote?"#1e1b4b":inSt.background,
-                                        color:hasNote?"#e9d5ff":inSt.color}}/></div>
+                            {/* One Miles + one Gross for the whole day, how many stops it took. */}
+                            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px"}}>
+                              <input type="number" min="0" value={x.miles} disabled={isViewer} placeholder="Mi"
+                                onChange={e=>gbSetDayField(d.id,day,"miles",e.target.value)} style={inSt}/>
+                              <input type="number" min="0" value={x.gross} disabled={isViewer} placeholder="$"
+                                onChange={e=>gbSetDayField(d.id,day,"gross",e.target.value)} style={{...inSt,color:"#059669",fontWeight:"700"}}/>
+                            </div>
+                            {/* Local charge — the OTR driver dropped this load at the yard and a
+                                local driver finished the delivery, so the local leg's cost comes
+                                out of the day's gross. Checkbox reveals the amount; unchecking
+                                clears it and removes the deduction entirely. */}
+                            <label style={{display:"flex",alignItems:"center",gap:"3px",cursor:isViewer?"default":"pointer"}}>
+                              <input type="checkbox" checked={hasLC} disabled={isViewer}
+                                onChange={e=>gbSetDayField(d.id,day,"localCharge",e.target.checked?"0":"")}
+                                style={{width:"10px",height:"10px",cursor:isViewer?"default":"pointer",accentColor:"#b45309"}}/>
+                              <span style={{fontSize:"8px",fontWeight:"700",color:"#94a3b8"}}>Local charge</span>
+                            </label>
+                            {hasLC&&(
+                              <input type="number" min="0" value={x.localCharge} disabled={isViewer} placeholder="Local $ deducted"
+                                onChange={e=>gbSetDayField(d.id,day,"localCharge",e.target.value)}
+                                style={{...inSt,color:"#b45309",fontWeight:"700"}}/>
+                            )}
+                            {hasLC&&<div style={{fontSize:"9px",color:"#64748b",textAlign:"right"}}>Net: <strong style={{color:net_>=0?"#166534":"#991b1b"}}>${net_.toLocaleString()}</strong></div>}
+                            {rpmTxt&&<div style={{fontSize:"9px",color:"#b45309",fontWeight:"700",textAlign:"right"}}>{rpmTxt}</div>}
+
+                            {/* Notes — a small icon, not a permanent box. Filled when a note
+                                exists so you know at a glance without opening it. */}
+                            <div>
+                              <button onClick={()=>setGbNoteOpen(p=>({...p,[d.id+"|"+day]:!p[d.id+"|"+day]}))}
+                                title={hasNote?x.notes:"Add a note"}
+                                style={{display:"flex",alignItems:"center",gap:"3px",background:"none",border:"none",padding:"1px 0",cursor:"pointer",color:hasNote?"#7c3aed":"#cbd5e1"}}>
+                                <span style={{fontSize:"11px"}}>✎</span>
+                                <span style={{fontSize:"8px",fontWeight:"700"}}>{hasNote?"Note":""}</span>
+                              </button>
+                              {gbNoteOpen[d.id+"|"+day]&&(
+                                <textarea value={x.notes} disabled={isViewer} onChange={e=>gbSetDayField(d.id,day,"notes",e.target.value)}
+                                  placeholder="Add note…" autoFocus
+                                  style={{...inSt,resize:"none",height:"32px",overflow:"auto",borderColor:"#a78bfa"}}/>
+                              )}
+                            </div>
                           </div>
                         </td>
                       );
