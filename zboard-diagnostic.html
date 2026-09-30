@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>Z Board — connection diagnostic</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:#0f1f3d;color:#e2e8f0;padding:16px;padding-top:calc(16px + env(safe-area-inset-top));
+  padding-bottom:calc(32px + env(safe-area-inset-bottom));font-size:14px;line-height:1.5}
+h1{font-size:18px;font-weight:900;margin-bottom:4px}
+.sub{font-size:11.5px;color:rgba(255,255,255,.45);margin-bottom:18px}
+label{display:block;font-size:10px;font-weight:800;text-transform:uppercase;
+  letter-spacing:.06em;color:rgba(255,255,255,.5);margin-bottom:6px}
+input{width:100%;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.16);
+  border-radius:10px;padding:12px;color:#fff;font-size:16px;font-family:inherit;outline:none;margin-bottom:12px}
+input:focus{border-color:#2563eb}
+button{width:100%;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:800;
+  background:#2563eb;color:#fff;font-family:inherit;cursor:pointer;margin-bottom:8px}
+button:disabled{background:#475569}
+button.alt{background:rgba(255,255,255,.1)}
+.row{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);
+  border-radius:11px;padding:11px 12px;margin-bottom:9px}
+.row h2{font-size:12.5px;font-weight:800;margin-bottom:3px;display:flex;align-items:center;gap:7px}
+.tag{font-size:9.5px;font-weight:800;padding:2px 7px;border-radius:99px;flex-shrink:0}
+.ok{background:#14532d;color:#86efac}
+.bad{background:#7f1d1d;color:#fca5a5}
+.hang{background:#78350f;color:#fcd34d}
+.wait{background:#334155;color:#cbd5e1}
+.why{font-size:11px;color:rgba(255,255,255,.55);margin-bottom:6px}
+pre{background:rgba(0,0,0,.35);border-radius:7px;padding:8px 9px;font-size:10.5px;
+  white-space:pre-wrap;word-break:break-all;color:#cbd5e1;max-height:150px;overflow:auto}
+.note{background:rgba(37,99,235,.14);border:1px solid rgba(37,99,235,.4);border-radius:10px;
+  padding:11px 12px;font-size:11.5px;margin-bottom:14px;color:#bfdbfe}
+.verdict{border-radius:11px;padding:12px;margin:14px 0;font-size:12.5px;font-weight:700;display:none}
+.verdict.on{display:block}
+</style>
+</head>
+<body>
+
+<h1>Z Board — connection diagnostic</h1>
+<div class="sub">Runs the same requests the app makes, with an 8-second timeout so a hang shows as a hang.</div>
+
+<div class="note">
+Your PIN is typed here and sent the same way the app sends it. It is <b>not</b> put in the address bar,
+so it does not land in browser history. It is never stored. Close this tab when you are done.
+</div>
+
+<label for="url">Apps Script /exec URL</label>
+<input id="url" type="url" autocapitalize="off" autocorrect="off" spellcheck="false"
+  value="https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec"/>
+
+<label for="pin">PIN</label>
+<input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="••••"/>
+
+<button id="go">Run all checks</button>
+<button id="copy" class="alt">Copy results</button>
+
+<div class="verdict" id="verdict"></div>
+<div id="out"></div>
+
+<script>
+"use strict";
+var TIMEOUT = 8000;
+var results = [];
+
+function el(id){ return document.getElementById(id); }
+
+function card(title, why){
+  var d = document.createElement("div");
+  d.className = "row";
+  d.innerHTML = '<h2><span class="t"></span><span class="tag wait">running</span></h2>' +
+                '<div class="why"></div><pre></pre>';
+  d.querySelector(".t").textContent = title;
+  d.querySelector(".why").textContent = why;
+  el("out").appendChild(d);
+  return d;
+}
+function finish(d, state, label, body){
+  var tag = d.querySelector(".tag");
+  tag.className = "tag " + state;
+  tag.textContent = label;
+  d.querySelector("pre").textContent = body;
+}
+
+/* fetch with a hard timeout — the app has none, which is why a hang there
+   looks like silence instead of an error */
+function timed(url, opts){
+  var ctl = new AbortController();
+  var t = setTimeout(function(){ ctl.abort(); }, TIMEOUT);
+  var started = Date.now();
+  opts = opts || {};
+  opts.signal = ctl.signal;
+  opts.redirect = "follow";
+  return fetch(url, opts).then(function(r){
+    clearTimeout(t);
+    return r.text().then(function(txt){
+      return { ok:true, status:r.status, type:r.type, ms:Date.now()-started, body:txt };
+    });
+  }).catch(function(e){
+    clearTimeout(t);
+    var hung = (e && e.name === "AbortError");
+    return { ok:false, hung:hung, ms:Date.now()-started,
+             err:(e && (e.name+": "+e.message)) || String(e) };
+  });
+}
+
+function record(name, res){
+  results.push(name + " -> " + (res.ok ? ("HTTP "+res.status+" ("+res.ms+"ms) "+String(res.body).slice(0,200))
+                                       : (res.hung ? "HUNG (no response in "+TIMEOUT+"ms)" : "FAILED "+res.err)));
+}
+
+function show(d, res, okWhen){
+  record(d.querySelector(".t").textContent, res);
+  if(res.hung){
+    finish(d, "hang", "HUNG", "No response within " + TIMEOUT + "ms. The request never settled — this is the "
+      + "state the app gets stuck in, because it has no timeout of its own.");
+    return "hang";
+  }
+  if(!res.ok){
+    finish(d, "bad", "FAILED", res.err + "\n\nA network-level failure. On a cross-origin request this is "
+      + "usually CORS: the browser blocked it before your server ever saw it.");
+    return "fail";
+  }
+  var body = String(res.body);
+  var state = okWhen(body, res) ? "ok" : "bad";
+  finish(d, state, "HTTP " + res.status + " · " + res.ms + "ms", body.slice(0, 900));
+  return state === "ok" ? "ok" : "fail";
+}
+
+function looksLikeBoard(b){
+  try { var j = JSON.parse(b); return !!(Array.isArray(j) || (j && Array.isArray(j.weeks))); }
+  catch(e){ return false; }
+}
+
+el("go").onclick = function(){
+  var base = el("url").value.trim().replace(/\?.*$/, "");
+  var pin  = el("pin").value.trim();
+  if(!base){ alert("Enter the /exec URL"); return; }
+  if(!pin){ alert("Enter your PIN"); return; }
+  el("go").disabled = true; el("go").textContent = "Running…";
+  el("out").innerHTML = ""; el("verdict").className = "verdict"; results = [];
+
+  var env = card("0 · This browser", "Storage, connection and service-worker state.");
+  var ls = "unavailable";
+  try { localStorage.setItem("__zbt","1"); localStorage.removeItem("__zbt"); ls = "works"; }
+  catch(e){ ls = "THROWS: " + e.name; }
+  var swTxt = ("serviceWorker" in navigator) ? "supported" : "not supported";
+  finish(env, ls === "works" ? "ok" : "bad", ls === "works" ? "ok" : "storage problem",
+    "localStorage: " + ls +
+    "\nnavigator.onLine: " + navigator.onLine +
+    "\nservice worker: " + swTxt +
+    "\nstandalone (home screen): " + (window.navigator.standalone === true ||
+        (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches)) +
+    "\norigin: " + location.origin +
+    "\nUA: " + navigator.userAgent);
+  results.push("env -> localStorage " + ls + ", onLine " + navigator.onLine);
+
+  var tok = "";
+
+  var c1 = card("1 · Login", "Same call the app makes to get a token. This one already works for you.");
+  timed(base + "?action=login&pin=" + encodeURIComponent(pin))
+  .then(function(r){
+    show(c1, r, function(b){
+      try { var j = JSON.parse(b); if(j && j.ok && j.token){ tok = j.token; return true; } } catch(e){}
+      return false;
+    });
+    if(tok){
+      var t = c1.querySelector("pre");
+      t.textContent = "token role prefix: " + String(tok).split(".")[0] +
+        "\ntoken length: " + tok.length + " chars\n\n(full token hidden)";
+    }
+
+    var c2 = card("2 · Board as viewer, no header",
+      "What the app asks for: role=viewer with the token in the query string.");
+    return timed(base + "?role=viewer&tok=" + encodeURIComponent(tok)).then(function(r2){
+      var s2 = show(c2, r2, looksLikeBoard);
+
+      var c3 = card("3 · Board as admin, no header",
+        "Identical, but role=admin. If this works and check 2 does not, the hardcoded role is the bug.");
+      return timed(base + "?role=admin&tok=" + encodeURIComponent(tok)).then(function(r3){
+        var s3 = show(c3, r3, looksLikeBoard);
+
+        var c4 = card("4 · Board with the X-App-Token header",
+          "Adds the custom header. This forces a CORS preflight — the one structural difference between the failing call and the calls that work.");
+        return timed(base + "?role=viewer&tok=" + encodeURIComponent(tok),
+                     { headers: { "X-App-Token": "diagnostic-probe" } }).then(function(r4){
+          var s4 = show(c4, r4, looksLikeBoard);
+
+          var c5 = card("5 · Board with no role at all", "Token only, no role parameter.");
+          return timed(base + "?tok=" + encodeURIComponent(tok)).then(function(r5){
+            var s5 = show(c5, r5, looksLikeBoard);
+
+            var v = el("verdict"), msg, bg;
+            if(s4 !== "ok" && s2 === "ok"){
+              msg = "The header is the problem. The board loads fine without X-App-Token (check 2) and "
+                  + "breaks with it (check 4). Fix: stop sending that header on the GET — the session "
+                  + "token already rides in the query string.";
+              bg = "#7f1d1d";
+            } else if(s2 !== "ok" && s3 === "ok"){
+              msg = "The hardcoded role is the problem. role=admin returns your board, role=viewer does not. "
+                  + "Fix: sheetsLoad(roleFromTok()||\"viewer\") at both call sites.";
+              bg = "#7f1d1d";
+            } else if(s2 === "ok" && s3 === "ok" && s4 === "ok"){
+              msg = "Every request works from this browser. That points at the home-screen copy being a "
+                  + "stale cached shell rather than at the server. Delete the icon, clear the site data, "
+                  + "and re-add it.";
+              bg = "#78350f";
+            } else if(s2 === "hang" || s4 === "hang"){
+              msg = "The request hangs rather than failing. That is a CORS preflight or redirect stall, and "
+                  + "it is exactly what leaves the app on an amber dot with no error.";
+              bg = "#78350f";
+            } else {
+              msg = "Mixed result — send me the copied output and I will read it.";
+              bg = "#334155";
+            }
+            v.style.background = bg; v.className = "verdict on"; v.textContent = msg;
+            results.push("VERDICT: " + msg);
+            el("go").disabled = false; el("go").textContent = "Run all checks again";
+          });
+        });
+      });
+    });
+  }).catch(function(e){
+    el("go").disabled = false; el("go").textContent = "Run all checks again";
+    alert("Diagnostic itself errored: " + e);
+  });
+};
+
+/* The async clipboard API rejects outright when the page is not a secure
+   context or permission is denied — over file:// or plain http on a phone
+   that is the normal case, not the edge case. Without a catch the promise
+   rejects unhandled, the confirmation never appears and the button looks
+   dead. Fall back to the textarea, and if that fails too, show the text so
+   it can be selected by hand rather than pretending it copied. */
+function legacyCopy(txt){
+  try{
+    var ta = document.createElement("textarea");
+    ta.value = txt;
+    ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select(); ta.setSelectionRange(0, txt.length);
+    var done = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return done;
+  }catch(e){ return false; }
+}
+el("copy").onclick = function(){
+  var txt = results.join("\n\n");
+  if(!txt){ el("copy").textContent = "Nothing to copy yet";
+            setTimeout(function(){ el("copy").textContent = "Copy results"; }, 1500); return; }
+  function ok(){ el("copy").textContent = "Copied";
+                 setTimeout(function(){ el("copy").textContent = "Copy results"; }, 1500); }
+  function manual(){
+    el("copy").textContent = "Copy by hand from below";
+    var pre = document.createElement("pre");
+    pre.textContent = txt;
+    pre.style.userSelect = "all"; pre.style.marginTop = "8px";
+    el("out").insertBefore(pre, el("out").firstChild);
+  }
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(ok, function(){
+      if(legacyCopy(txt)) ok(); else manual();
+    });
+  } else {
+    if(legacyCopy(txt)) ok(); else manual();
+  }
+};
+</script>
+</body>
+</html>
