@@ -5990,14 +5990,13 @@ function App(){
     const label=(nextWeekLabel||"").trim();
     if(!label){alert("Enter a week label first.");return;}
     if(weeks.some(w=>(w.label||"")===label)){alert("A week with that label already exists.");setShowNextWeekPrompt(false);return;}
-    const {newWk,carried,counts}=buildCarriedWeek(label);
+    const {newWk,carried,counts,moveIds,mixed,newStart}=buildCarriedWeek(label);
     const warn=carryForwardWarnings(counts);
     if(warn&&!confirm(warn))return; // user cancelled — nothing created
-    setWeeksAndSave(p=>[...p,newWk]);
+    commitNewWeek(newWk,moveIds);
     setActiveWeek(weeks.length);
     setShowNextWeekPrompt(false);
-    if(carried.length)alert("New week created. Carried forward: "+carried.join(", "));
-    else alert("New week created. (Nothing from the previous week needed carrying forward.)");
+    alert(newWeekSummary(carried,mixed,newStart));
   };
 
   const generateWeeklyPDF=(targetWeek)=>{
@@ -6547,7 +6546,6 @@ ${accRows.length>0?`
     const openAcc=(lastWk.accessorials||[]).filter(r=>r.status!=="Paid").length;
 
     const lines=[];
-    if(openOTR>counts.otr) lines.push("• OTR trailers: "+counts.otr+" carried, but "+openOTR+" looked unfinished ("+(openOTR-counts.otr)+" not carried)");
     if(openLocal>counts.local) lines.push("• Local deliveries: "+counts.local+" carried of "+openLocal+" open");
     if(openXdock>counts.xdock) lines.push("• Crossdock: "+counts.xdock+" carried of "+openXdock+" open");
     if(openAcc>counts.acc) lines.push("• Accessorials: "+counts.acc+" carried of "+openAcc+" open");
@@ -6575,38 +6573,68 @@ ${accRows.length>0?`
     };
     const carryXdock=(lastWk.crossdockDrops||[]).filter(r=>!DONE.includes(r.status||"")).map(r=>({...r,id:uid(),carriedFrom:lastWk.label||"prev"}));
     const carryAcc=(lastWk.accessorials||[]).filter(r=>r.status!=="Paid").map(r=>({...r,id:uid(),carriedFrom:lastWk.label||"prev"}));
-    // Carry forward every OTR group that is NOT fully finished. Finished = status
-    // Delivered/Completed AND every real load delivered. Everything else carries.
-    const carryOTR=(lastWk.groups||[]).filter(g=>{
-      const gs=(g.groupStatus||"").trim();
+    // OTR trailers MOVE to the new week only when their pickups fall in that
+    // week (or later). Anything picked up this week stays in this week — even
+    // if it's still in transit — so it's counted where it was hauled.
+    // A trailer moves when EVERY dated pickup on it is on/after the new week's
+    // start. Trailers with no pickup dates, or with pickups split across both
+    // weeks, stay put and are listed so they can be moved with "→ Next wk".
+    const newStart=weekStartDate(label);
+    const otrStay=[],mixedOTR=[],undatedOTR=[];
+    const carryOTR=[];
+    (lastWk.groups||[]).forEach(g=>{
       const realLoads=(g.loads||[]).filter(loadHasContent);
-      if(realLoads.length===0)return false; // genuinely empty placeholder group
-      if(DONE.includes(gs)){
-        // a Delivered group still carries if any real load is not yet delivered
-        return realLoads.some(l=>(l.status||"").trim()!=="Delivered");
-      }
-      return true; // Pending / blank / In Transit / Loaded / Issue / Dispatched — carry
-    }).map(g=>({...g,id:uid(),carriedFrom:lastWk.label||"prev"}));
+      if(realLoads.length===0)return; // genuinely empty placeholder group
+      const dates=realLoads.map(l=>parsePickupDate(l.pickup||"")).filter(Boolean);
+      if(!newStart||dates.length===0){undatedOTR.push(g);return;}
+      const nextCnt=dates.filter(d=>d.getTime()>=newStart.getTime()).length;
+      if(nextCnt===dates.length)carryOTR.push({...g,carriedFrom:lastWk.label||"prev"});
+      else if(nextCnt>0)mixedOTR.push(g);
+      else otrStay.push(g);
+    });
+    const moveIds=carryOTR.map(g=>g.id);
+    const grpName=g=>{const l=(g.loads||[]).find(loadHasContent)||{};return (g.groupTrailer?"Trailer "+g.groupTrailer:(g.groupDriver||"Trailer"))+(l.sr?" — "+l.sr:"");};
     const carryLocal=(lastWk.localDeliveries||[]).filter(r=>r.status!=="Delivered").map(r=>({...r,id:uid(),carriedFrom:lastWk.label||"prev"}));
     // General Board carries the ROSTER forward (name/phone/home/truck/trailer),
     // not the work — unlike loads, a driver doesn't stop existing because last
     // week finished. Every day cell resets blank for the new week.
     const carryGB=(lastWk.generalBoardDrivers||[]).map(d=>({...d,id:uid(),days:gbBlankDays()}));
     const newWk={...mkWeek(label),crossdockDrops:carryXdock,accessorials:carryAcc,groups:[mkGroup(),...carryOTR],localDeliveries:carryLocal,generalBoardDrivers:carryGB};
-    const carried=[carryOTR.length&&carryOTR.length+" OTR",carryLocal.length&&carryLocal.length+" local",carryXdock.length&&carryXdock.length+" crossdock",carryAcc.length&&carryAcc.length+" accessorials"].filter(Boolean);
-    return {newWk,carried,counts:{otr:carryOTR.length,local:carryLocal.length,xdock:carryXdock.length,acc:carryAcc.length}};
+    const carried=[carryOTR.length&&carryOTR.length+" OTR trailer"+(carryOTR.length!==1?"s":"")+" (next-week pickups)",carryLocal.length&&carryLocal.length+" local",carryXdock.length&&carryXdock.length+" crossdock",carryAcc.length&&carryAcc.length+" accessorials"].filter(Boolean);
+    return {newWk,carried,moveIds,newStart,mixed:mixedOTR.map(grpName),
+      counts:{otr:carryOTR.length,local:carryLocal.length,xdock:carryXdock.length,acc:carryAcc.length}};
+  };
+  // Adds the new week AND removes the moved trailers from the week they came
+  // from, so a load is never counted in two weeks. Same group id is kept, so
+  // email claim links for those trailers keep working.
+  const commitNewWeek=(newWk,moveIds)=>{
+    const srcIdx=Math.min(activeWeek,weeks.length-1);
+    const ids=new Set(moveIds||[]);
+    setWeeksAndSave(p=>{
+      const next=p.map((w,i)=>{
+        if(i!==srcIdx||!ids.size)return w;
+        const left=(w.groups||[]).filter(g=>!ids.has(g.id));
+        return {...w,groups:left.length?left:[mkGroup()]};
+      });
+      return [...next,newWk];
+    });
+  };
+  const newWeekSummary=(carried,mixed,newStart)=>{
+    let msg=carried.length?"Moved to new week: "+carried.join(", "):"New week created. Nothing had pickups in the new week, so nothing was moved.";
+    if(!newStart)msg+="\n\nCouldn't read a date from the week label, so no trailers were moved. Use \"→ Next wk\" on a trailer to move it by hand.";
+    if(mixed&&mixed.length)msg+="\n\nThese trailers have pickups in BOTH weeks, so they stayed in the current week. Use \"→ Next wk\" if they belong to the new week:\n• "+mixed.join("\n• ");
+    return msg;
   };
   const addWeek=()=>{
     const last=weeks[Math.min(activeWeek,weeks.length-1)]||weeks[0]||{};
     const l=prompt("Week label (e.g. 3.30.2026 - 4.6.2026)",suggestNextWeekLabel(last.label));
     if(!l)return;
-    const {newWk,carried,counts}=buildCarriedWeek(l);
+    const {newWk,carried,counts,moveIds,mixed,newStart}=buildCarriedWeek(l);
     const warn=carryForwardWarnings(counts);
     if(warn&&!confirm(warn))return; // user cancelled
-    setWeeksAndSave(p=>[...p,newWk]);
+    commitNewWeek(newWk,moveIds);
     setActiveWeek(weeks.length);
-    if(carried.length)alert("Carried to new week: "+carried.join(", "));
-    else alert("New week created. (Nothing needed carrying forward.)");
+    alert(newWeekSummary(carried,mixed,newStart));
   };
   const removeWeek=i=>{if(weeks.length<=1){alert("Cannot remove last week.");return;}if(!confirm("Remove this week?"))return;setWeeksAndSave(p=>p.filter((_,j)=>j!==i));setActiveWeek(0);};
 
@@ -7347,11 +7375,11 @@ ${accRows.length>0?`
       // can never disagree with what really gets carried.
       const preview=buildCarriedWeek(nextWeekLabel||"preview");
       const cOTR=preview.counts.otr,cLocal=preview.counts.local,cXdock=preview.counts.xdock,cAcc=preview.counts.acc;
-      const carries=[cOTR&&cOTR+" OTR load"+(cOTR!==1?"s":""),cLocal&&cLocal+" local",cXdock&&cXdock+" crossdock",cAcc&&cAcc+" accessorial"+(cAcc!==1?"s":"")].filter(Boolean);
+      const carries=[cOTR&&cOTR+" OTR trailer"+(cOTR!==1?"s":"")+" (next-week pickups)",cLocal&&cLocal+" local",cXdock&&cXdock+" crossdock",cAcc&&cAcc+" accessorial"+(cAcc!==1?"s":"")].filter(Boolean);
       return(<div className="modal-bg" onClick={e=>e.stopPropagation()}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"440px"}}>
         <div style={{fontWeight:"700",fontSize:"16px",color:"#1e40af",marginBottom:"8px"}}>📅 Start Next Week?</div>
         <div style={{fontSize:"12px",color:"#374151",marginBottom:"12px",lineHeight:"1.55"}}>
-          It's the end of the week — want to create the upcoming week now? Anything unfinished carries forward automatically, same as the manual "+ Add Week" button.
+          It's the end of the week — want to create the upcoming week now? Trailers with pickups in the new week move over automatically; everything picked up this week stays here.
         </div>
         <div style={{marginBottom:"12px"}}>
           <div style={{fontSize:"10px",fontWeight:"700",color:"#64748b",textTransform:"uppercase",letterSpacing:".05em",marginBottom:"4px"}}>Week Label</div>
@@ -7359,8 +7387,9 @@ ${accRows.length>0?`
         </div>
         <div style={{background:carries.length?"#eff6ff":"#f8fafc",border:"1px solid "+(carries.length?"#bfdbfe":"#e2e8f0"),borderRadius:"7px",padding:"9px 12px",marginBottom:"10px"}}>
           <div style={{fontSize:"11px",fontWeight:"700",color:carries.length?"#1e40af":"#64748b"}}>
-            {carries.length?"↪ Carrying forward: "+carries.join(", "):"Nothing to carry forward — starts fresh."}
+            {carries.length?"↪ Moving over: "+carries.join(", "):"Nothing has pickups in the new week yet — starts fresh."}
           </div>
+          {preview.mixed.length>0&&<div style={{fontSize:"10px",color:"#92400e",marginTop:"4px"}}>{preview.mixed.length} trailer{preview.mixed.length!==1?"s have":" has"} pickups in both weeks — stays here (use "→ Next wk" if needed).</div>}
         </div>
         {suggestionScan.total>0&&(
           <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:"7px",padding:"9px 12px",marginBottom:"14px",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}}>
