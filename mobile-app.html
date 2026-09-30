@@ -1295,6 +1295,17 @@ function rSettings(){
    .forEach(function(x){h+='<div class="grp"><button class="grp-row" onclick="go(\''+x[0]+'\')">'+
      '<div class="grp-ic" style="background:var(--line2);color:var(--ink2)">'+x[1]+'</div>'+
      '<div class="grp-mid"><div class="grp-t">'+x[2]+'</div></div><span class="tile-chev">›</span></button></div>';});
+  h+='<div class="sec-t">Connection</div>';
+  h+='<div class="card"><div class="card-bd">'+
+    '<div class="fld"><label>Apps Script /exec URL</label>'+
+    '<input class="inp" id="cx-url" value="'+esc(baseUrl())+'" spellcheck="false" autocapitalize="off"></div>'+
+    '<div style="display:flex;gap:8px"><button class="btn" style="flex:1" onclick="testConn()">Test connection</button>'+
+    '<button class="btn btn-o" style="flex:1" onclick="saveUrl()">Save URL</button></div>'+
+    '<div id="cx-out">'+(lastErr?('<div class="note note-e" style="margin-top:10px"><b>Last error</b><br>'+esc(lastErr)+'</div>'):'')+'</div>'+
+    '<div class="note note-i" style="margin-top:10px">This must be the <b>same /exec URL your desktop board uses</b>. '+
+    'Redeploying Apps Script creates a new URL — if you redeployed after this app was built, paste the current one here. '+
+    'Open board.html on a computer, View Source, and search for <code>AKfycb</code> to find it.</div>'+
+    '</div></div>';
   h+='<div class="sec-t">Session</div>';
   h+='<button class="btn btn-o" style="width:100%;margin-bottom:9px" onclick="refreshData(true)">Refresh now</button>';
   h+='<button class="btn" style="width:100%;background:var(--red)" onclick="signOut()">Sign out</button>';
@@ -1303,6 +1314,56 @@ function rSettings(){
 }
 
 function empty(ic,t){return '<div class="empty"><div class="empty-i">'+ic+'</div><div class="empty-t">'+esc(t)+'</div></div>';}
+
+/* Connection test — reports what actually came back, rather than a single
+   catch-all "could not reach". A CORS or DNS failure surfaces in JS only as
+   "Failed to fetch" with no detail, so that case is named explicitly. */
+function saveUrl(){
+  var v=(document.getElementById("cx-url").value||"").trim();
+  if(!v){localStorage.removeItem("fcbv2_sheetsUrl");}
+  else localStorage.setItem("fcbv2_sheetsUrl",v);
+  document.getElementById("cx-out").innerHTML='<div class="note note-i" style="margin-top:10px">Saved. Testing…</div>';
+  testConn();
+}
+function testConn(){
+  var o=document.getElementById("cx-out");
+  var u=(document.getElementById("cx-url").value||"").trim()||baseUrl();
+  if(!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec/.test(u)){
+    o.innerHTML='<div class="note note-w" style="margin-top:10px"><b>That does not look like an /exec URL.</b> '+
+      'It should start https://script.google.com/macros/s/… and end in /exec — not /dev.</div>';
+    return;
+  }
+  o.innerHTML='<div class="spin"></div>';
+  var t0=Date.now();
+  fetch(withTok(u+"?action=session"),{redirect:"follow"})
+    .then(function(r){return r.text().then(function(txt){return {ok:r.ok,status:r.status,txt:txt};});})
+    .then(function(r){
+      var ms=Date.now()-t0,j=null;
+      try{j=JSON.parse(r.txt);}catch(e){}
+      var h='<div class="note '+(r.ok?"note-i":"note-e")+'" style="margin-top:10px">'+
+        '<b>HTTP '+r.status+'</b> in '+ms+' ms</div>';
+      if(j){
+        h+='<div style="margin-top:4px">';
+        h+=kv("Server reachable","yes");
+        if("enforced" in j)h+=kv("Auth enforced",String(j.enforced));
+        if("session" in j)h+=kv("Session",j.session?"valid":"none / expired");
+        if(j.error)h+=kv("Error",esc(String(j.error)));
+        h+='</div>';
+        if(j.session===null&&j.enforced)h+='<div class="note note-w" style="margin-top:8px">The endpoint is fine — this phone just has no valid session. Sign out and sign in again.</div>';
+      } else {
+        h+='<div class="note note-w" style="margin-top:8px"><b>Reached it, but the reply was not JSON.</b> '+
+          'That usually means the URL points at a deployment that no longer exists, or Apps Script returned its sign-in page. First 200 characters:<br><code>'+
+          esc(r.txt.slice(0,200))+'</code></div>';
+      }
+      o.innerHTML=h;
+    })
+    .catch(function(e){
+      o.innerHTML='<div class="note note-e" style="margin-top:10px"><b>The request never completed.</b><br>'+
+        esc((e&&e.message)||String(e))+
+        '<br><br>In a browser that means one of: no internet, the deployment URL is wrong or deleted, or Apps Script is not set to '+
+        '<b>“Who has access: Anyone”</b>. A deployment set to “Only myself” fails exactly like this from a phone.</div>';
+    });
+}
 
 /* ── AUTH ────────────────────────────────────────────────────────── */
 function showLogin(msg){
@@ -1398,20 +1459,30 @@ function refreshData(manual){
   sheetsLoad("viewer").then(function(d){
     if(isAuthReq(d)){
       setSessTok("");setDot("err");
+      lastErr="Apps Script refused the session token (auth_required).";
       banner("bad","Session expired");
       showLogin("Session expired — sign in again");return;
     }
-    if(!d||(!Array.isArray(d)&&!Array.isArray(d.weeks)))throw new Error("unexpected response");
-    applyData(d);
-    setDot("ok");banner(null);
-    paint();
+    if(!d||(!Array.isArray(d)&&!Array.isArray(d.weeks))){
+      var peek="";try{peek=JSON.stringify(d).slice(0,180);}catch(e2){peek=String(d).slice(0,180);}
+      throw new Error("Reached the server, but it did not return week data. It replied: "+peek);
+    }
+    // A failure here is a bug in THIS app, not a network problem. Reporting
+    // both as "could not reach the board" is what made the first fault
+    // impossible to diagnose from the phone.
+    try{ applyData(d); }
+    catch(e3){ throw new Error("The board loaded but could not be read: "+(e3&&e3.message||e3)); }
+    setDot("ok");lastErr="";banner(null);
+    try{ paint(); }
+    catch(e4){ banner("warn","Board loaded, but a screen failed to draw — "+(e4&&e4.message||e4)); }
   }).catch(function(e){
     setDot("err");
+    lastErr=(e&&e.message)||String(e);
     var c=readCache();
     if(!weeks.length&&c){weeks=c.weeks;cachedAt=c.at||0;wkIdx=Math.min(wkIdx,Math.max(0,weeks.length-1));}
     if(!navigator.onLine)banner("bad","Offline — showing the last board this phone loaded");
-    else banner("warn","Could not reach the board"+(cachedAt?(" — showing a copy from "+ago(cachedAt)):""));
-    paint();
+    else banner("warn","Could not reach the board — tap More → Connection"+(cachedAt?(" · copy from "+ago(cachedAt)):""));
+    try{ paint(); }catch(e5){}
   });
 }
 window.addEventListener("online",function(){refreshData();});

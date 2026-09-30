@@ -3,7 +3,7 @@
    Apps Script calls are NEVER cached — a stale board silently served as
    fresh is worse than an honest "offline" banner, which the app shows from
    its own localStorage copy instead. */
-var CACHE = "zboard-v1";
+var CACHE = "zboard-v2";
 var SHELL = ["./mobile-app.html","./manifest.json","./icon-192.png","./icon-512.png"];
 
 self.addEventListener("install", function (e) {
