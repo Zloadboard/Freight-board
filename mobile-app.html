@@ -1,0 +1,1438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Z Board"/>
+<meta name="theme-color" content="#0f1f3d"/>
+<link rel="manifest" href="manifest.json"/>
+<title>Z Board</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+:root{
+  --navy:#0f1f3d; --navy2:#1a2e50; --navy3:#1e3a5f;
+  --bg:#f0f4f8; --card:#fff; --line:#e2e8f0; --line2:#f1f5f9;
+  --ink:#0f1f3d; --ink2:#475569; --ink3:#64748b; --ink4:#94a3b8;
+  --sky:#38bdf8; --blue:#2563eb; --green:#15803d; --green2:#22c55e;
+  --amber:#b45309; --amberbg:#fef3c7; --red:#b91c1c; --redbg:#fee2e2;
+  --violet:#7c3aed; --violetbg:#ede9fe;
+  --topbar:52px; --botbar:58px;
+}
+html,body{height:100%;}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:var(--bg);color:var(--ink);
+  overscroll-behavior-y:none;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ══ TOP BAR ══ */
+.top{
+  position:fixed;top:0;left:0;right:0;z-index:300;background:var(--navy);
+  padding-top:env(safe-area-inset-top);
+  box-shadow:0 1px 8px rgba(0,0,0,.28);
+}
+.top-in{height:var(--topbar);display:flex;align-items:center;gap:10px;padding:0 12px;}
+.back{
+  width:34px;height:34px;flex-shrink:0;border:none;background:rgba(255,255,255,.1);
+  color:#fff;border-radius:10px;font-size:19px;line-height:1;cursor:pointer;
+  display:none;align-items:center;justify-content:center;
+}
+.back.on{display:flex;}
+.top-txt{flex:1;min-width:0;}
+.top-t{color:#fff;font-size:15px;font-weight:800;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.top-s{color:rgba(255,255,255,.45);font-size:10px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.top-act{display:flex;align-items:center;gap:7px;flex-shrink:0;}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green2);flex-shrink:0;}
+.dot.load{background:#f59e0b;animation:pul 1s infinite;}
+.dot.err{background:#ef4444;}
+@keyframes pul{0%,100%{opacity:1}50%{opacity:.35}}
+.ibtn{
+  width:34px;height:34px;border:none;background:rgba(255,255,255,.1);color:#fff;
+  border-radius:10px;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;
+}
+
+/* ══ OFFLINE / STALE BANNER ══ */
+.banner{
+  display:none;padding:7px 14px;font-size:11px;font-weight:700;
+  align-items:center;gap:8px;
+}
+.banner.on{display:flex;}
+.banner.warn{background:var(--amberbg);color:#78350f;border-bottom:1px solid #fcd34d;}
+.banner.bad{background:var(--redbg);color:var(--red);border-bottom:1px solid #fca5a5;}
+.banner button{
+  margin-left:auto;border:none;background:rgba(0,0,0,.1);color:inherit;
+  padding:3px 10px;border-radius:6px;font-size:10px;font-weight:800;cursor:pointer;flex-shrink:0;
+}
+
+/* ══ SCREEN STACK ══ */
+.wrap{
+  padding-top:calc(var(--topbar) + env(safe-area-inset-top));
+  padding-bottom:calc(var(--botbar) + env(safe-area-inset-bottom));
+  min-height:100%;
+}
+.scr{display:none;padding:12px;}
+.scr.on{display:block;}
+.scr-pad0{padding:0;}
+
+/* ══ HUB TILES ══ */
+.hub-hd{padding:4px 2px 12px;}
+.hub-hd h1{font-size:21px;font-weight:900;letter-spacing:-.02em;}
+.hub-hd p{font-size:12px;color:var(--ink3);margin-top:2px;}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.tile{
+  background:var(--card);border:1px solid var(--line);border-radius:15px;
+  padding:13px 12px;text-align:left;cursor:pointer;
+  display:flex;flex-direction:column;gap:2px;min-height:96px;
+  box-shadow:0 1px 3px rgba(15,31,61,.06);position:relative;overflow:hidden;
+}
+.tile:active{transform:scale(.975);}
+.tile-ic{font-size:21px;line-height:1;margin-bottom:5px;}
+.tile-t{font-size:13px;font-weight:800;color:var(--ink);line-height:1.2;}
+.tile-v{font-size:17px;font-weight:900;margin-top:3px;line-height:1.1;}
+.tile-s{font-size:10px;color:var(--ink4);font-weight:600;line-height:1.3;}
+.tile-wide{grid-column:1/-1;min-height:0;flex-direction:row;align-items:center;gap:10px;}
+.tile-wide .tile-ic{margin:0;font-size:18px;}
+.tile-wide .tile-t{flex:1;}
+.tile-chev{color:var(--ink4);font-size:15px;flex-shrink:0;}
+.tile-bad{
+  position:absolute;top:9px;right:9px;font-size:9px;font-weight:800;
+  padding:2px 6px;border-radius:99px;background:var(--redbg);color:var(--red);
+}
+
+/* ══ SECTION GROUP ROWS (drill-in lists) ══ */
+.grp{
+  background:var(--card);border:1px solid var(--line);border-radius:13px;
+  margin-bottom:9px;overflow:hidden;box-shadow:0 1px 2px rgba(15,31,61,.05);
+}
+.grp-row{
+  display:flex;align-items:center;gap:10px;padding:12px 13px;cursor:pointer;width:100%;
+  border:none;background:none;text-align:left;font-family:inherit;
+}
+.grp-row:active{background:var(--line2);}
+.grp-ic{
+  width:34px;height:34px;border-radius:10px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;
+}
+.grp-mid{flex:1;min-width:0;}
+.grp-t{font-size:13px;font-weight:800;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.grp-s{font-size:10.5px;color:var(--ink3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.grp-rt{text-align:right;flex-shrink:0;}
+.grp-n{font-size:14px;font-weight:900;color:var(--green);}
+.grp-ns{font-size:9.5px;color:var(--ink4);font-weight:600;}
+
+/* ══ SUB TABS ══ */
+.stabs{
+  display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;
+  padding:10px 12px;background:var(--card);border-bottom:1px solid var(--line);
+  position:sticky;top:calc(var(--topbar) + env(safe-area-inset-top));z-index:120;
+}
+.stabs::-webkit-scrollbar{display:none;}
+.stab{
+  border:1.5px solid var(--line);background:var(--card);color:var(--ink3);
+  padding:6px 13px;border-radius:99px;font-size:11.5px;font-weight:800;
+  white-space:nowrap;cursor:pointer;flex-shrink:0;font-family:inherit;
+}
+.stab.on{background:var(--navy);border-color:var(--navy);color:#fff;}
+.stab-n{opacity:.55;margin-left:4px;font-weight:700;}
+
+/* ══ CARDS / DETAIL ══ */
+.card{
+  background:var(--card);border:1px solid var(--line);border-radius:13px;
+  margin-bottom:10px;overflow:hidden;box-shadow:0 1px 3px rgba(15,31,61,.05);
+}
+.card-hd{background:var(--navy);padding:9px 12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.card-hd.nodrv{background:var(--redbg);}
+.card-bd{padding:11px 12px;}
+.pill{font-size:10px;font-weight:800;padding:2px 7px;border-radius:5px;flex-shrink:0;}
+.p-truck{color:#fff;background:rgba(255,255,255,.15);}
+.p-trl{color:#c4b5fd;background:rgba(167,139,250,.2);}
+.p-drv{font-size:11.5px;font-weight:700;color:#86efac;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.p-nodrv{font-size:10.5px;font-weight:800;color:var(--red);flex:1;}
+.p-mi{font-size:9.5px;color:rgba(255,255,255,.5);background:rgba(255,255,255,.08);}
+.p-live{font-size:9.5px;font-weight:700;color:#fde047;background:rgba(234,179,8,.16);border:1px solid rgba(234,179,8,.36);padding:2px 6px;border-radius:5px;white-space:nowrap;}
+.p-live.lt{color:#a16207;background:var(--amberbg);border-color:#fcd34d;}
+/* On the pale "no driver" header the white-on-navy pills are unreadable. */
+.card-hd.nodrv .pill.p-mi{color:var(--ink2);background:rgba(0,0,0,.07);}
+.card-hd.nodrv .pill.p-truck{color:var(--ink);background:rgba(0,0,0,.07);}
+.card-hd.nodrv .pill.p-trl{color:#5b21b6;background:rgba(124,58,237,.12);}
+
+.fin{display:flex;align-items:center;gap:6px;padding:8px 12px;background:#f8fafc;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+.fin-i{display:flex;align-items:baseline;gap:4px;}
+.fin-l{font-size:9px;color:var(--ink3);font-weight:800;text-transform:uppercase;letter-spacing:.03em;}
+.fin-v{font-size:13px;font-weight:800;}
+.fin-sep{color:var(--ink4);font-weight:700;}
+.fin-net{margin-left:auto;background:#f0fdf4;border:1.5px solid var(--green2);border-radius:8px;padding:3px 9px;display:flex;align-items:baseline;gap:4px;}
+.fin-net b{color:var(--green);font-size:15px;font-weight:900;}
+
+.stop{display:flex;align-items:flex-start;gap:9px;padding:9px 0;border-bottom:1px solid var(--line2);}
+.stop:last-child{border-bottom:none;}
+.stop-n{
+  width:19px;height:19px;border-radius:50%;background:#e0e7ff;color:#3730a3;
+  display:flex;align-items:center;justify-content:center;
+  font-size:9.5px;font-weight:800;flex-shrink:0;margin-top:1px;
+}
+.stop-m{flex:1;min-width:0;}
+.stop-c{font-size:13px;font-weight:700;color:var(--ink);}
+.stop-r{font-size:11px;color:var(--ink3);margin-top:1px;}
+.stop-d{display:flex;gap:7px;flex-wrap:wrap;margin-top:4px;}
+.tag{font-size:9.5px;padding:2px 6px;border-radius:4px;background:var(--line2);color:var(--ink2);font-weight:600;}
+.tag-pu{background:#e0f2fe;color:#0369a1;}
+.badge{font-size:9px;font-weight:800;padding:2px 6px;border-radius:4px;flex-shrink:0;white-space:nowrap;}
+.b-disp{background:#dbeafe;color:#1e40af;}
+.b-dock{background:#fef9c3;color:#713f12;}
+.b-need{background:var(--redbg);color:#991b1b;}
+.b-load{background:#dcfce7;color:#14532d;}
+.b-del{background:#dcfce7;color:#065f46;}
+
+/* ══ KPI GRID ══ */
+.kpis{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:12px;}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 12px;}
+.kpi-l{font-size:9.5px;font-weight:800;color:var(--ink3);text-transform:uppercase;letter-spacing:.04em;display:flex;align-items:center;gap:5px;}
+.kpi-v{font-size:19px;font-weight:900;margin-top:5px;line-height:1.1;}
+.kpi-d{font-size:10px;font-weight:700;margin-top:3px;}
+.up{color:#16a34a;}.dn{color:#dc2626;}.flat{color:var(--ink4);}
+
+/* ══ FORM BITS ══ */
+.fld{margin-bottom:11px;}
+.fld label{font-size:10px;font-weight:800;color:var(--ink3);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:5px;}
+.inp{
+  width:100%;border:1.5px solid #cbd5e1;border-radius:10px;padding:10px 12px;
+  font-size:14px;font-family:inherit;color:var(--ink);background:var(--card);outline:none;
+}
+.inp:focus{border-color:var(--blue);}
+.btn{
+  border:none;border-radius:10px;padding:11px 16px;font-size:13.5px;font-weight:800;
+  cursor:pointer;font-family:inherit;background:var(--blue);color:#fff;
+}
+.btn:active{opacity:.85;}
+.btn[disabled]{background:#93c5fd;}
+.btn-g{background:var(--green);}
+.btn-o{background:var(--card);border:1.5px solid var(--line);color:var(--ink2);}
+.row{display:flex;gap:8px;align-items:flex-end;}
+.row>*{flex:1;}
+.row .btn{flex:0 0 auto;}
+
+/* ══ NOTE BOXES ══ */
+.note{border-radius:10px;padding:10px 12px;font-size:11.5px;line-height:1.55;margin-bottom:10px;}
+.note-i{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;}
+.note-w{background:#fffbeb;border:1px solid #fde68a;color:#92400e;}
+.note-e{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;}
+.note b{font-weight:800;}
+
+.sec-t{font-size:11px;font-weight:800;color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin:16px 2px 8px;}
+.empty{text-align:center;padding:38px 20px;color:var(--ink4);}
+.empty-i{font-size:34px;margin-bottom:8px;opacity:.5;}
+.empty-t{font-size:13px;font-weight:700;}
+.spin{width:30px;height:30px;border:3px solid var(--line);border-top-color:var(--blue);border-radius:50%;animation:sp .8s linear infinite;margin:32px auto;}
+@keyframes sp{to{transform:rotate(360deg)}}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line2);}
+.kv:last-child{border-bottom:none;}
+.kv-k{font-size:11.5px;color:var(--ink3);font-weight:600;}
+.kv-v{font-size:12.5px;font-weight:700;text-align:right;}
+.mono{font-variant-numeric:tabular-nums;}
+.cp{cursor:pointer;user-select:all;}
+.cp[data-copied="1"]{background:#dcfce7!important;color:var(--green)!important;}
+
+/* ══ BOTTOM NAV ══ */
+.bot{
+  position:fixed;bottom:0;left:0;right:0;z-index:300;background:var(--navy);
+  border-top:1px solid rgba(255,255,255,.08);display:flex;
+  padding-bottom:env(safe-area-inset-bottom);
+}
+.bot-b{
+  flex:1;border:none;background:none;color:rgba(255,255,255,.42);
+  height:var(--botbar);display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:2px;font-size:9px;font-weight:800;cursor:pointer;font-family:inherit;
+}
+.bot-b.on{color:var(--sky);}
+.bot-i{font-size:18px;line-height:1;}
+
+/* ══ LOGIN ══ */
+.login{
+  position:fixed;inset:0;background:var(--navy);z-index:900;
+  display:none;flex-direction:column;align-items:center;justify-content:center;padding:24px;
+}
+.login.on{display:flex;}
+.login-l{font-size:46px;margin-bottom:10px;}
+.login-t{color:#fff;font-size:21px;font-weight:900;}
+.login-s{color:rgba(255,255,255,.42);font-size:12px;margin:4px 0 26px;text-align:center;max-width:280px;line-height:1.5;}
+.login-c{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:24px 22px;width:100%;max-width:330px;}
+.login-c label{color:rgba(255,255,255,.55);font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:9px;}
+.pin{
+  width:100%;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.15);
+  border-radius:12px;padding:14px;color:#fff;font-size:20px;font-family:inherit;
+  outline:none;text-align:center;letter-spacing:.24em;margin-bottom:13px;
+}
+.pin:focus{border-color:var(--blue);}
+.login-c .btn{width:100%;margin-bottom:9px;}
+.login-e{color:#fca5a5;font-size:11.5px;text-align:center;margin-top:8px;min-height:15px;line-height:1.4;}
+</style>
+</head>
+<body>
+<!-- ══ TOP BAR ══ -->
+<div class="top">
+  <div class="top-in">
+    <button class="back" id="back" onclick="goBack()">‹</button>
+    <div class="top-txt">
+      <div class="top-t" id="top-t">Z Board</div>
+      <div class="top-s" id="top-s">Starting…</div>
+    </div>
+    <div class="top-act">
+      <div class="dot load" id="dot"></div>
+      <button class="ibtn" onclick="refreshData(true)" title="Refresh">↻</button>
+    </div>
+  </div>
+  <div class="banner" id="banner"><span id="banner-t"></span><button onclick="refreshData(true)">Retry</button></div>
+</div>
+
+<!-- ══ LOGIN ══ -->
+<div class="login" id="login">
+  <div class="login-l">🔐</div>
+  <div class="login-t">Z Board</div>
+  <div class="login-s">Admin or dispatcher PIN. Checked on the server — the PIN is never stored on this phone.</div>
+  <div class="login-c">
+    <label for="pin">PIN</label>
+    <input class="pin" type="password" id="pin" inputmode="numeric" maxlength="20" placeholder="••••" oninput="clrErr()"/>
+    <button class="btn" id="login-btn" onclick="attemptLogin()">Sign in</button>
+    <button class="btn btn-o" id="login-cancel" onclick="hideLogin()" style="display:none">Cancel</button>
+    <div class="login-e" id="login-e"></div>
+  </div>
+</div>
+
+<!-- ══ SCREENS ══ -->
+<div class="wrap">
+  <div class="scr" id="s-hub"></div>
+  <div class="scr scr-pad0" id="s-board"></div>
+  <div class="scr" id="s-trailer"></div>
+  <div class="scr" id="s-week"></div>
+  <div class="scr" id="s-drivers"></div>
+  <div class="scr" id="s-driver"></div>
+  <div class="scr" id="s-trucks"></div>
+  <div class="scr" id="s-routes"></div>
+  <div class="scr" id="s-milecheck"></div>
+  <div class="scr" id="s-brokers"></div>
+  <div class="scr" id="s-market"></div>
+  <div class="scr" id="s-xdock"></div>
+  <div class="scr" id="s-payroll"></div>
+  <div class="scr" id="s-search"></div>
+  <div class="scr" id="s-settings"></div>
+</div>
+
+<!-- ══ BOTTOM NAV ══ -->
+<div class="bot">
+  <button class="bot-b on" id="nav-hub" onclick="go('hub')"><span class="bot-i">▦</span>Home</button>
+  <button class="bot-b" id="nav-board" onclick="go('board')"><span class="bot-i">▤</span>Board</button>
+  <button class="bot-b" id="nav-search" onclick="go('search')"><span class="bot-i">⌕</span>Search</button>
+  <button class="bot-b" id="nav-settings" onclick="go('settings')"><span class="bot-i">⚙</span>More</button>
+</div>
+
+<script>
+"use strict";
+/* ════════════════════════════════════════════════════════════════════
+   Z BOARD — mobile app
+   Built 2026-09-30 on the verified data layer from mobile-board 09-22.
+   DIST / CITYLL / ZIPDIST are byte-identical to that build: 534 / 130 /
+   515 entries, md5 5235358b… / c21310df… / 254688b1…, checked before
+   this file was written. Two fixes are applied that the 09-22 build
+   does not carry — see cityMiles() and cityLL() below.
+   No React, no CDN: everything needed to render is in this file, so the
+   app works from the service-worker cache with no network at all.
+   ════════════════════════════════════════════════════════════════════ */
+const DIST={"romeoville":0,"lockport":5,"joliet":8,"bolingbrook":5,"woodridge":8,"darien":15,"burr ridge":12,"willowbrook":10,"hodgkins":18,"bedford park":20,"bridgeview":20,"oak lawn":22,"evergreen park":24,"alsip":18,"blue island":20,"country club hills":20,"markham":22,"harvey":22,"naperville":15,"aurora":20,"batavia":25,"geneva":28,"st. charles":28,"saint charles":28,"north aurora":20,"n aurora":20,"sugar grove":22,"oswego":12,"montgomery":905,"montgomery il":24,"yorkville":15,"plano":22,"sandwich":28,"west chicago":25,"w chicago":25,"carol stream":20,"glendale heights":22,"addison":22,"elmhurst":22,"villa park":22,"lombard":20,"downers grove":15,"westmont":15,"lisle":15,"itasca":22,"wood dale":22,"bensenville":25,"elk grove village":25,"elk grove vlg":25,"bloomingdale":22,"roselle":25,"hanover park":28,"streamwood":28,"bartlett":30,"schaumburg":28,"elgin":35,"hoffman estates":30,"barrington":40,"crystal lake":45,"mchenry":50,"wauconda":48,"lake zurich":45,"mundelein":48,"libertyville":50,"gurnee":52,"waukegan":55,"north chicago":55,"zion":58,"chicago":30,"chicago hts":25,"chicago heights":25,"cicero":22,"berwyn":22,"oak park":25,"melrose park":25,"franklin park":25,"northlake":23,"bellwood":23,"broadview":22,"berkeley":22,"hillside":20,"la grange":18,"la grange park":18,"mccook":20,"forest park":24,"maywood":25,"stone park":25,"rosemont":27,"des plaines":28,"park ridge":28,"niles":28,"skokie":30,"evanston":32,"wheeling":33,"buffalo grove":38,"palatine":35,"arlington heights":33,"mount prospect":30,"rolling meadows":30,"willow springs":12,"palos heights":12,"orland park":15,"tinley park":18,"oak forest":15,"midlothian":22,"homewood":22,"flossmoor":22,"matteson":20,"park forest":22,"crete":25,"sauk village":28,"calumet city":28,"lansing":28,"south holland":25,"dolton":26,"monee":22,"university park":22,"beecher":28,"peotone":20,"channahon":10,"minooka":12,"elwood":10,"manhattan":12,"mokena":14,"new lenox":14,"frankfort":16,"steger":22,"wilmington":892,"wilmington il":18,"braidwood":22,"coal city":20,"diamond":22,"seneca":30,"marseilles":40,"ottawa":62,"la salle":65,"peru":65,"streator":50,"pontiac":70,"bloomington":90,"normal":90,"decatur":628,"springfield":100,"peoria":120,"bartonville":120,"east peoria":120,"morton":120,"mackinaw":110,"goodfield":115,"minonk":100,"kankakee":35,"bourbonnais":35,"bradley":32,"manteno":30,"momence":45,"hoopeston":80,"danville":100,"champaign":110,"urbana":110,"lemont":12,"homer glen":12,"orland hills":15,"carpentersville":38,"dundee":40,"west dundee":40,"hampshire":42,"genoa":50,"dekalb":50,"sycamore":52,"rochelle":65,"dixon":75,"sterling":95,"rock falls":95,"rockford":78,"loves park":80,"machesney park":82,"roscoe":82,"belvidere":60,"marengo":52,"woodstock":55,"antioch":60,"fox lake":58,"round lake":52,"hammond":28,"east chicago":28,"gary":32,"portage":40,"chesterton":50,"valparaiso":45,"hobart":35,"merrillville":35,"merrilville":35,"crown point":32,"dyer":28,"st. john":28,"schererville":30,"munster":28,"highland":30,"michigan city":60,"la porte":65,"laporte":65,"south bend":95,"mishawaka":95,"elkhart":110,"goshen":115,"warsaw":862,"bremen":100,"plymouth":95,"rochester":95,"north judson":65,"knox":85,"logansport":105,"kokomo":120,"indianapolis":175,"anderson":155,"fort wayne":155,"auburn":710,"remington":80,"rensselaer":70,"temperance":55,"kenosha":52,"pleasant prairie":50,"racine":58,"sturtevant":58,"oak creek":65,"franksville":62,"caledonia":62,"milwaukee":70,"west allis":72,"greenfield":72,"new berlin":74,"muskego":70,"franklin":68,"glendale":74,"wauwatosa":72,"butler":72,"menomonee falls":78,"waukesha":78,"brookfield":76,"pewaukee":78,"delafield":85,"oconomowoc":90,"watertown":100,"germantown":78,"sussex":82,"hartland":85,"east troy":70,"elkhorn":75,"lake geneva":80,"delavan":82,"beloit":78,"janesville":85,"edgerton":90,"whitewater":90,"fort atkinson":110,"jefferson":730,"madison":95,"middleton":98,"stoughton":98,"verona":97,"baraboo":140,"beaver dam":115,"fond du lac":125,"oshkosh":130,"appleton":135,"neenah":135,"green bay":155,"sheboygan":130,"brillion":160,"manitowoc":150,"wausau":190,"eau claire":250,"la crosse":250,"hudson":310,"kalamazoo":115,"battle creek":125,"grand rapids":130,"lansing mi":155,"detroit":290,"ann arbor":280,"davenport":170,"des moines":290,"st. louis":285,"kansas city":480,"fountain inn":840,"spartanburg":782,"rock hill":880,"charlotte":872,"matthews":858,"lugoff":845,"jacksonville":1215,"deltona":1215,"orlando":1270,"tampa":1320,"dothan":985,"birmingham":658,"huntsville":625,"nashville":495,"memphis":545,"knoxville":565,"chattanooga":605,"louisville":330,"lexington":425,"hammond la":950,"baton rouge":1000,"new orleans":1050,"dallas":980,"fort worth":985,"houston":1110,"san antonio":1200,"oklahoma city":720,"tulsa":700,"atlanta":745,"mcdonough":738,"douglasville":730,"college park":748,"alabaster":660,"longwood":1270,"haines city":1295,"lakeland":1295,"ocala":1255,"palm bay":1290,"jupiter":1365,"pensacola":972,"tallahassee":1150,"gainesville":1230,"kissimmee":1300,"sanford":1280,"leesburg":1290,"deland":1270,"daytona beach":1260,"fort lauderdale":1400,"miami":1420,"west palm beach":1380,"port st lucie":1360,"fort myers":1380,"cape coral":1390,"naples":1410,"clearwater":1340,"st petersburg":1345,"sarasota":1360,"bradenton":1355,"punta gorda":1375,"kernersville":825,"lenoir":880,"durham":860,"greensboro":830,"rocky mount":858,"mebane":845,"henderson":858,"faison":855,"jonesville":780,"dudley":852,"winston salem":820,"winston-salem":820,"hickory":865,"concord":860,"gastonia":878,"burlington":840,"high point":832,"goldsboro":855,"wilson":852,"fayetteville":855,"raleigh":858,"cary":840,"asheville":878,"statesville":855,"salisbury":845,"charleston":938,"n charleston":935,"north charleston":935,"greenville":775,"beech island":828,"columbia":840,"florence":878,"myrtle beach":930,"hilton head":960,"gaffney":778,"union":870,"athens":760,"braselton":748,"calhoun":685,"doraville":748,"duluth":745,"griffin":768,"suwanee":740,"gainesville ga":740,"cartersville":730,"conyers":736,"stockbridge":738,"macon":785,"savannah":850,"columbus":790,"albany":860,"valdosta":890,"brunswick":870,"warner robins":810,"kennesaw":712,"smyrna":718,"marietta":716,"roswell":722,"mechanicsville":840,"richmond":840,"norfolk":900,"virginia beach":905,"roanoke":808,"charlottesville":832,"hattiesburg":900,"jackson ms":870,"gulfport":958,"biloxi":962,"murfreesboro":500,"franklin tn":498,"clarksville":530,"cookeville":530,"johnson city":590,"kingsport":590,"bristol":600,"smyrna tn":492,"la vergne":490,"columbus oh":350,"cincinnati":340,"cleveland oh":390,"toledo":310,"akron":400,"dayton":340,"youngstown":430,"philadelphia":780,"pittsburgh":460,"allentown":800,"harrisburg":750,"new york":840,"bronx":845,"brooklyn":850,"buffalo ny":500,"rochester ny":570,"baltimore":760,"hagerstown":730,"newark":820,"jersey city":825,"camden":790,"elizabeth":820,"trenton":800,"flint":310,"warren":295,"sterling heights":295,"dearborn":290,"grand rapids mi":130,"chicago ridge":22,"bridgeview il":20,"justice":18,"lyons":18,"stickney":22,"summit":20,"countryside":15,"fort payne":810,"gadsden":820,"anniston":840,"oxford":675,"talladega":685,"pelham":662,"trussville":835,"pell city":860,"rainbow city":845,"boaz":850,"albertville":848,"centre":830,"rome ga":700,"calhoun ga":670,"dalton":690,"chattanooga tn":620,"lebanon tn":520,"gallatin":525,"hendersonville tn":520,"columbia tn":520,"brentwood":497,"crossville":555,"jackson tn":548,"dyersburg":580,"clarksville tn":530,"paris tn":565,"millington":565,"memphis tn":560,"olive branch":570,"southaven":568,"horn lake":568,"corinth":600,"tupelo":650,"columbus ms":690,"meridian":750,"laurel":900,"hattiesburg ms":960,"picayune":990,"gulfport ms":1000,"biloxi ms":1005,"ocean springs":1010,"pascagoula":1020,"mobile":975,"tillmans corner":975,"theodore":975,"daphne":980,"fairhope":985,"foley":990,"pensacola fl":1020,"pace":1025,"milton fl":1030,"tallahassee fl":1150,"quincy fl":1145,"marianna":1100,"panama city":1060,"destin":1050,"fort walton beach":1048,"niceville":1052,"crestview":1042,"dothan al":1000,"enterprise":825,"ozark":990,"troy al":960,"montgomery al":940,"prattville":940,"millbrook":942,"wetumpka":938,"auburn al":910,"opelika":712,"phenix city":720,"valley al":895,"rome":715,"cleveland":718,"summerville":940,"chapel hill":834,"smithfield nc":850,"morganton":870,"jonesville nc":850,"cleveland tn":600};
+const CITYLL={"romeoville":[41.627,-88.089],"kernersville":[36.119,-80.069],"lenoir":[35.913,-81.540],"winston salem":[36.099,-80.244],"winston-salem":[36.099,-80.244],"greensboro":[36.073,-79.792],"high point":[35.955,-80.005],"durham":[35.994,-78.899],"raleigh":[35.779,-78.638],"cary":[35.791,-78.781],"chapel hill":[35.913,-79.056],"charlotte":[35.227,-80.843],"gastonia":[35.262,-81.187],"hickory":[35.733,-81.344],"statesville":[35.783,-80.887],"salisbury":[35.671,-80.474],"concord":[35.409,-80.580],"mooresville":[35.574,-80.810],"asheville":[35.595,-82.551],"morganton":[35.745,-81.685],"fayetteville":[35.053,-78.878],"wilmington":[34.226,-77.945],"rocky mount":[35.938,-77.790],"henderson":[36.330,-78.400],"mebane":[36.096,-79.267],"burlington":[36.096,-79.438],"faison":[35.125,-78.128],"jonesville":[36.238,-80.840],"dudley":[35.267,-78.017],"goldsboro":[35.385,-78.007],"wilson":[35.721,-77.916],"kinston":[35.262,-77.581],"jacksonville nc":[34.754,-77.430],"mechanicsville":[37.604,-77.356],"richmond":[37.541,-77.434],"norfolk":[36.851,-76.286],"roanoke":[37.271,-79.942],"rock hill":[34.925,-81.025],"spartanburg":[34.950,-81.932],"greenville sc":[34.852,-82.394],"beech island":[33.465,-81.840],"lugoff":[34.196,-80.670],"charleston":[32.776,-79.931],"columbia":[34.000,-81.035],"florence":[34.198,-79.761],"myrtle beach":[33.689,-78.887],"atlanta":[33.749,-84.388],"college park":[33.653,-84.449],"braselton":[34.113,-83.808],"athens":[33.961,-83.378],"calhoun":[34.503,-84.951],"rome":[34.257,-85.165],"cartersville":[34.166,-84.800],"duluth":[34.003,-84.145],"doraville":[33.900,-84.283],"suwanee":[34.052,-84.066],"kennesaw":[34.023,-84.615],"marietta":[33.953,-84.551],"smyrna":[33.884,-84.514],"roswell":[34.023,-84.362],"douglasville":[33.750,-84.748],"griffin":[33.247,-84.261],"conyers":[33.668,-84.018],"stockbridge":[33.538,-84.234],"mcdonough":[33.446,-84.147],"macon":[32.840,-83.633],"savannah":[32.076,-81.089],"valdosta":[30.833,-83.279],"columbus":[32.461,-84.989],"albany":[31.578,-84.156],"fort payne":[34.444,-85.720],"gadsden":[34.014,-85.989],"anniston":[33.659,-85.832],"oxford":[33.614,-85.836],"talladega":[33.436,-86.104],"montgomery":[32.361,-86.279],"dothan":[31.223,-85.390],"mobile":[30.695,-88.043],"huntsville":[34.730,-86.586],"decatur":[34.606,-86.983],"pelham":[33.297,-86.793],"birmingham":[33.521,-86.803],"nashville":[36.162,-86.782],"murfreesboro":[35.845,-86.390],"franklin tn":[35.925,-86.869],"brentwood":[35.998,-86.783],"smyrna tn":[36.004,-86.519],"la vergne":[36.018,-86.582],"cookeville":[36.163,-85.501],"chattanooga":[35.046,-85.309],"knoxville":[35.961,-83.921],"memphis":[35.149,-90.052],"jackson tn":[35.615,-88.814],"clarksville":[36.532,-87.359],"jacksonville":[30.332,-81.656],"orlando":[28.538,-81.379],"tampa":[27.947,-82.458],"longwood":[28.703,-81.339],"haines city":[28.114,-81.629],"lakeland":[28.039,-81.950],"ocala":[29.188,-82.130],"palm bay":[28.034,-80.589],"jupiter":[26.934,-80.096],"pensacola":[30.421,-87.217],"tallahassee":[30.438,-84.281],"deltona":[28.900,-81.264],"gainesville":[29.652,-82.325],"sarasota":[27.336,-82.531],"clearwater":[27.966,-82.800],"st petersburg":[27.773,-82.640],"bradenton":[27.499,-82.575],"fort lauderdale":[26.122,-80.143],"miami":[25.774,-80.194],"west palm beach":[26.715,-80.053],"port st lucie":[27.293,-80.351],"hattiesburg":[31.327,-89.290],"gulfport":[30.367,-89.092],"biloxi":[30.396,-88.886],"mobile al":[30.695,-88.043],"milwaukee":[43.049,-87.906],"germantown":[43.226,-88.111],"beloit":[42.508,-89.032],"pleasant prairie":[42.526,-87.903],"kenosha":[42.585,-87.823],"new berlin":[43.038,-88.108],"oak creek":[42.886,-87.907],"racine":[42.726,-87.783],"sturtevant":[42.699,-87.893],"franksville":[42.678,-87.905],"east troy":[42.780,-88.402]};
+const ZIPDIST={"60446":{"city":"Romeoville","state":"IL","miles":0},"60441":{"city":"Lockport","state":"IL","miles":5},"60432":{"city":"Joliet","state":"IL","miles":8},"60490":{"city":"Bolingbrook","state":"IL","miles":5},"60517":{"city":"Woodridge","state":"IL","miles":8},"60514":{"city":"Clarendon Hills","state":"IL","miles":12},"60527":{"city":"Burr Ridge","state":"IL","miles":12},"60521":{"city":"Hodgkins","state":"IL","miles":18},"60501":{"city":"Summit","state":"IL","miles":20},"60499":{"city":"Bedford Park","state":"IL","miles":22},"60455":{"city":"Bridgeview","state":"IL","miles":20},"60638":{"city":"Bedford Park","state":"IL","miles":22},"60630":{"city":"Chicago","state":"IL","miles":28},"60612":{"city":"Chicago","state":"IL","miles":30},"60601":{"city":"Chicago","state":"IL","miles":30},"60007":{"city":"Elk Grove Village","state":"IL","miles":25},"60126":{"city":"Elmhurst","state":"IL","miles":22},"60181":{"city":"Villa Park","state":"IL","miles":22},"60148":{"city":"Lombard","state":"IL","miles":20},"60515":{"city":"Downers Grove","state":"IL","miles":15},"60532":{"city":"Lisle","state":"IL","miles":15},"60188":{"city":"Carol Stream","state":"IL","miles":20},"60108":{"city":"Bloomingdale","state":"IL","miles":22},"60172":{"city":"Roselle","state":"IL","miles":25},"60133":{"city":"Hanover Park","state":"IL","miles":28},"60103":{"city":"Bartlett","state":"IL","miles":30},"60173":{"city":"Schaumburg","state":"IL","miles":28},"60120":{"city":"Elgin","state":"IL","miles":35},"60169":{"city":"Hoffman Estates","state":"IL","miles":30},"60010":{"city":"Barrington","state":"IL","miles":40},"60014":{"city":"Crystal Lake","state":"IL","miles":45},"60050":{"city":"McHenry","state":"IL","miles":50},"60084":{"city":"Wauconda","state":"IL","miles":48},"60047":{"city":"Lake Zurich","state":"IL","miles":45},"60048":{"city":"Libertyville","state":"IL","miles":50},"60031":{"city":"Gurnee","state":"IL","miles":52},"60085":{"city":"Waukegan","state":"IL","miles":55},"60088":{"city":"North Chicago","state":"IL","miles":55},"60099":{"city":"Zion","state":"IL","miles":58},"60543":{"city":"Oswego","state":"IL","miles":12},"60538":{"city":"Montgomery","state":"IL","miles":14},"60560":{"city":"Yorkville","state":"IL","miles":15},"60545":{"city":"Plano","state":"IL","miles":22},"60139":{"city":"Glendale Heights","state":"IL","miles":22},"60137":{"city":"Glen Ellyn","state":"IL","miles":20},"60189":{"city":"Wheaton","state":"IL","miles":20},"60187":{"city":"Wheaton","state":"IL","miles":20},"60563":{"city":"Naperville","state":"IL","miles":15},"60564":{"city":"Naperville","state":"IL","miles":15},"60565":{"city":"Naperville","state":"IL","miles":15},"60502":{"city":"Aurora","state":"IL","miles":20},"60505":{"city":"Aurora","state":"IL","miles":20},"60510":{"city":"Batavia","state":"IL","miles":25},"60134":{"city":"Geneva","state":"IL","miles":28},"60174":{"city":"St. Charles","state":"IL","miles":28},"60542":{"city":"North Aurora","state":"IL","miles":20},"60506":{"city":"Aurora","state":"IL","miles":20},"60554":{"city":"Sugar Grove","state":"IL","miles":22},"60481":{"city":"Wilmington","state":"IL","miles":18},"60915":{"city":"Bradley","state":"IL","miles":32},"60914":{"city":"Bourbonnais","state":"IL","miles":35},"60901":{"city":"Kankakee","state":"IL","miles":35},"60940":{"city":"Manteno","state":"IL","miles":30},"60419":{"city":"Dolton","state":"IL","miles":26},"60411":{"city":"Chicago Heights","state":"IL","miles":25},"60417":{"city":"Crete","state":"IL","miles":25},"60443":{"city":"Matteson","state":"IL","miles":20},"60452":{"city":"Oak Forest","state":"IL","miles":15},"60453":{"city":"Oak Lawn","state":"IL","miles":22},"60803":{"city":"Alsip","state":"IL","miles":18},"60130":{"city":"Forest Park","state":"IL","miles":24},"60153":{"city":"Maywood","state":"IL","miles":25},"60160":{"city":"Melrose Park","state":"IL","miles":25},"60131":{"city":"Franklin Park","state":"IL","miles":25},"60164":{"city":"Northlake","state":"IL","miles":23},"60163":{"city":"Berkeley","state":"IL","miles":22},"60162":{"city":"Hillside","state":"IL","miles":20},"60534":{"city":"Lyons","state":"IL","miles":18},"60526":{"city":"La Grange Park","state":"IL","miles":18},"60525":{"city":"La Grange","state":"IL","miles":18},"60513":{"city":"Brookfield","state":"IL","miles":20},"60402":{"city":"Berwyn","state":"IL","miles":22},"60304":{"city":"Oak Park","state":"IL","miles":25},"60018":{"city":"Des Plaines","state":"IL","miles":28},"60068":{"city":"Park Ridge","state":"IL","miles":28},"60714":{"city":"Niles","state":"IL","miles":28},"60076":{"city":"Skokie","state":"IL","miles":30},"60201":{"city":"Evanston","state":"IL","miles":32},"60090":{"city":"Wheeling","state":"IL","miles":33},"60089":{"city":"Buffalo Grove","state":"IL","miles":38},"60067":{"city":"Palatine","state":"IL","miles":35},"60004":{"city":"Arlington Heights","state":"IL","miles":33},"60056":{"city":"Mount Prospect","state":"IL","miles":30},"60008":{"city":"Rolling Meadows","state":"IL","miles":30},"60480":{"city":"Willow Springs","state":"IL","miles":12},"60463":{"city":"Palos Heights","state":"IL","miles":12},"60462":{"city":"Orland Park","state":"IL","miles":15},"60477":{"city":"Tinley Park","state":"IL","miles":18},"60423":{"city":"Frankfort","state":"IL","miles":16},"60435":{"city":"Joliet","state":"IL","miles":8},"60436":{"city":"Joliet","state":"IL","miles":8},"60431":{"city":"Joliet","state":"IL","miles":8},"60433":{"city":"Joliet","state":"IL","miles":8},"60404":{"city":"Shorewood","state":"IL","miles":6},"60586":{"city":"Plainfield","state":"IL","miles":8},"60585":{"city":"Plainfield","state":"IL","miles":8},"60439":{"city":"Lemont","state":"IL","miles":12},"60487":{"city":"Tinley Park","state":"IL","miles":18},"60406":{"city":"Blue Island","state":"IL","miles":20},"60409":{"city":"Calumet City","state":"IL","miles":28},"60438":{"city":"Lansing","state":"IL","miles":28},"60473":{"city":"South Holland","state":"IL","miles":25},"60430":{"city":"Homewood","state":"IL","miles":22},"60422":{"city":"Flossmoor","state":"IL","miles":22},"60428":{"city":"Markham","state":"IL","miles":22},"60426":{"city":"Harvey","state":"IL","miles":22},"60478":{"city":"Country Club Hills","state":"IL","miles":20},"60461":{"city":"Olympia Fields","state":"IL","miles":22},"60466":{"city":"Park Forest","state":"IL","miles":22},"60475":{"city":"Steger","state":"IL","miles":22},"60468":{"city":"Peotone","state":"IL","miles":20},"60467":{"city":"Orland Hills","state":"IL","miles":15},"60484":{"city":"University Park","state":"IL","miles":22},"60449":{"city":"Monee","state":"IL","miles":22},"46320":{"city":"Hammond","state":"IN","miles":28},"46401":{"city":"Gary","state":"IN","miles":32},"46405":{"city":"Gary","state":"IN","miles":32},"46373":{"city":"St. John","state":"IN","miles":28},"46340":{"city":"Griffith","state":"IN","miles":30},"46410":{"city":"Merrillville","state":"IN","miles":35},"46304":{"city":"Chesterton","state":"IN","miles":50},"46323":{"city":"Hammond","state":"IN","miles":28},"46324":{"city":"Hammond","state":"IN","miles":28},"46325":{"city":"Hammond","state":"IN","miles":28},"46327":{"city":"Hammond","state":"IN","miles":28},"46375":{"city":"Schererville","state":"IN","miles":30},"46386":{"city":"Portage","state":"IN","miles":40},"46343":{"city":"Highland","state":"IN","miles":30},"46356":{"city":"Lowell","state":"IN","miles":35},"46365":{"city":"Michigan City","state":"IN","miles":60},"46360":{"city":"Michigan City","state":"IN","miles":60},"46350":{"city":"La Porte","state":"IN","miles":65},"46614":{"city":"South Bend","state":"IN","miles":95},"46601":{"city":"South Bend","state":"IN","miles":95},"46628":{"city":"South Bend","state":"IN","miles":95},"46545":{"city":"Mishawaka","state":"IN","miles":95},"46516":{"city":"Elkhart","state":"IN","miles":110},"46526":{"city":"Goshen","state":"IN","miles":115},"46706":{"city":"Auburn","state":"IN","miles":150},"46802":{"city":"Fort Wayne","state":"IN","miles":155},"46804":{"city":"Fort Wayne","state":"IN","miles":155},"46825":{"city":"Fort Wayne","state":"IN","miles":155},"46902":{"city":"Kokomo","state":"IN","miles":120},"46901":{"city":"Kokomo","state":"IN","miles":120},"46201":{"city":"Indianapolis","state":"IN","miles":175},"46219":{"city":"Indianapolis","state":"IN","miles":175},"46227":{"city":"Indianapolis","state":"IN","miles":175},"46241":{"city":"Indianapolis","state":"IN","miles":175},"53140":{"city":"Kenosha","state":"WI","miles":52},"53142":{"city":"Kenosha","state":"WI","miles":52},"53143":{"city":"Kenosha","state":"WI","miles":52},"53144":{"city":"Kenosha","state":"WI","miles":52},"53402":{"city":"Racine","state":"WI","miles":58},"53403":{"city":"Racine","state":"WI","miles":58},"53404":{"city":"Racine","state":"WI","miles":58},"53406":{"city":"Racine","state":"WI","miles":58},"53177":{"city":"Sturtevant","state":"WI","miles":58},"53126":{"city":"Franksville","state":"WI","miles":62},"53154":{"city":"Oak Creek","state":"WI","miles":62},"53221":{"city":"Milwaukee","state":"WI","miles":68},"53204":{"city":"Milwaukee","state":"WI","miles":68},"53207":{"city":"Milwaukee","state":"WI","miles":68},"53214":{"city":"Milwaukee","state":"WI","miles":68},"53218":{"city":"Milwaukee","state":"WI","miles":68},"53219":{"city":"Milwaukee","state":"WI","miles":68},"53151":{"city":"New Berlin","state":"WI","miles":72},"53149":{"city":"Muskego","state":"WI","miles":70},"53132":{"city":"Franklin","state":"WI","miles":68},"53202":{"city":"Milwaukee","state":"WI","miles":70},"53226":{"city":"Wauwatosa","state":"WI","miles":72},"53212":{"city":"Milwaukee","state":"WI","miles":70},"53209":{"city":"Milwaukee","state":"WI","miles":70},"53222":{"city":"Milwaukee","state":"WI","miles":68},"53005":{"city":"Brookfield","state":"WI","miles":74},"53186":{"city":"Waukesha","state":"WI","miles":75},"53188":{"city":"Waukesha","state":"WI","miles":75},"53095":{"city":"West Bend","state":"WI","miles":80},"53051":{"city":"Menomonee Falls","state":"WI","miles":78},"53022":{"city":"Germantown","state":"WI","miles":78},"53089":{"city":"Sussex","state":"WI","miles":82},"53029":{"city":"Hartland","state":"WI","miles":85},"53066":{"city":"Oconomowoc","state":"WI","miles":90},"53094":{"city":"Watertown","state":"WI","miles":100},"53108":{"city":"Caledonia","state":"WI","miles":62},"53017":{"city":"Butler","state":"WI","miles":72},"53072":{"city":"Pewaukee","state":"WI","miles":78},"53511":{"city":"Beloit","state":"WI","miles":78},"53545":{"city":"Janesville","state":"WI","miles":82},"53546":{"city":"Janesville","state":"WI","miles":82},"53548":{"city":"Janesville","state":"WI","miles":82},"53534":{"city":"Edgerton","state":"WI","miles":90},"53190":{"city":"Whitewater","state":"WI","miles":90},"53538":{"city":"Fort Atkinson","state":"WI","miles":110},"53549":{"city":"Jefferson","state":"WI","miles":100},"53704":{"city":"Madison","state":"WI","miles":95},"53711":{"city":"Madison","state":"WI","miles":95},"53719":{"city":"Madison","state":"WI","miles":95},"53562":{"city":"Middleton","state":"WI","miles":98},"53593":{"city":"Verona","state":"WI","miles":97},"53589":{"city":"Stoughton","state":"WI","miles":98},"53913":{"city":"Baraboo","state":"WI","miles":140},"53916":{"city":"Beaver Dam","state":"WI","miles":115},"54937":{"city":"Fond du Lac","state":"WI","miles":125},"54901":{"city":"Oshkosh","state":"WI","miles":130},"54911":{"city":"Appleton","state":"WI","miles":135},"54914":{"city":"Appleton","state":"WI","miles":135},"54301":{"city":"Green Bay","state":"WI","miles":155},"54302":{"city":"Green Bay","state":"WI","miles":155},"53081":{"city":"Sheboygan","state":"WI","miles":130},"53083":{"city":"Sheboygan","state":"WI","miles":130},"54220":{"city":"Manitowoc","state":"WI","miles":150},"54401":{"city":"Wausau","state":"WI","miles":190},"27284":{"city":"Kernersville","state":"NC","miles":825},"27285":{"city":"Kernersville","state":"NC","miles":825},"27103":{"city":"Winston-Salem","state":"NC","miles":820},"27105":{"city":"Winston-Salem","state":"NC","miles":820},"27127":{"city":"Winston-Salem","state":"NC","miles":820},"27101":{"city":"Winston-Salem","state":"NC","miles":820},"27401":{"city":"Greensboro","state":"NC","miles":830},"27403":{"city":"Greensboro","state":"NC","miles":830},"27407":{"city":"Greensboro","state":"NC","miles":830},"27409":{"city":"Greensboro","state":"NC","miles":830},"27410":{"city":"Greensboro","state":"NC","miles":830},"27265":{"city":"High Point","state":"NC","miles":832},"27260":{"city":"High Point","state":"NC","miles":832},"27215":{"city":"Burlington","state":"NC","miles":840},"27302":{"city":"Mebane","state":"NC","miles":845},"27701":{"city":"Durham","state":"NC","miles":860},"27703":{"city":"Durham","state":"NC","miles":860},"27707":{"city":"Durham","state":"NC","miles":860},"27601":{"city":"Raleigh","state":"NC","miles":858},"27604":{"city":"Raleigh","state":"NC","miles":858},"27609":{"city":"Raleigh","state":"NC","miles":858},"28645":{"city":"Lenoir","state":"NC","miles":880},"28630":{"city":"Granite Falls","state":"NC","miles":875},"28601":{"city":"Hickory","state":"NC","miles":865},"28602":{"city":"Hickory","state":"NC","miles":865},"28025":{"city":"Concord","state":"NC","miles":860},"28027":{"city":"Concord","state":"NC","miles":860},"28205":{"city":"Charlotte","state":"NC","miles":872},"28206":{"city":"Charlotte","state":"NC","miles":872},"28217":{"city":"Charlotte","state":"NC","miles":872},"28269":{"city":"Charlotte","state":"NC","miles":872},"28273":{"city":"Charlotte","state":"NC","miles":872},"28277":{"city":"Charlotte","state":"NC","miles":872},"28105":{"city":"Matthews","state":"NC","miles":870},"28006":{"city":"Advance","state":"NC","miles":822},"28334":{"city":"Dunn","state":"NC","miles":855},"28301":{"city":"Fayetteville","state":"NC","miles":862},"28304":{"city":"Fayetteville","state":"NC","miles":862},"28314":{"city":"Fayetteville","state":"NC","miles":862},"28306":{"city":"Fayetteville","state":"NC","miles":862},"28401":{"city":"Wilmington","state":"NC","miles":890},"28403":{"city":"Wilmington","state":"NC","miles":890},"28405":{"city":"Wilmington","state":"NC","miles":890},"27896":{"city":"Wilson","state":"NC","miles":848},"27893":{"city":"Wilson","state":"NC","miles":848},"27801":{"city":"Rocky Mount","state":"NC","miles":850},"27804":{"city":"Rocky Mount","state":"NC","miles":850},"28144":{"city":"Salisbury","state":"NC","miles":845},"28150":{"city":"Shelby","state":"NC","miles":885},"27360":{"city":"Thomasville","state":"NC","miles":835},"27320":{"city":"Reidsville","state":"NC","miles":840},"27030":{"city":"Mount Airy","state":"NC","miles":835},"28540":{"city":"Jacksonville","state":"NC","miles":878},"27382":{"city":"Roseboro","state":"NC","miles":862},"29349":{"city":"Inman","state":"SC","miles":858},"29483":{"city":"Summerville","state":"SC","miles":955},"29405":{"city":"North Charleston","state":"SC","miles":960},"29406":{"city":"North Charleston","state":"SC","miles":960},"29301":{"city":"Spartanburg","state":"SC","miles":860},"29303":{"city":"Spartanburg","state":"SC","miles":860},"29401":{"city":"Charleston","state":"SC","miles":960},"29414":{"city":"Charleston","state":"SC","miles":960},"29501":{"city":"Florence","state":"SC","miles":910},"29505":{"city":"Florence","state":"SC","miles":910},"29201":{"city":"Columbia","state":"SC","miles":890},"29203":{"city":"Columbia","state":"SC","miles":890},"29210":{"city":"Columbia","state":"SC","miles":890},"29072":{"city":"Lexington","state":"SC","miles":890},"29801":{"city":"Aiken","state":"SC","miles":888},"29841":{"city":"North Augusta","state":"SC","miles":885},"29611":{"city":"Greenville","state":"SC","miles":852},"29615":{"city":"Greenville","state":"SC","miles":852},"29062":{"city":"Lugoff","state":"SC","miles":895},"29063":{"city":"Irmo","state":"SC","miles":892},"30303":{"city":"Atlanta","state":"GA","miles":745},"30318":{"city":"Atlanta","state":"GA","miles":745},"30328":{"city":"Atlanta","state":"GA","miles":748},"30340":{"city":"Doraville","state":"GA","miles":748},"30341":{"city":"Chamblee","state":"GA","miles":748},"30349":{"city":"College Park","state":"GA","miles":748},"30337":{"city":"Atlanta","state":"GA","miles":748},"30260":{"city":"Morrow","state":"GA","miles":755},"30253":{"city":"McDonough","state":"GA","miles":760},"30252":{"city":"McDonough","state":"GA","miles":760},"30135":{"city":"Douglasville","state":"GA","miles":755},"30134":{"city":"Douglasville","state":"GA","miles":755},"30080":{"city":"Smyrna","state":"GA","miles":745},"30060":{"city":"Marietta","state":"GA","miles":742},"30068":{"city":"Marietta","state":"GA","miles":742},"30066":{"city":"Marietta","state":"GA","miles":742},"30075":{"city":"Roswell","state":"GA","miles":748},"30004":{"city":"Alpharetta","state":"GA","miles":748},"30024":{"city":"Suwanee","state":"GA","miles":742},"30518":{"city":"Buford","state":"GA","miles":745},"30701":{"city":"Calhoun","state":"GA","miles":685},"30120":{"city":"Cartersville","state":"GA","miles":730},"30144":{"city":"Kennesaw","state":"GA","miles":740},"30736":{"city":"Dalton","state":"GA","miles":690},"30720":{"city":"Dalton","state":"GA","miles":690},"30161":{"city":"Rome","state":"GA","miles":715},"30165":{"city":"Rome","state":"GA","miles":715},"30241":{"city":"LaGrange","state":"GA","miles":778},"31201":{"city":"Macon","state":"GA","miles":820},"31204":{"city":"Macon","state":"GA","miles":820},"31210":{"city":"Macon","state":"GA","miles":820},"35967":{"city":"Fort Payne","state":"AL","miles":810},"35968":{"city":"Fort Payne","state":"AL","miles":810},"35901":{"city":"Gadsden","state":"AL","miles":820},"35903":{"city":"Gadsden","state":"AL","miles":820},"36201":{"city":"Anniston","state":"AL","miles":840},"36203":{"city":"Oxford","state":"AL","miles":842},"35007":{"city":"Alabaster","state":"AL","miles":875},"35173":{"city":"Trussville","state":"AL","miles":835},"35022":{"city":"Bessemer","state":"AL","miles":868},"35124":{"city":"Pelham","state":"AL","miles":885},"35215":{"city":"Birmingham","state":"AL","miles":870},"35233":{"city":"Birmingham","state":"AL","miles":870},"35244":{"city":"Birmingham","state":"AL","miles":872},"35824":{"city":"Huntsville","state":"AL","miles":820},"35806":{"city":"Huntsville","state":"AL","miles":820},"35801":{"city":"Huntsville","state":"AL","miles":820},"35802":{"city":"Huntsville","state":"AL","miles":820},"35811":{"city":"Huntsville","state":"AL","miles":820},"35630":{"city":"Florence","state":"AL","miles":760},"35611":{"city":"Athens","state":"AL","miles":798},"35601":{"city":"Decatur","state":"AL","miles":825},"35603":{"city":"Decatur","state":"AL","miles":825},"36801":{"city":"Opelika","state":"AL","miles":912},"36830":{"city":"Auburn","state":"AL","miles":910},"36303":{"city":"Dothan","state":"AL","miles":985},"36301":{"city":"Dothan","state":"AL","miles":985},"36604":{"city":"Mobile","state":"AL","miles":975},"36606":{"city":"Mobile","state":"AL","miles":975},"36695":{"city":"Mobile","state":"AL","miles":975},"37601":{"city":"Johnson City","state":"TN","miles":590},"37604":{"city":"Johnson City","state":"TN","miles":590},"37660":{"city":"Kingsport","state":"TN","miles":590},"37663":{"city":"Kingsport","state":"TN","miles":590},"37664":{"city":"Kingsport","state":"TN","miles":590},"37920":{"city":"Knoxville","state":"TN","miles":565},"37917":{"city":"Knoxville","state":"TN","miles":565},"37931":{"city":"Knoxville","state":"TN","miles":565},"37922":{"city":"Knoxville","state":"TN","miles":565},"37912":{"city":"Knoxville","state":"TN","miles":565},"37914":{"city":"Knoxville","state":"TN","miles":565},"37902":{"city":"Knoxville","state":"TN","miles":565},"37421":{"city":"Chattanooga","state":"TN","miles":605},"37411":{"city":"Chattanooga","state":"TN","miles":605},"37406":{"city":"Chattanooga","state":"TN","miles":605},"37402":{"city":"Chattanooga","state":"TN","miles":605},"37404":{"city":"Chattanooga","state":"TN","miles":605},"38104":{"city":"Memphis","state":"TN","miles":545},"38109":{"city":"Memphis","state":"TN","miles":545},"38116":{"city":"Memphis","state":"TN","miles":545},"38118":{"city":"Memphis","state":"TN","miles":545},"38125":{"city":"Memphis","state":"TN","miles":545},"37201":{"city":"Nashville","state":"TN","miles":495},"37203":{"city":"Nashville","state":"TN","miles":495},"37207":{"city":"Nashville","state":"TN","miles":495},"37211":{"city":"Nashville","state":"TN","miles":495},"37214":{"city":"Nashville","state":"TN","miles":495},"37217":{"city":"Nashville","state":"TN","miles":495},"37086":{"city":"La Vergne","state":"TN","miles":500},"37130":{"city":"Murfreesboro","state":"TN","miles":500},"37127":{"city":"Murfreesboro","state":"TN","miles":500},"37067":{"city":"Franklin","state":"TN","miles":498},"37064":{"city":"Franklin","state":"TN","miles":498},"37027":{"city":"Brentwood","state":"TN","miles":497},"37075":{"city":"Hendersonville","state":"TN","miles":498},"37066":{"city":"Gallatin","state":"TN","miles":502},"37090":{"city":"Lebanon","state":"TN","miles":505},"37040":{"city":"Clarksville","state":"TN","miles":530},"37042":{"city":"Clarksville","state":"TN","miles":530},"38501":{"city":"Cookeville","state":"TN","miles":540},"38506":{"city":"Cookeville","state":"TN","miles":540},"32254":{"city":"Jacksonville","state":"FL","miles":1218},"32207":{"city":"Jacksonville","state":"FL","miles":1215},"32210":{"city":"Jacksonville","state":"FL","miles":1215},"32218":{"city":"Jacksonville","state":"FL","miles":1218},"32219":{"city":"Jacksonville","state":"FL","miles":1218},"32220":{"city":"Jacksonville","state":"FL","miles":1218},"32725":{"city":"Deltona","state":"FL","miles":1255},"32801":{"city":"Orlando","state":"FL","miles":1272},"32804":{"city":"Orlando","state":"FL","miles":1272},"32808":{"city":"Orlando","state":"FL","miles":1272},"32811":{"city":"Orlando","state":"FL","miles":1272},"32822":{"city":"Orlando","state":"FL","miles":1272},"32837":{"city":"Orlando","state":"FL","miles":1270},"32835":{"city":"Orlando","state":"FL","miles":1270},"34741":{"city":"Kissimmee","state":"FL","miles":1280},"34744":{"city":"Kissimmee","state":"FL","miles":1280},"32750":{"city":"Longwood","state":"FL","miles":1272},"32779":{"city":"Longwood","state":"FL","miles":1272},"32771":{"city":"Sanford","state":"FL","miles":1268},"33619":{"city":"Tampa","state":"FL","miles":1322},"33634":{"city":"Tampa","state":"FL","miles":1322},"33647":{"city":"Tampa","state":"FL","miles":1322},"33612":{"city":"Tampa","state":"FL","miles":1322},"33614":{"city":"Tampa","state":"FL","miles":1322},"33602":{"city":"Tampa","state":"FL","miles":1322},"33604":{"city":"Tampa","state":"FL","miles":1322},"33605":{"city":"Tampa","state":"FL","miles":1322},"33607":{"city":"Tampa","state":"FL","miles":1322},"33610":{"city":"Tampa","state":"FL","miles":1322},"33611":{"city":"Tampa","state":"FL","miles":1322},"33637":{"city":"Tampa","state":"FL","miles":1322},"33702":{"city":"St. Petersburg","state":"FL","miles":1335},"33705":{"city":"St. Petersburg","state":"FL","miles":1335},"33756":{"city":"Clearwater","state":"FL","miles":1332},"33759":{"city":"Clearwater","state":"FL","miles":1332},"33760":{"city":"Clearwater","state":"FL","miles":1332},"33762":{"city":"Clearwater","state":"FL","miles":1332},"33763":{"city":"Clearwater","state":"FL","miles":1332},"33844":{"city":"Haines City","state":"FL","miles":1295},"33801":{"city":"Lakeland","state":"FL","miles":1295},"33803":{"city":"Lakeland","state":"FL","miles":1295},"33811":{"city":"Lakeland","state":"FL","miles":1298},"33812":{"city":"Lakeland","state":"FL","miles":1298},"33901":{"city":"Fort Myers","state":"FL","miles":1378},"33905":{"city":"Fort Myers","state":"FL","miles":1378},"34102":{"city":"Naples","state":"FL","miles":1402},"34103":{"city":"Naples","state":"FL","miles":1402},"34119":{"city":"Naples","state":"FL","miles":1408},"33458":{"city":"Jupiter","state":"FL","miles":1362},"33411":{"city":"West Palm Beach","state":"FL","miles":1368},"33415":{"city":"West Palm Beach","state":"FL","miles":1368},"33301":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33311":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33312":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33315":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33317":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33319":{"city":"Fort Lauderdale","state":"FL","miles":1392},"33166":{"city":"Miami","state":"FL","miles":1410},"33169":{"city":"Miami","state":"FL","miles":1410},"33179":{"city":"Miami","state":"FL","miles":1412},"33186":{"city":"Miami","state":"FL","miles":1418},"33193":{"city":"Miami","state":"FL","miles":1420},"23220":{"city":"Richmond","state":"VA","miles":840},"23224":{"city":"Richmond","state":"VA","miles":840},"23231":{"city":"Richmond","state":"VA","miles":840},"23234":{"city":"Richmond","state":"VA","miles":840},"21201":{"city":"Baltimore","state":"MD","miles":760},"21215":{"city":"Baltimore","state":"MD","miles":760},"21222":{"city":"Baltimore","state":"MD","miles":760},"21224":{"city":"Baltimore","state":"MD","miles":760},"45402":{"city":"Dayton","state":"OH","miles":340},"44114":{"city":"Cleveland","state":"OH","miles":390},"43215":{"city":"Columbus","state":"OH","miles":350},"43228":{"city":"Columbus","state":"OH","miles":350},"45202":{"city":"Cincinnati","state":"OH","miles":340},"45211":{"city":"Cincinnati","state":"OH","miles":340},"40202":{"city":"Louisville","state":"KY","miles":330},"40213":{"city":"Louisville","state":"KY","miles":330},"40219":{"city":"Louisville","state":"KY","miles":330},"40291":{"city":"Louisville","state":"KY","miles":330},"40509":{"city":"Lexington","state":"KY","miles":425},"39401":{"city":"Hattiesburg","state":"MS","miles":960},"39402":{"city":"Hattiesburg","state":"MS","miles":960},"39501":{"city":"Gulfport","state":"MS","miles":1000},"39503":{"city":"Gulfport","state":"MS","miles":1000},"39531":{"city":"Biloxi","state":"MS","miles":1005},"75201":{"city":"Dallas","state":"TX","miles":980},"75217":{"city":"Dallas","state":"TX","miles":980},"76102":{"city":"Fort Worth","state":"TX","miles":985},"77002":{"city":"Houston","state":"TX","miles":1110},"77041":{"city":"Houston","state":"TX","miles":1110},"77060":{"city":"Houston","state":"TX","miles":1112},"70801":{"city":"Baton Rouge","state":"LA","miles":1000},"70808":{"city":"Baton Rouge","state":"LA","miles":1000},"70814":{"city":"Baton Rouge","state":"LA","miles":1000},"70820":{"city":"Baton Rouge","state":"LA","miles":1000},"70119":{"city":"New Orleans","state":"LA","miles":1050},"70127":{"city":"New Orleans","state":"LA","miles":1050},"70131":{"city":"New Orleans","state":"LA","miles":1050},"49501":{"city":"Grand Rapids","state":"MI","miles":130},"49504":{"city":"Grand Rapids","state":"MI","miles":130},"49505":{"city":"Grand Rapids","state":"MI","miles":130},"49507":{"city":"Grand Rapids","state":"MI","miles":130},"49508":{"city":"Grand Rapids","state":"MI","miles":130},"49512":{"city":"Grand Rapids","state":"MI","miles":130},"49001":{"city":"Kalamazoo","state":"MI","miles":115},"49009":{"city":"Kalamazoo","state":"MI","miles":115},"48126":{"city":"Dearborn","state":"MI","miles":290},"48202":{"city":"Detroit","state":"MI","miles":295},"48207":{"city":"Detroit","state":"MI","miles":295},"48228":{"city":"Detroit","state":"MI","miles":295},"48313":{"city":"Sterling Heights","state":"MI","miles":298},"48314":{"city":"Sterling Heights","state":"MI","miles":298},"48374":{"city":"Novi","state":"MI","miles":302},"48375":{"city":"Novi","state":"MI","miles":302},"48502":{"city":"Flint","state":"MI","miles":310},"48503":{"city":"Flint","state":"MI","miles":310},"48601":{"city":"Saginaw","state":"MI","miles":335}};
+
+/* ── mileage helpers ─────────────────────────────────────────────── */
+function haversineRd(ll1,ll2){var R=3959,dLat=(ll2[0]-ll1[0])*Math.PI/180,dLon=(ll2[1]-ll1[1])*Math.PI/180,a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(ll1[0]*Math.PI/180)*Math.cos(ll2[0]*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2),d=R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));return Math.round(d*(d<100?1.12:d<300?1.18:1.22));}
+
+var DIST_OVERRIDES={};try{DIST_OVERRIDES=JSON.parse(localStorage.getItem("fcbv2_distoverrides")||"{}");}catch(e){}
+var DIST_MISS_LOG={};
+
+/* cityMiles — FIX (item 2, verified 2026-09-28, 44,944 lookups).
+   The old fuzzy branch returned the FIRST overlapping key, so twelve typed
+   names took another place's mileage. Two were inside the 250-mile local
+   radius, which fired a local charge that should not exist:
+     "Troy, MI"     -> key "east troy"     70 mi -> $350 phantom charge
+     "Buffalo, OK"  -> key "buffalo grove" 38 mi -> $300 phantom charge
+   Now the longest matching key wins, and a fuzzy match may not cross a
+   state line. A bare key's state is recorded nowhere, so when a state was
+   typed only a key carrying that same state can be trusted; no match falls
+   through to the miss log rather than guessing. Swept over every table name
+   x all 50 states: 0 cases where null became a number. */
+function cityMiles(s){
+  if(!s)return null;
+  var zm=String(s).match(/\b(\d{5})\b/);if(zm&&ZIPDIST[zm[1]])return ZIPDIST[zm[1]].miles;
+  var c=String(s).split(",")[0].trim().toLowerCase();
+  var st=(String(s).split(",")[1]||"").trim().toLowerCase().replace(/[^a-z]/g,"").slice(0,2);
+  if(st&&DIST_OVERRIDES[c+" "+st]!==undefined)return DIST_OVERRIDES[c+" "+st];
+  if(DIST_OVERRIDES[c]!==undefined)return DIST_OVERRIDES[c];
+  if(st&&DIST[c+" "+st]!==undefined)return DIST[c+" "+st];
+  if(DIST[c]!==undefined)return DIST[c];
+  var cand=[];
+  for(var k in DIST)if(Object.prototype.hasOwnProperty.call(DIST,k)&&(c.indexOf(k)>=0||k.indexOf(c)>=0)&&k.length>4)cand.push(k);
+  if(cand.length){
+    cand.sort(function(a,b){return b.length-a.length||(a<b?-1:a>b?1:0);});
+    if(!st)return DIST[cand[0]];
+    for(var ci=0;ci<cand.length;ci++){
+      var sm=cand[ci].match(/ ([a-z]{2})$/);
+      if(sm&&sm[1]===st)return DIST[cand[ci]];
+    }
+  }
+  if(c&&!DIST_MISS_LOG[c]){
+    var hub=CITYLL["romeoville"]||[41.648,-88.089];
+    var ll=CITYLL[c];
+    DIST_MISS_LOG[c]={city:s,estimated:ll?Math.round(haversineRd(hub,ll)*1.15):null,ts:Date.now()};
+  }
+  return null;
+}
+
+/* cityLL + interCityMi — FIX (item 5, verified 2026-09-23, 16,770 legs).
+   interCityMi split on the comma and threw the state away, so a second-stop
+   leg out of "Montgomery, IL" was measured from Montgomery ALABAMA: 907 mi
+   instead of about 70. CITYLL holds one entry per bare name, so the guard
+   prefers a state-qualified key and otherwise sanity-checks the bare entry
+   against the hub distance DIST already knows. Returning null makes
+   calcGroup fall back to differencing the two hub distances — short rather
+   than wildly long, which is the safe direction for RPM. */
+var CITYLL_HUB=CITYLL["romeoville"];
+function cityLL(s){
+  if(!s)return null;
+  var p=String(s).split(","),c=p[0].trim().toLowerCase();
+  var st=(p[1]||"").trim().toLowerCase().replace(/[^a-z]/g,"").slice(0,2);
+  if(st&&CITYLL[c+" "+st])return CITYLL[c+" "+st];
+  var ll=CITYLL[c];
+  if(!ll)return null;
+  if(!st)return ll;
+  var tbl=cityMiles(s);
+  if(tbl==null)return ll;
+  var byLL=haversineRd(CITYLL_HUB,ll);
+  return Math.abs(byLL-tbl)<=Math.max(60,tbl*0.35)?ll:null;
+}
+function interCityMi(a,b){var l1=cityLL(a),l2=cityLL(b);if(l1&&l2)return haversineRd(l1,l2);return null;}
+
+function zipLookup(z){var e=ZIPDIST[String(z).trim()];return e?{city:e.city+", "+e.state,miles:e.miles}:null;}
+function expandZips(sr){if(!sr)return sr;return String(sr).replace(/\b(\d{5})\b/g,function(z){var r=zipLookup(z);return r?r.city:z;});}
+
+var TIERS=[[10,200],[25,250],[50,300],[75,350],[100,400],[125,500],[150,550],[175,600],[200,650],[225,700]];
+var LOCAL_MAX_MI=250;
+function localCharge(m){if(m==null||m==="")return null;var v=parseFloat(m);if(isNaN(v)||v<0)return null;if(v>LOCAL_MAX_MI)return null;if(v===0)return 200;for(var i=0;i<TIERS.length;i++)if(v<=TIERS[i][0])return TIERS[i][1];return 700;}
+
+function parsePickupDate(s){s=s||"";var dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(!dm)return null;var d=new Date(+dm[3],+dm[1]-1,+dm[2]);d.setHours(0,0,0,0);return d;}
+function parseTS(s){
+  s=s||"";
+  var dm=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if(!dm)return Infinity;
+  var d=new Date(+dm[3],+dm[1]-1,+dm[2]);
+  var tm=s.match(/(\d+):?(\d*)\s*(AM|PM)/i);
+  if(tm){var h=+tm[1],m=+(tm[2]||0);if(tm[3].toUpperCase()==="PM"&&h!==12)h+=12;if(tm[3].toUpperCase()==="AM"&&h===12)h=0;d.setHours(h,m);}
+  else{var t2=s.match(/(\d{1,2}):(\d{2})/);
+    if(t2){var h2=+t2[1],m2=+t2[2];if(h2>=0&&h2<=23&&m2>=0&&m2<=59)d.setHours(h2,m2);else d.setHours(0,0,0,0);}
+    else d.setHours(0,0,0,0);}
+  return d.getTime();
+}
+function parseSR(t){t=t||"";var i=t.indexOf(" - ");return i<0?{s:t.trim(),r:""}:{s:t.slice(0,i).trim(),r:t.slice(i+3).trim()};}
+function esc(v){return v==null?"":String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
+function money(n){return "$"+Math.round(n||0).toLocaleString();}
+function nf(n){return (Math.round(n||0)).toLocaleString();}
+
+/* calcGroup — unchanged in shape from the desktop board, so the numbers on
+   this phone match the numbers there. */
+function calcGroup(g){
+  var loads=(g.loads||[]).map(function(l){
+    var sr=parseSR(l.sr);
+    var am=cityMiles(sr.s),rm=cityMiles(sr.r);
+    var um=(l.manualPickupMi!==""&&l.manualPickupMi!=null)?parseFloat(l.manualPickupMi):am;
+    var lc=(l.manualLocalCharge!==""&&l.manualLocalCharge!=null)?parseFloat(l.manualLocalCharge):localCharge(um);
+    var o={};for(var k in l)o[k]=l[k];
+    o.shipper=sr.s;o.receiver=sr.r;o.pickupMiAuto=am;o.pickupMiUsed=um;o.rcvMiAuto=rm;
+    o.localCharge=lc;o.tripPrice=parseFloat(l.rate)||0;
+    return o;
+  });
+  var sd=loads.slice().sort(function(a,b){
+    var ta=parseTS(a.delivery),tb=parseTS(b.delivery);
+    if(ta!==tb)return ta-tb;
+    return loads.indexOf(a)-loads.indexOf(b);
+  });
+  var tm=g.tripMiles?parseFloat(g.tripMiles):null;
+  var gross=loads.reduce(function(s,l){return s+l.tripPrice;},0);
+  var loc=loads.reduce(function(s,l){return s+(l.localCharge||0);},0);
+  var rcvrs=sd.map(function(l){return l.receiver;}).filter(Boolean);
+  var est=false;
+  sd.forEach(function(l,i){
+    l.stop=i+1;
+    if(i===0){l.legMiAuto=l.rcvMiAuto!=null?l.rcvMiAuto:(cityMiles(l.receiver)||0);return;}
+    var prev=sd[i-1];
+    var ic=interCityMi(prev.receiver,l.receiver);
+    if(ic!=null){l.legMiAuto=ic;}
+    else{l.legMiAuto=(l.rcvMiAuto&&prev.rcvMiAuto&&l.rcvMiAuto>prev.rcvMiAuto)?l.rcvMiAuto-prev.rcvMiAuto:null;est=true;}
+  });
+  var autoMi=sd.reduce(function(s,l){return s+(l.stopMiles?parseFloat(l.stopMiles):(l.legMiAuto||0));},0);
+  var bestAuto=autoMi>0?autoMi:(rcvrs.reduce(function(mx,r){var m=cityMiles(r);return(m&&m>mx)?m:mx;},0)||null);
+  var mi=(tm&&tm>0)?tm:bestAuto;
+  var rpm=(mi&&mi>0)?Math.round(((gross-loc)/mi)*100)/100:null;
+  var out={};for(var k2 in g)out[k2]=g[k2];
+  out.calcTripMi=tm;out.autoTripMi=bestAuto||null;out.rcvrs=rcvrs;out.rpm=rpm;
+  out.gross=gross;out.loc=loc;out.loads=sd;out.estimated=est&&!(tm>0);
+  return out;
+}
+/* groupMiles — calcTripMi/autoTripMi are produced by calcGroup and never
+   saved to the sheet, so reading them off a stored group returns nothing for
+   every trailer without a hand-typed mileage. That divided a week's whole
+   net by a fraction of its miles: $11.95/mi against a true $3.63. Route
+   through calcGroup instead. */
+function groupMiles(g){
+  if(!g)return 0;
+  var man=(g.tripMiles!==""&&g.tripMiles!=null)?parseFloat(g.tripMiles):NaN;
+  if(isFinite(man)&&man>0)return man;
+  if(!Array.isArray(g.loads))return 0;
+  try{var cg=calcGroup(g);var mi=cg.calcTripMi||cg.autoTripMi;return(typeof mi==="number"&&isFinite(mi)&&mi>0)?mi:0;}
+  catch(e){return 0;}
+}
+function groupNet(g){var cg=calcGroup(g);return cg.gross-cg.loc;}
+
+/* ── session + transport ─────────────────────────────────────────── */
+var SHEETS_URL=localStorage.getItem("fcbv2_sheetsUrl")||"https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec";
+var SESSION_KEY="fcbv2_session";
+var CACHE_KEY="zb_cache";
+function sessTok(){try{return localStorage.getItem(SESSION_KEY)||"";}catch(e){return "";}}
+function setSessTok(t){try{t?localStorage.setItem(SESSION_KEY,t):localStorage.removeItem(SESSION_KEY);}catch(e){}}
+function withTok(u){var t=sessTok();return t?u+(u.indexOf("?")>=0?"&":"?")+"tok="+encodeURIComponent(t):u;}
+function roleFromTok(){var t=sessTok();return t?String(t).split(".")[0]:"";}
+function isAuthReq(d){return !!(d&&!Array.isArray(d)&&d.ok===false&&d.error==="auth_required");}
+function baseUrl(){return localStorage.getItem("fcbv2_sheetsUrl")||SHEETS_URL;}
+function readCache(){try{var d=JSON.parse(localStorage.getItem(CACHE_KEY)||"null");return d&&Array.isArray(d.weeks)?d:null;}catch(e){return null;}}
+function writeCache(w){try{localStorage.setItem(CACHE_KEY,JSON.stringify({weeks:w,at:Date.now()}));}catch(e){}}
+function clearCache(){try{localStorage.removeItem(CACHE_KEY);}catch(e){}}
+
+function sheetsLoad(role){
+  var h={},at=localStorage.getItem("fcbv2_sheetsToken")||"";
+  if(at)h["X-App-Token"]=at;
+  var u=baseUrl();if(!u)return Promise.resolve([]);
+  u+=(u.indexOf("?")>=0?"&":"?")+"role="+encodeURIComponent(role||"viewer");
+  return fetch(withTok(u),{redirect:"follow",headers:h}).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});
+}
+function sheetsSave(data){
+  var t=localStorage.getItem("fcbv2_sheetsToken")||"";
+  var h={"Content-Type":"text/plain;charset=utf-8"};
+  if(t)h["X-App-Token"]=t;
+  var payload={};for(var k in data)payload[k]=data[k];
+  payload.savedAt=Date.now();
+  var u=baseUrl();
+  if(!u)return Promise.reject(new Error("no url"));
+  return fetch(withTok(u),{method:"POST",mode:"no-cors",headers:h,body:JSON.stringify({data:payload})});
+}
+
+/* ── crossdock directory (carried over verbatim) ─────────────────── */
+var XDOCK=[{city:"Jacksonville, FL",addr:"680 Edgewood Ave N Suite B, Jacksonville, FL 32254",contact:"Tom / 904-870-3566",price:"$8.50/pallet + $100 afterhours"},{city:"Orlando, FL",addr:"9633 Oak Crossing Road #400, Orlando, FL 32837",contact:"Tom / 904-870-3566",price:"$8.50/pallet + $100 afterhours"},{city:"Savannah, GA",addr:"780 King George Blvd Unit 3, Savannah, GA 31419",contact:"Tom / 904-870-3566",price:"$8.50/pallet + $100 afterhours"},{city:"Suwanee, GA",addr:"Rick Cargo, 300 Brogdon Rd STE 110, Suwanee, GA 30024",contact:"Dalton 949-444-3804 / Steven 949-309-0938",price:"$10/pallet + $100 afterhours"},{city:"Albany, GA",addr:"1901 Krug Street, Albany, GA 31705",contact:"229-888-7980",price:"$250/trailer — cash only"},{city:"East Point, GA",addr:"2251 Sylvan Road Suite 500, East Point, GA 30344",contact:"404-607-8457",price:"$450/trailer"},{city:"Birmingham, AL",addr:"Axis Warehousing, 4280 Pinson Valley Pkwy, Birmingham, AL 35215",contact:"205-263-0473",price:"$10/pallet"},{city:"Decatur, AL",addr:"KMS Express, 41 Ipsco Street, Decatur, AL 35601",contact:"Mike / 256-213-1919",price:"$8/pallet, $100 afterhours, no long forks"},{city:"Decatur, AL (State Bonded)",addr:"State Bonded Warehouse, 26 2nd St SW, Decatur, AL 35601",contact:"Jerry / 256-353-9361",price:"$20/pallet — long forks"},{city:"Chattanooga, TN",addr:"3500 North Hawthorne St Suite 161, Chattanooga, TN 37406",contact:"Serge / 423-310-0487",price:"$6/pallet, $150 afterhours"},{city:"Summerville, SC",addr:"168 Portside Park Dr Suite #300, Summerville, SC 29483",contact:"843-203-9200",price:""},{city:"Mebane, NC",addr:"Superior Logistics, 2267 US-70, Mebane, NC 27302",contact:"John / 336-269-8339",price:"$10/pallet, $100 afterhours"},{city:"Inman, SC",addr:"Z Brothers, 60 Indy Lane, Inman, SC 29349",contact:"Vasili / 716-308-8841",price:"$8/pallet, $50 afterhours"},{city:"Hartford, CT",addr:"RJ Morris, 1 Fairfield Street, E Hartford, CT 06108",contact:"Jeff / 860-841-2923",price:"$10/pallet, $100 afterhours"},{city:"Grand Prairie, TX",addr:"JTS, 2555 114th Street, Grand Prairie, TX",contact:"469-916-4480",price:"$10/pallet, $100 afterhours"},{city:"Richmond, VA",addr:"Dominion, 1501 Carter Creek Road, Richmond, VA 23224",contact:"Travis / 804-335-4562",price:"$125 minimum"},{city:"Knoxville, TN",addr:"Warehouse Foothills Brokerage, 2301 Texas Ave, Knoxville, TN 37921",contact:"Kenny / 865-585-5457",price:""},{city:"Glen Burnie, MD",addr:"806 Cromwell Park Drive, Glen Burnie, MD 21061",contact:"Shawn / 443-546-7264",price:"$10/pallet"},{city:"Baton Rouge, LA",addr:"TTH Warehouse, 2276 N 3rd Street, Baton Rouge, LA 70802",contact:"Nancy 225-772-2931",price:"~$160 for 25 pallets"},{city:"Sturtevant, WI",addr:"11201 Enterprise Way, Sturtevant, WI",contact:"Joe 414-534-0610",price:"$14/pallet"},{city:"Crossville, TN",addr:"228 Interstate Drive, Crossville, TN 38555",contact:"Oliver 931-839-2220",price:"$250 whole trailer — open 5:30AM"}];
+var LOCAL_DRV={"Linas Greiciunas":1,"Theron Mack":1,"John Johnson":1,"Douglas Russo":1,"Emilis Ibianskas":1,"Egidijus Matulis":1,"Oleh Lashkevych":1};
+
+/* ── app state ───────────────────────────────────────────────────── */
+var weeks=[],wkIdx=0,liveTrucks={},cachedAt=0,lastErr="";
+var stack=[{s:"hub"}],boardTab="combined",curTrailer=null,curDriver=null;
+
+function wk(){return weeks[wkIdx]||{groups:[],localDeliveries:[],accessorials:[]};}
+function groups(){return wk().groups||[];}
+function isCombined(g){return !!g.isCombined;}
+function isOTR(g){return g.groupStatus==="In Transit"||g.groupStatus==="Delivered";}
+function isPlanned(g){return !isCombined(g)&&!isOTR(g);}
+function bucket(t){var gs=groups();
+  if(t==="combined")return gs.filter(isCombined);
+  if(t==="otr")return gs.filter(isOTR);
+  if(t==="planned")return gs.filter(isPlanned);
+  return [];}
+function allLoads(){return groups().reduce(function(a,g){return a.concat(g.loads||[]);},[]);}
+
+/* ── router ──────────────────────────────────────────────────────── */
+var TITLES={hub:["Z Board",""],board:["Board",""],trailer:["Trailer",""],week:["Week",""],
+  drivers:["Drivers",""],driver:["Driver",""],trucks:["Trucks & tracking",""],
+  routes:["Routes & mileage",""],milecheck:["Mileage data check",""],brokers:["Broker check",""],
+  market:["Market & fuel",""],xdock:["Crossdocks",""],payroll:["Payroll",""],
+  search:["Search",""],settings:["More",""]};
+function cur(){return stack[stack.length-1];}
+function go(s,arg){
+  if(s==="hub"){stack=[{s:"hub"}];}
+  else if(cur().s===s){stack[stack.length-1]={s:s,arg:arg};}
+  else stack.push({s:s,arg:arg});
+  paint();
+}
+function goBack(){if(stack.length>1){stack.pop();paint();}else{stack=[{s:"hub"}];paint();}}
+window.addEventListener("popstate",function(){if(stack.length>1){goBack();history.pushState(null,"","");}});
+
+function paint(){
+  var c=cur();
+  document.querySelectorAll(".scr").forEach(function(e){e.classList.remove("on");});
+  var el=document.getElementById("s-"+c.s);
+  if(el)el.classList.add("on");
+  document.getElementById("back").className="back"+(stack.length>1?" on":"");
+  var t=TITLES[c.s]||["Z Board",""];
+  document.getElementById("top-t").textContent=t[0];
+  ["hub","board","search","settings"].forEach(function(n){
+    var b=document.getElementById("nav-"+n);
+    if(b)b.className="bot-b"+(c.s===n?" on":"");
+  });
+  var R={hub:rHub,board:rBoard,trailer:rTrailer,week:rWeek,drivers:rDrivers,driver:rDriver,
+    trucks:rTrucks,routes:rRoutes,milecheck:rMileCheck,brokers:rBrokers,market:rMarket,
+    xdock:rXdock,payroll:rPayroll,search:rSearch,settings:rSettings};
+  if(R[c.s])R[c.s](c.arg);
+  syncTopPad();
+  window.scrollTo(0,0);
+}
+function setSub(s){document.getElementById("top-s").textContent=s;}
+
+/* ── week roll-up ────────────────────────────────────────────────── */
+function weekTotals(w){
+  var gs=(w&&w.groups)||[],lds=gs.reduce(function(a,g){return a.concat(g.loads||[]);},[]);
+  var gross=lds.reduce(function(s,l){return s+(parseFloat(l.rate)||0);},0);
+  var loc=0,noMile=0;
+  gs.forEach(function(g){var cg=calcGroup(g);loc+=cg.loc;if(groupMiles(g)<=0&&(g.loads||[]).length)noMile++;});
+  var acc=((w&&w.accessorials)||[]).reduce(function(s,a){return s+(parseFloat(a.amount)||0);},0);
+  var mi=gs.reduce(function(s,g){return s+groupMiles(g);},0);
+  var net=gross-loc+acc;
+  return {gross:gross,loc:loc,acc:acc,net:net,mi:Math.round(mi),
+    rpm:mi>0?Math.round((net/mi)*100)/100:0,
+    loads:lds.length,trailers:gs.length,
+    localDel:((w&&w.localDeliveries)||[]).length,
+    noDriver:gs.filter(function(g){return !(g.groupDriver&&String(g.groupDriver).trim());}).length,
+    noMile:noMile};
+}
+
+/* ── HUB ─────────────────────────────────────────────────────────── */
+function rHub(){
+  var t=weekTotals(wk());
+  setSub(wk().label||"No week loaded");
+  var h='<div class="hub-hd"><h1>'+esc(wk().label||"Z Board")+'</h1>'+
+    '<p>'+t.trailers+' trailers · '+t.loads+' loads · '+(cachedAt?("synced "+ago(cachedAt)):"not synced yet")+'</p></div>';
+  h+='<div class="tiles">';
+  h+=tile("week","📊","This week",money(t.net),"net · "+(t.rpm?("$"+t.rpm+"/mi"):"— /mi"),"var(--green)");
+  h+=tile("board","▤","Board",String(t.trailers),t.noDriver?(t.noDriver+" unclaimed"):"all claimed","var(--navy)",t.noDriver?String(t.noDriver):"");
+  h+=tile("drivers","👤","Drivers",String(driverRows().length),"with loads this week","var(--violet)");
+  h+=tile("trucks","📍","Tracking",String(Object.keys(liveTrucks).length),"trucks reporting","var(--amber)");
+  h+=tile("routes","🧭","Routes & mileage","","look up any city or leg","var(--blue)");
+  h+=tile("market","⛽","Market & fuel","","diesel, surcharge, lanes","var(--blue)");
+  h+=tile("brokers","🔎","Broker check","","FMCSA authority","var(--navy)");
+  h+=tile("xdock","🏢","Crossdocks",String(XDOCK.length),"locations & pricing","var(--ink2)");
+  h+=tileWide("payroll","💵","Payroll");
+  h+=tileWide("milecheck","📏","Mileage data check");
+  h+=tileWide("settings","⚙","Settings & sign out");
+  h+='</div>';
+  document.getElementById("s-hub").innerHTML=h;
+}
+function tile(s,ic,t,v,sub,col,bad){
+  return '<button class="tile" onclick="go(\''+s+'\')">'+
+    (bad?'<span class="tile-bad">'+esc(bad)+'</span>':'')+
+    '<div class="tile-ic">'+ic+'</div><div class="tile-t">'+esc(t)+'</div>'+
+    (v?'<div class="tile-v" style="color:'+col+'">'+esc(v)+'</div>':'')+
+    '<div class="tile-s">'+esc(sub)+'</div></button>';
+}
+function tileWide(s,ic,t){
+  return '<button class="tile tile-wide" onclick="go(\''+s+'\')"><div class="tile-ic">'+ic+
+    '</div><div class="tile-t">'+esc(t)+'</div><span class="tile-chev">›</span></button>';
+}
+function ago(ts){var s=Math.floor((Date.now()-ts)/1000);
+  if(s<60)return s+"s ago";if(s<3600)return Math.floor(s/60)+"m ago";
+  if(s<86400)return Math.floor(s/3600)+"h ago";return Math.floor(s/86400)+"d ago";}
+
+/* ── BOARD (sub-tabs + drill-in rows) ───────────────────────────── */
+function rBoard(){
+  setSub(wk().label||"");
+  var tabs=[["combined","Combined"],["planned","Planned"],["otr","OTR"],["local","Local"]];
+  var h='<div class="stabs">';
+  tabs.forEach(function(t){
+    var n=t[0]==="local"?((wk().localDeliveries||[]).length):bucket(t[0]).length;
+    h+='<button class="stab'+(boardTab===t[0]?" on":"")+'" onclick="setBoardTab(\''+t[0]+'\')">'+
+      t[1]+'<span class="stab-n">'+n+'</span></button>';
+  });
+  h+='</div><div style="padding:12px">';
+  h+=weekChips();
+  if(boardTab==="local"){
+    var ld=wk().localDeliveries||[];
+    h+= ld.length?ld.map(localRow).join(""):empty("🏙","No local deliveries this week");
+  } else {
+    var gs=bucket(boardTab);
+    h+= gs.length?gs.map(function(g,i){return trailerRow(g,i);}).join(""):empty("📦","Nothing in "+boardTab+" this week");
+  }
+  h+='</div>';
+  document.getElementById("s-board").innerHTML=h;
+}
+function setBoardTab(t){boardTab=t;rBoard();}
+function weekChips(){
+  if(weeks.length<2)return "";
+  var h='<div class="stabs" style="position:static;background:none;border:none;padding:0 0 10px">';
+  weeks.forEach(function(w,i){
+    h+='<button class="stab'+(i===wkIdx?" on":"")+'" onclick="pickWeek('+i+')">'+esc(w.label||("Week "+(i+1)))+'</button>';
+  });
+  return h+'</div>';
+}
+function pickWeek(i){wkIdx=i;paint();}
+
+function trailerRow(g,i){
+  var cg=calcGroup(g),mi=groupMiles(g);
+  var drv=(g.groupDriver&&String(g.groupDriver).trim())||"";
+  var stops=(g.loads||[]).length;
+  var last=cg.loads.length?(cg.loads[cg.loads.length-1].receiver||cg.loads[cg.loads.length-1].shipper||""):"";
+  var first=cg.loads.length?(cg.loads[0].shipper||""):"";
+  var ic=drv?"🚛":"⚠";
+  var icBg=drv?"background:#e0e7ff;color:#3730a3":"background:var(--redbg);color:var(--red)";
+  var sub=(first?first.split(",")[0]:"?")+" → "+(last?last.split(",")[0]:"?")+" · "+stops+" stop"+(stops===1?"":"s")+
+    (mi>0?(" · "+nf(mi)+" mi"+(cg.estimated?"~":"")):" · no mileage");
+  return '<div class="grp"><button class="grp-row" onclick="openTrailer(\''+esc(String(g.id))+'\')">'+
+    '<div class="grp-ic" style="'+icBg+'">'+ic+'</div>'+
+    '<div class="grp-mid"><div class="grp-t">'+esc(drv||"NO DRIVER ASSIGNED")+
+      (g.groupTruck?' <span style="color:var(--ink4);font-weight:600">#'+esc(g.groupTruck)+'</span>':'')+'</div>'+
+      '<div class="grp-s">'+esc(sub)+'</div></div>'+
+    '<div class="grp-rt"><div class="grp-n">'+money(cg.gross-cg.loc)+'</div>'+
+      '<div class="grp-ns">'+(cg.rpm?("$"+cg.rpm+"/mi"):"—")+'</div></div>'+
+    '<span class="tile-chev">›</span></button></div>';
+}
+function localRow(r){
+  return '<div class="grp"><div class="grp-row" style="cursor:default">'+
+    '<div class="grp-ic" style="background:#ecfeff;color:#0e7490">🏙</div>'+
+    '<div class="grp-mid"><div class="grp-t">'+esc(r.destination||"—")+'</div>'+
+    '<div class="grp-s">'+esc([r.driver,r.truck?("#"+r.truck):"",r.datetime].filter(Boolean).join(" · ")||"—")+'</div></div>'+
+    (r.status?'<span class="badge '+badgeCls(r.status)+'">'+esc(r.status)+'</span>':'')+'</div></div>';
+}
+function openTrailer(id){
+  var g=groups().filter(function(x){return String(x.id)===String(id);})[0];
+  if(!g)return;
+  curTrailer=g;go("trailer",id);
+}
+function badgeCls(st){
+  var m={"Dispatched":"b-disp","In Transit":"b-disp","Dock":"b-dock","Yard":"b-dock",
+    "Need to pickup":"b-need","Need to Pickup":"b-need","Loaded":"b-load","Delivered":"b-del"};
+  return m[st]||"b-disp";
+}
+
+/* ── TRAILER DETAIL ─────────────────────────────────────────────── */
+function rTrailer(id){
+  var g=curTrailer||groups().filter(function(x){return String(x.id)===String(id);})[0];
+  if(!g){document.getElementById("s-trailer").innerHTML=empty("📦","Trailer not on this week any more");return;}
+  var cg=calcGroup(g),mi=groupMiles(g);
+  var drv=(g.groupDriver&&String(g.groupDriver).trim())||"";
+  document.getElementById("top-t").textContent=drv||"Unclaimed trailer";
+  setSub((g.groupTruck?("Truck #"+g.groupTruck+" · "):"")+(g.groupTrailer?("Trailer "+g.groupTrailer):""));
+  var h='<div class="card"><div class="card-hd'+(drv?"":" nodrv")+'">';
+  if(drv){
+    if(g.groupTruck)h+='<span class="pill p-truck">#'+esc(g.groupTruck)+'</span>';
+    if(g.groupTrailer)h+='<span class="pill p-trl">'+esc(g.groupTrailer)+'</span>';
+    h+='<span class="p-drv">'+esc(drv)+'</span>';
+  } else h+='<span class="p-nodrv">NO DRIVER ASSIGNED</span>';
+  if(mi>0)h+='<span class="pill p-mi">'+nf(mi)+(cg.estimated?"~":"")+' mi</span>';
+  h+='</div>';
+  h+='<div class="fin"><div class="fin-i"><span class="fin-l">Gross</span><span class="fin-v">'+money(cg.gross)+'</span></div>'+
+     '<span class="fin-sep">−</span><div class="fin-i"><span class="fin-l">Local</span><span class="fin-v" style="color:var(--amber)">'+money(cg.loc)+'</span></div>'+
+     '<div class="fin-net"><span class="fin-l" style="color:var(--green)">Net</span><b>'+money(cg.gross-cg.loc)+'</b></div></div>';
+  h+='<div class="card-bd">';
+  if(cg.rpm)h+='<div class="kv"><span class="kv-k">RPM (net ÷ miles)</span><span class="kv-v">$'+cg.rpm+'/mi</span></div>';
+  else h+='<div class="kv"><span class="kv-k">RPM</span><span class="kv-v" style="color:var(--ink4)">— no mileage</span></div>';
+  if(cg.estimated)h+='<div class="note note-w" style="margin:10px 0 0">Mileage is an <b>estimate</b>. At least one leg had no coordinates, so it was derived from the two hub distances — short rather than long, which makes RPM read worse than it is, not better.</div>';
+  if(mi<=0)h+='<div class="note note-w" style="margin:10px 0 0">No mileage could be resolved for this trailer, so it adds <b>0 miles</b> to the week while its revenue still counts. That inflates the week RPM.</div>';
+  if(g.groupNotes)h+='<div class="note note-i" style="margin:10px 0 0">'+esc(g.groupNotes)+'</div>';
+  h+='</div></div>';
+
+  if(!drv){
+    h+='<div class="card"><div class="card-bd">'+
+      '<div class="fld"><label>Claim this trailer</label>'+
+      '<input class="inp" id="claim-name" placeholder="Your name" autocomplete="name"></div>'+
+      '<button class="btn btn-g" id="claim-btn" style="width:100%" onclick="claimTrailer(\''+esc(String(g.id))+'\')">Claim</button>'+
+      '</div></div>';
+  }
+
+  h+='<div class="sec-t">Stops · '+cg.loads.length+'</div>';
+  cg.loads.forEach(function(l){
+    var bn="",ln="";
+    if(l.broker){var p=String(l.broker).split("&");bn=(p[0]||"").trim();ln=(p[1]||"").trim();}
+    if(!ln&&l.loadNum)ln=String(l.loadNum).trim();
+    h+='<div class="card"><div class="card-bd"><div class="stop" style="border:none;padding:0">'+
+      '<div class="stop-n">'+l.stop+'</div><div class="stop-m">'+
+      '<div class="stop-c">'+esc(l.receiver||l.shipper||"—")+'</div>'+
+      (l.shipper?'<div class="stop-r">from '+esc(l.shipper)+'</div>':'')+
+      '<div class="stop-d">'+
+        (l.pickup?'<span class="tag tag-pu">PU '+esc(l.pickup)+'</span>':'')+
+        (l.delivery?'<span class="tag">DEL '+esc(l.delivery)+'</span>':'')+
+        (l.legMiAuto!=null?'<span class="tag">'+nf(l.legMiAuto)+' mi leg</span>':'<span class="tag" style="color:var(--amber)">leg unknown</span>')+
+      '</div></div>'+
+      (l.status?'<span class="badge '+badgeCls(l.status)+'">'+esc(l.status)+'</span>':'')+
+      '</div>';
+    h+='<div style="margin-top:9px">';
+    if(bn)h+=kv("Broker",bn);
+    if(ln)h+='<div class="kv"><span class="kv-k">Load #</span><span class="kv-v cp" onclick="copyIt(this,\''+esc(ln)+'\')">'+esc(ln)+' ⧉</span></div>';
+    if(l.rate)h+=kv("Rate",money(parseFloat(l.rate)||0));
+    if(l.localCharge!=null&&l.localCharge!==0)h+=kv("Local charge",money(l.localCharge));
+    if(l.pickupMiUsed!=null)h+=kv("Pickup miles",nf(l.pickupMiUsed)+" mi");
+    if(l.weight)h+=kv("Weight",esc(l.weight)+" lbs");
+    if(l.pallets)h+=kv("Pallets",esc(l.pallets));
+    if(l.product)h+=kv("Product",esc(l.product));
+    if(l.notes)h+=kv("Notes",esc(l.notes));
+    h+='</div></div></div>';
+  });
+  document.getElementById("s-trailer").innerHTML=h;
+}
+function kv(k,v){return '<div class="kv"><span class="kv-k">'+esc(k)+'</span><span class="kv-v">'+v+'</span></div>';}
+function copyIt(el,txt){
+  try{
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt);
+    else{var ta=document.createElement("textarea");ta.value=txt;ta.style.position="fixed";ta.style.opacity="0";
+      document.body.appendChild(ta);ta.select();document.execCommand("copy");document.body.removeChild(ta);}
+    el.setAttribute("data-copied","1");var o=el.textContent;el.textContent="✓ "+txt;
+    setTimeout(function(){el.removeAttribute("data-copied");el.textContent=o;},1100);
+  }catch(e){}
+}
+
+/* Claim — re-reads the sheet and changes only this trailer, so the save
+   uploads what the server already had rather than this phone's copy. */
+function claimTrailer(id){
+  var inp=document.getElementById("claim-name"),btn=document.getElementById("claim-btn");
+  var name=(inp?inp.value:"").trim();
+  if(!name){if(inp)inp.focus();return;}
+  if(!sessTok()){showLogin("Sign in to claim");return;}
+  btn.disabled=true;btn.textContent="Claiming…";
+  function done(m){btn.disabled=false;btn.textContent="Claim";if(m)alert(m);}
+  sheetsLoad("viewer").then(function(d){
+    if(isAuthReq(d)){setSessTok("");done();showLogin("Session expired — sign in again");return;}
+    if(!d||Array.isArray(d)||!Array.isArray(d.weeks)){done("Could not read the board. Nothing was claimed.");return;}
+    var tgt=null;
+    d.weeks.forEach(function(w){(w.groups||[]).forEach(function(g){if(String(g.id)===String(id))tgt=g;});});
+    if(!tgt){done("This trailer is no longer on the board.");refreshData();return;}
+    var held=String(tgt.groupDriver||"").trim();
+    if(held&&held.toLowerCase()!==name.toLowerCase()){done("Already claimed by "+held+".");refreshData();return;}
+    tgt.groupDriver=name;tgt.securedBy=name;tgt.securedAt=Date.now();
+    return sheetsSave(d).then(function(){
+      applyData(d);done();
+      setTimeout(function(){refreshData();},2500);
+    });
+  }).catch(function(){done("No connection — nothing was claimed.");});
+}
+
+/* ── WEEK ────────────────────────────────────────────────────────── */
+function rWeek(){
+  var t=weekTotals(wk()),p=weekTotals(weeks[wkIdx+1]||{});
+  setSub(wk().label||"");
+  var h=weekChips();
+  h+='<div class="kpis">';
+  h+=kpi("💰","Gross",money(t.gross),t.gross,p.gross);
+  h+=kpi("🏆","Net",money(t.net),t.net,p.net,"var(--green)");
+  h+=kpi("🏠","Local",money(t.loc),t.loc,p.loc,"var(--amber)",true);
+  h+=kpi("📍","RPM",t.rpm?("$"+t.rpm+"/mi"):"—",t.rpm,p.rpm);
+  h+=kpi("🛣","Miles",t.mi?nf(t.mi)+" mi":"—",t.mi,p.mi);
+  h+=kpi("📦","Loads",String(t.loads),t.loads,p.loads);
+  h+=kpi("🚛","Trailers",String(t.trailers),t.trailers,p.trailers);
+  h+=kpi("🏙","Local del.",String(t.localDel),t.localDel,p.localDel);
+  h+='</div>';
+  if(t.acc)h+='<div class="note note-i">Accessorials of '+money(t.acc)+' are included in Net.</div>';
+  if(t.noMile)h+='<div class="note note-w"><b>'+t.noMile+' trailer'+(t.noMile===1?"":"s")+
+    ' contributed 0 miles</b> because no mileage could be resolved, while the revenue still counts. '+
+    'The week RPM above is inflated by exactly that much — it is not a display bug.</div>';
+  if(t.noDriver)h+='<div class="note note-w"><b>'+t.noDriver+' trailer'+(t.noDriver===1?" is":"s are")+' unclaimed.</b></div>';
+  h+='<div class="sec-t">Jump to</div>';
+  h+='<div class="grp"><button class="grp-row" onclick="go(\'board\')"><div class="grp-ic" style="background:#e0e7ff;color:#3730a3">▤</div><div class="grp-mid"><div class="grp-t">Board</div><div class="grp-s">Combined, Planned, OTR, Local</div></div><span class="tile-chev">›</span></button></div>';
+  h+='<div class="grp"><button class="grp-row" onclick="go(\'drivers\')"><div class="grp-ic" style="background:var(--violetbg);color:var(--violet)">👤</div><div class="grp-mid"><div class="grp-t">Drivers this week</div><div class="grp-s">'+driverRows().length+' with loads</div></div><span class="tile-chev">›</span></button></div>';
+  document.getElementById("s-week").innerHTML=h;
+}
+function kpi(ic,lbl,val,cur,prev,col,rev){
+  var d=prev>0?Math.round((cur-prev)/prev*100):(cur>0?100:0);
+  var good=rev?d<0:d>0;
+  var cls=d===0?"flat":(good?"up":"dn");
+  var arrow=d===0?"■":(d>0?"▲":"▼");
+  return '<div class="kpi"><div class="kpi-l"><span>'+ic+'</span>'+esc(lbl)+'</div>'+
+    '<div class="kpi-v" style="color:'+(col||"var(--ink)")+'">'+val+'</div>'+
+    '<div class="kpi-d '+cls+'">'+arrow+' '+Math.abs(d)+'% vs prev</div></div>';
+}
+
+/* ── DRIVERS ─────────────────────────────────────────────────────── */
+/* Net and miles are split across a trailer's drivers rather than credited
+   whole to each, which is what made the Drivers page total above actual
+   weekly revenue on the desktop board. */
+function driverRows(){
+  var m={};
+  groups().forEach(function(g){
+    var cg=calcGroup(g),mi=groupMiles(g);
+    var names={};
+    if(g.groupDriver&&String(g.groupDriver).trim())names[String(g.groupDriver).trim()]=1;
+    (g.loads||[]).forEach(function(l){if(l.driver&&String(l.driver).trim())names[String(l.driver).trim()]=1;});
+    var ks=Object.keys(names);
+    if(!ks.length)return;
+    var share=1/ks.length;
+    ks.forEach(function(n){
+      if(!m[n])m[n]={name:n,net:0,mi:0,trailers:0,loads:0,local:!!LOCAL_DRV[n]};
+      m[n].net+=(cg.gross-cg.loc)*share;
+      m[n].mi+=mi*share;
+      m[n].trailers+=1;
+      m[n].loads+=(g.loads||[]).length*share;
+    });
+  });
+  return Object.keys(m).map(function(k){return m[k];}).sort(function(a,b){return b.net-a.net;});
+}
+function rDrivers(){
+  var rows=driverRows();
+  setSub(rows.length+" with loads · "+(wk().label||""));
+  var h="";
+  if(!rows.length)h=empty("👤","No drivers assigned this week");
+  else{
+    h+='<div class="note note-i">Net and miles are <b>split</b> across a trailer\'s drivers, so these add up to the week rather than double-counting a shared trailer.</div>';
+    rows.forEach(function(d){
+      h+='<div class="grp"><button class="grp-row" onclick="openDriver(\''+esc(d.name)+'\')">'+
+        '<div class="grp-ic" style="background:var(--violetbg);color:var(--violet)">'+esc(d.name.charAt(0))+'</div>'+
+        '<div class="grp-mid"><div class="grp-t">'+esc(d.name)+(d.local?' <span style="color:var(--ink4);font-weight:600">local</span>':'')+'</div>'+
+        '<div class="grp-s">'+d.trailers+' trailer'+(d.trailers===1?"":"s")+' · '+nf(d.mi)+' mi</div></div>'+
+        '<div class="grp-rt"><div class="grp-n">'+money(d.net)+'</div>'+
+        '<div class="grp-ns">'+(d.mi>0?("$"+(Math.round(d.net/d.mi*100)/100)+"/mi"):"—")+'</div></div>'+
+        '<span class="tile-chev">›</span></button></div>';
+    });
+  }
+  document.getElementById("s-drivers").innerHTML=h;
+}
+function openDriver(n){curDriver=n;go("driver",n);}
+function rDriver(n){
+  n=n||curDriver;
+  document.getElementById("top-t").textContent=n||"Driver";
+  var mine=groups().filter(function(g){
+    if(g.groupDriver&&String(g.groupDriver).trim()===n)return true;
+    return (g.loads||[]).some(function(l){return l.driver&&String(l.driver).trim()===n;});
+  });
+  var d=driverRows().filter(function(x){return x.name===n;})[0]||{net:0,mi:0};
+  setSub(mine.length+" trailer"+(mine.length===1?"":"s")+" · "+(wk().label||""));
+  var h='<div class="kpis">'+
+    '<div class="kpi"><div class="kpi-l">Net share</div><div class="kpi-v" style="color:var(--green)">'+money(d.net)+'</div></div>'+
+    '<div class="kpi"><div class="kpi-l">Miles share</div><div class="kpi-v">'+nf(d.mi)+'</div></div>'+
+    '</div>';
+  h+='<div class="sec-t">Trailers</div>';
+  h+= mine.length?mine.map(function(g,i){return trailerRow(g,i);}).join(""):empty("📦","No trailers");
+  document.getElementById("s-driver").innerHTML=h;
+}
+
+/* ── TRUCKS / TRACKING ───────────────────────────────────────────── */
+function rTrucks(){
+  var ks=Object.keys(liveTrucks).sort(function(a,b){return a.localeCompare(b,undefined,{numeric:true});});
+  setSub(ks.length+" reporting");
+  var byTruck={};
+  groups().forEach(function(g){if(g.groupTruck)byTruck[String(g.groupTruck)]=g;});
+  var h="";
+  if(!ks.length){
+    h=empty("📍","No live truck locations")+
+      '<div class="note note-i">Samsara positions come from the same Apps Script endpoint the board uses. If this stays empty while you are online, the <code>samsaraLocations</code> action is not returning trucks.</div>';
+  }
+  ks.forEach(function(k){
+    var t=liveTrucks[k],g=byTruck[k];
+    var q=encodeURIComponent(t.address||"");
+    h+='<div class="grp"><div class="grp-row" style="cursor:default">'+
+      '<div class="grp-ic" style="background:var(--amberbg);color:var(--amber)">📍</div>'+
+      '<div class="grp-mid"><div class="grp-t">Truck #'+esc(k)+(g&&g.groupDriver?' · '+esc(g.groupDriver):'')+'</div>'+
+      '<div class="grp-s">'+esc(t.address||"no address")+'</div>'+
+      '<div class="grp-s" style="color:var(--ink4)">'+esc(t.asOf?ago(new Date(t.asOf).getTime()):"")+'</div></div>'+
+      '</div><div style="padding:0 13px 11px;display:flex;gap:8px">'+
+      (t.address?'<a class="btn btn-o" style="flex:1;text-align:center;text-decoration:none" href="https://maps.google.com/?q='+q+'" target="_blank" rel="noopener">Open in Maps</a>':'')+
+      (g?'<button class="btn btn-o" style="flex:1" onclick="openTrailer(\''+esc(String(g.id))+'\')">Trailer</button>':'')+
+      '</div></div>';
+  });
+  document.getElementById("s-trucks").innerHTML=h;
+}
+
+/* ── ROUTES & MILEAGE ────────────────────────────────────────────── */
+function rRoutes(){
+  setSub("534 city keys · 515 ZIPs");
+  var h='<div class="card"><div class="card-bd">'+
+    '<div class="fld"><label>City, state or ZIP</label><input class="inp" id="mi-a" placeholder="Lansing, IL  or  60438" oninput="doMile()"></div>'+
+    '<div id="mi-out"></div></div></div>';
+  h+='<div class="card"><div class="card-bd">'+
+    '<div class="sec-t" style="margin:0 0 9px">Leg between two stops</div>'+
+    '<div class="fld"><label>From</label><input class="inp" id="lg-a" placeholder="Montgomery, IL" oninput="doLeg()"></div>'+
+    '<div class="fld"><label>To</label><input class="inp" id="lg-b" placeholder="Milwaukee, WI" oninput="doLeg()"></div>'+
+    '<div id="lg-out"></div></div></div>';
+  h+='<div class="note note-i">Mileage is from the Romeoville yard. A local charge applies at or under '+LOCAL_MAX_MI+
+    ' mi; past that the board deducts nothing.</div>';
+  document.getElementById("s-routes").innerHTML=h;
+}
+function doMile(){
+  var v=(document.getElementById("mi-a")||{}).value||"";
+  var o=document.getElementById("mi-out");if(!o)return;
+  if(!v.trim()){o.innerHTML="";return;}
+  var mi=cityMiles(v),lc=localCharge(mi);
+  var zm=v.match(/\b(\d{5})\b/),zl=zm?zipLookup(zm[1]):null;
+  var h="";
+  if(mi==null){
+    h='<div class="note note-w"><b>No mileage on record.</b> The board will not guess one — it logs the city as missing. Check the spelling, or add the state (e.g. "Lansing, IL").</div>';
+  } else {
+    h='<div class="kpis" style="margin:4px 0 0"><div class="kpi"><div class="kpi-l">Miles from yard</div><div class="kpi-v">'+nf(mi)+'</div></div>'+
+      '<div class="kpi"><div class="kpi-l">Local charge</div><div class="kpi-v" style="color:'+(lc==null?"var(--ink4)":"var(--amber)")+'">'+
+      (lc==null?"none":money(lc))+'</div><div class="kpi-d flat">'+(lc==null?("past "+LOCAL_MAX_MI+" mi"):"within radius")+'</div></div></div>';
+    if(zl)h+='<div class="kv" style="margin-top:8px"><span class="kv-k">ZIP resolves to</span><span class="kv-v">'+esc(zl.city)+' · '+nf(zl.miles)+' mi</span></div>';
+    var nm=cityMiles(v.split(",")[0]+(v.split(",")[1]?(","+v.split(",")[1]):""));
+    if(zl&&nm!=null&&zl.miles!==nm)h+='<div class="note note-w" style="margin-top:8px"><b>The two tables disagree here.</b> ZIP says '+nf(zl.miles)+' mi, the name table says '+nf(nm)+'. The ZIP is used when you type one.</div>';
+  }
+  o.innerHTML=h;
+}
+function doLeg(){
+  var a=(document.getElementById("lg-a")||{}).value||"",b=(document.getElementById("lg-b")||{}).value||"";
+  var o=document.getElementById("lg-out");if(!o)return;
+  if(!a.trim()||!b.trim()){o.innerHTML="";return;}
+  var leg=interCityMi(a,b),ma=cityMiles(a),mb=cityMiles(b);
+  var h="";
+  if(leg!=null){
+    h='<div class="kpis" style="margin:4px 0 0"><div class="kpi"><div class="kpi-l">Leg</div><div class="kpi-v">'+nf(leg)+' mi</div></div>'+
+      '<div class="kpi"><div class="kpi-l">Hub distances</div><div class="kpi-v" style="font-size:14px">'+(ma==null?"—":nf(ma))+' / '+(mb==null?"—":nf(mb))+'</div></div></div>';
+  } else {
+    var fb=(ma!=null&&mb!=null&&mb>ma)?(mb-ma):null;
+    h='<div class="note note-w"><b>No coordinate pair for this leg.</b> '+
+      (fb!=null?('The board falls back to differencing the hub distances: <b>'+nf(fb)+' mi</b>. That is short, not long — RPM reads worse than it is, which is the safe direction.')
+               :'Neither a coordinate leg nor a hub-distance fallback is available, so this leg counts as 0 miles.')+
+      '</div>';
+  }
+  o.innerHTML=h;
+}
+
+/* ── MILEAGE DATA CHECK ──────────────────────────────────────────── */
+/* This screen did not exist in either board. It lists every place where the
+   two mileage tables disagree, worst first, and says which ones change money
+   rather than only an RPM denominator. Nothing here is guessed. */
+function rMileCheck(){
+  var places={};
+  for(var z in ZIPDIST){var e=ZIPDIST[z];places[e.city+", "+e.state]={city:e.city,st:e.state,zip:e.miles,z:z};}
+  var rows=[],unres=[];
+  Object.keys(places).forEach(function(k){
+    var p=places[k],nm=cityMiles(k);
+    if(nm==null){unres.push(k);return;}
+    if(nm===p.zip)return;
+    var lcN=localCharge(nm),lcZ=localCharge(p.zip);
+    rows.push({k:k,zip:p.zip,nm:nm,gap:Math.abs(nm-p.zip),lcN:lcN,lcZ:lcZ,money:lcN!==lcZ});
+  });
+  rows.sort(function(a,b){return (b.money-a.money)||(b.gap-a.gap);});
+  var moneyRows=rows.filter(function(r){return r.money;});
+  setSub(rows.length+" disagree · "+moneyRows.length+" move money");
+  var h='<div class="kpis"><div class="kpi"><div class="kpi-l">Disagreements</div><div class="kpi-v">'+rows.length+'</div>'+
+    '<div class="kpi-d flat">of '+Object.keys(places).length+' places</div></div>'+
+    '<div class="kpi"><div class="kpi-l">Change a charge</div><div class="kpi-v" style="color:var(--red)">'+moneyRows.length+'</div>'+
+    '<div class="kpi-d flat">real money</div></div></div>';
+  h+='<div class="note note-w">The board carries <b>two</b> mileage tables — one by city name, one by ZIP. '+
+    'ZIP wins when a dispatcher types one. Where they disagree, the same load prices differently depending on what was typed. '+
+    '<b>No figure here is a recommendation</b> — the right mileage is the one you actually run.</div>';
+  if(moneyRows.length){
+    h+='<div class="sec-t">These change the local charge</div>';
+    moneyRows.forEach(function(r){
+      h+='<div class="card"><div class="card-bd">'+
+        '<div class="grp-t" style="margin-bottom:6px">'+esc(r.k)+'</div>'+
+        kv("By city name",nf(r.nm)+' mi → '+(r.lcN==null?"<b>no charge</b>":"<b>"+money(r.lcN)+"</b>"))+
+        kv("By ZIP",nf(r.zip)+' mi → '+(r.lcZ==null?"<b>no charge</b>":"<b>"+money(r.lcZ)+"</b>"))+
+        kv("Gap",nf(r.gap)+" mi")+
+        '</div></div>';
+    });
+  }
+  var other=rows.filter(function(r){return !r.money;});
+  if(other.length){
+    h+='<div class="sec-t">RPM denominator only · '+other.length+'</div>';
+    h+='<div class="card"><div class="card-bd">';
+    other.slice(0,80).forEach(function(r){
+      h+='<div class="kv"><span class="kv-k">'+esc(r.k)+'</span><span class="kv-v mono">'+nf(r.nm)+' / '+nf(r.zip)+'</span></div>';
+    });
+    if(other.length>80)h+='<div class="grp-s" style="padding-top:8px">+ '+(other.length-80)+' more</div>';
+    h+='</div></div>';
+  }
+  if(unres.length){
+    h+='<div class="sec-t">No name-table entry at all · '+unres.length+'</div>';
+    h+='<div class="note note-w">Typing the city name for these gets <b>nothing</b>. Typing the ZIP works.</div>';
+    h+='<div class="card"><div class="card-bd">';
+    unres.slice(0,60).forEach(function(k){
+      h+='<div class="kv"><span class="kv-k">'+esc(k)+'</span><span class="kv-v mono">ZIP '+nf(places[k].zip)+' mi</span></div>';
+    });
+    if(unres.length>60)h+='<div class="grp-s" style="padding-top:8px">+ '+(unres.length-60)+' more</div>';
+    h+='</div></div>';
+  }
+  var miss=Object.keys(DIST_MISS_LOG);
+  if(miss.length){
+    h+='<div class="sec-t">Missing this session · '+miss.length+'</div>';
+    h+='<div class="card"><div class="card-bd">';
+    miss.forEach(function(k){var m=DIST_MISS_LOG[k];
+      h+='<div class="kv"><span class="kv-k">'+esc(m.city)+'</span><span class="kv-v mono">'+
+        (m.estimated!=null?("~"+nf(m.estimated)+" mi est"):"no estimate")+'</span></div>';});
+    h+='</div></div>';
+  }
+  document.getElementById("s-milecheck").innerHTML=h;
+}
+
+/* ── BROKER CHECK ────────────────────────────────────────────────── */
+function rBrokers(){
+  setSub("FMCSA authority & insurance");
+  document.getElementById("s-brokers").innerHTML=
+    '<div class="card"><div class="card-bd">'+
+    '<div class="row"><div class="fld" style="flex:0 0 84px"><label>Type</label>'+
+    '<select class="inp" id="bk-t"><option value="mc">MC</option><option value="dot">DOT</option></select></div>'+
+    '<div class="fld" style="flex:1"><label>Number</label><input class="inp" id="bk-q" inputmode="numeric" placeholder="123456"></div>'+
+    '<button class="btn" id="bk-go" onclick="doBroker()">Check</button></div>'+
+    '<div id="bk-out"></div></div></div>'+
+    '<div class="note note-i">"On file" means FMCSA has a filing, not that coverage is current. For a load you are about to cover, still get the certificate direct from the broker.</div>';
+}
+function doBroker(){
+  var t=document.getElementById("bk-t").value,q=(document.getElementById("bk-q").value||"").replace(/[^0-9]/g,"");
+  var o=document.getElementById("bk-out"),b=document.getElementById("bk-go");
+  if(!q){o.innerHTML='<div class="note note-w">Enter an MC or DOT number.</div>';return;}
+  b.disabled=true;b.textContent="…";
+  o.innerHTML='<div class="spin"></div>';
+  fetch(baseUrl()+"?action=carrier&type="+t+"&id="+encodeURIComponent(q),{redirect:"follow"})
+    .then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();})
+    .then(function(j){
+      if(!j.ok)throw new Error(j.message||j.error||"Lookup failed");
+      if(!j.found){o.innerHTML='<div class="note note-w">No carrier found. Check the digits, and try the other number type — some brokers are easier to find by DOT than MC.</div>';return;}
+      var c=j.carrier||{},ok=c.allowedToOperate===true;
+      var yn=function(v){return v===true?"Yes":v===false?"No":"—";};
+      var h='<div class="note '+(ok?"note-i":"note-e")+'" style="margin-top:12px">'+
+        '<div style="font-weight:900;font-size:13px">'+(ok?"✓ Authorized to operate":"✕ Not authorized to operate")+'</div>'+
+        '<div style="font-weight:800;font-size:14px;margin-top:3px">'+esc(c.legalName||"—")+'</div>'+
+        (c.dbaName?'<div>dba '+esc(c.dbaName)+'</div>':'')+
+        '<div style="margin-top:3px">DOT '+esc(c.dotNumber||"—")+
+        (c.docketNumbers&&c.docketNumbers.length?" · MC "+esc(c.docketNumbers.join(", ")):"")+'</div></div>';
+      h+='<div style="margin-top:4px">';
+      h+=kv("Operating status",esc(c.statusText||"—"));
+      h+=kv("Entity type",esc(c.entityType||"—"));
+      h+=kv("Safety rating",esc(c.safetyRating?(c.safetyRating+(c.safetyRatingDate?(" ("+c.safetyRatingDate+")"):"")):"Not rated"));
+      h+=kv("Liability insurance",yn(c.bipdOnFile));
+      h+=kv("Cargo insurance",c.cargoOnFile===false?"Not filed (often not required)":yn(c.cargoOnFile));
+      h+=kv("Surety bond",yn(c.bondOnFile));
+      h+=kv("Power units",esc(c.powerUnits==null?"—":c.powerUnits));
+      h+=kv("Drivers",esc(c.drivers==null?"—":c.drivers));
+      if(c.driverOosRate!=null)h+=kv("Driver out-of-service",c.driverOosRate+"%");
+      if(c.vehicleOosRate!=null)h+=kv("Vehicle out-of-service",c.vehicleOosRate+"%");
+      if(c.address)h+=kv("Address",esc(c.address));
+      if(c.phone)h+='<div class="kv"><span class="kv-k">Phone</span><span class="kv-v"><a href="tel:'+esc(c.phone)+'">'+esc(c.phone)+'</a></span></div>';
+      h+='</div>';
+      o.innerHTML=h;
+    })
+    .catch(function(e){
+      o.innerHTML='<div class="note note-e"><b>Lookup failed.</b> '+esc(e.message||String(e))+
+        '<br>If this says the key is missing, set FMCSA_WEB_KEY in Apps Script → Project Settings → Script Properties and redeploy a new version.</div>';
+    })
+    .then(function(){b.disabled=false;b.textContent="Check";});
+}
+
+/* ── MARKET & FUEL ───────────────────────────────────────────────── */
+var MKT_REGIONS=[["NUS","U.S. average","U.S."],["R20","Midwest (PADD 2)","Midwest"],["R10","East Coast (PADD 1)","East"],
+  ["R30","Gulf Coast (PADD 3)","Gulf"],["R40","Rocky Mountain (PADD 4)","Rockies"],["R50","West Coast (PADD 5)","West"],["SCA","California","Calif."]];
+var diesel=null,dieselErr="",dieselState="idle";
+function rMarket(){
+  setSub("EIA diesel · fuel surcharge");
+  var region=localStorage.getItem("fcbv2_fscRegion")||"R20";
+  var mpg=localStorage.getItem("fcbv2_fscMpg")||"6.0";
+  var base=localStorage.getItem("fcbv2_fscBase")||"1.25";
+  var h='<div class="card"><div class="card-bd"><div id="dz"></div></div></div>';
+  h+='<div class="card"><div class="card-bd"><div class="sec-t" style="margin:0 0 9px">Fuel surcharge</div>'+
+    '<div class="note note-i">The baseline is the price your contract starts charging from — where surcharge is $0. A fixed number in the rate agreement, not today\'s pump price.</div>'+
+    '<div class="row"><div class="fld"><label>Baseline $/gal</label><input class="inp" id="fsc-b" type="number" step="0.01" value="'+esc(base)+'" oninput="doFsc()"></div>'+
+    '<div class="fld"><label>Truck MPG</label><input class="inp" id="fsc-m" type="number" step="0.1" value="'+esc(mpg)+'" oninput="doFsc()"></div></div>'+
+    '<div id="fsc-out"></div></div></div>';
+  h+='<div class="card"><div class="card-bd"><div class="sec-t" style="margin:0 0 9px">Region</div><div class="stabs" style="position:static;background:none;border:none;padding:0">';
+  MKT_REGIONS.forEach(function(r){h+='<button class="stab'+(r[0]===region?" on":"")+'" onclick="pickRegion(\''+r[0]+'\')">'+r[2]+'</button>';});
+  h+='</div></div></div>';
+  document.getElementById("s-market").innerHTML=h;
+  renderDiesel();
+  if(dieselState==="idle")loadDiesel();
+}
+function pickRegion(c){localStorage.setItem("fcbv2_fscRegion",c);rMarket();}
+function loadDiesel(){
+  dieselState="loading";renderDiesel();
+  fetch(baseUrl()+"?action=diesel",{redirect:"follow"})
+    .then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();})
+    .then(function(j){if(!j.ok)throw new Error(j.message||j.error||"no data");diesel=j;dieselState="ok";})
+    .catch(function(e){dieselErr=e.message||String(e);dieselState="err";})
+    .then(function(){renderDiesel();doFsc();});
+}
+function selRegion(){
+  if(!diesel||!diesel.regions)return null;
+  var c=localStorage.getItem("fcbv2_fscRegion")||"R20",by={};
+  diesel.regions.forEach(function(r){by[r.code]=r;});
+  return by[c]||by.NUS||null;
+}
+function renderDiesel(){
+  var z=document.getElementById("dz");if(!z)return;
+  if(dieselState==="loading"){z.innerHTML='<div class="spin"></div>';return;}
+  if(dieselState==="err"){z.innerHTML='<div class="note note-e"><b>Diesel prices unavailable.</b> '+esc(dieselErr)+
+    '<br>Check EIA_API_KEY in Apps Script → Project Settings → Script Properties, and that a new deployment version was published.</div>'+
+    '<button class="btn btn-o" style="width:100%;margin-top:8px" onclick="loadDiesel()">Retry</button>';return;}
+  var s=selRegion();
+  if(!s){z.innerHTML='<div class="note note-w">The feed connected but returned no regions.</div>';return;}
+  var lbl=(MKT_REGIONS.filter(function(r){return r.code===s.code;})[0]||[])[1]||s.code;
+  var nm=MKT_REGIONS.filter(function(r){return r[0]===s.code;})[0];
+  z.innerHTML='<div class="kpi-l">⛽ EIA weekly retail'+(diesel.asOf?(" · week of "+esc(diesel.asOf)):"")+'</div>'+
+    '<div style="font-size:32px;font-weight:900;margin-top:6px">$'+s.price.toFixed(3)+'<span style="font-size:12px;color:var(--ink3);font-weight:700"> /gal</span></div>'+
+    '<div class="grp-s">'+esc(nm?nm[1]:s.code)+
+    (typeof s.change==="number"&&isFinite(s.change)?(' · <span class="'+(s.change>0?"dn":"up")+'">'+(s.change>0?"▲":"▼")+" "+Math.abs(s.change).toFixed(3)+' vs prior week</span>'):"")+'</div>'+
+    ((s.history&&s.history.length)?('<div class="grp-s" style="margin-top:4px">past '+s.history.length+' weeks · low $'+(s.low!=null?s.low.toFixed(3):"—")+' · high $'+(s.high!=null?s.high.toFixed(3):"—")+'</div>'):"");
+}
+function doFsc(){
+  var b=parseFloat((document.getElementById("fsc-b")||{}).value),m=parseFloat((document.getElementById("fsc-m")||{}).value);
+  var o=document.getElementById("fsc-out");if(!o)return;
+  if(document.getElementById("fsc-b"))localStorage.setItem("fcbv2_fscBase",document.getElementById("fsc-b").value);
+  if(document.getElementById("fsc-m"))localStorage.setItem("fcbv2_fscMpg",document.getElementById("fsc-m").value);
+  var s=selRegion();
+  if(!s||!isFinite(b)||!isFinite(m)||m<=0){o.innerHTML='<div class="grp-s" style="padding-top:6px">Needs a diesel price, a baseline and an MPG.</div>';return;}
+  var fsc=Math.max(0,(s.price-b)/m);
+  var h='<div class="kpis" style="margin:4px 0 0"><div class="kpi"><div class="kpi-l">Surcharge</div>'+
+    '<div class="kpi-v" style="color:var(--green)">$'+fsc.toFixed(3)+'<span style="font-size:11px">/mi</span></div></div>'+
+    '<div class="kpi"><div class="kpi-l">On 1,000 mi</div><div class="kpi-v">$'+(fsc*1000).toFixed(0)+'</div>'+
+    '<div class="kpi-d flat">500 mi · $'+(fsc*500).toFixed(0)+'</div></div></div>';
+  if(b>s.price-0.75)h+='<div class="note note-w" style="margin-top:8px">A baseline of $'+b.toFixed(2)+
+    ' sits close to the current $'+s.price.toFixed(3)+', which drives the surcharge to almost nothing. Most contracts use a baseline near $1.25.</div>';
+  h+='<div class="grp-s" style="margin-top:8px">($'+s.price.toFixed(3)+' − $'+b.toFixed(2)+') ÷ '+m+
+    ' MPG. Your contract may round differently or use a stepped table.</div>';
+  o.innerHTML=h;
+}
+
+/* ── CROSSDOCKS ──────────────────────────────────────────────────── */
+function rXdock(){
+  setSub(XDOCK.length+" locations");
+  var h='<div class="fld"><input class="inp" id="xd-q" placeholder="Filter by city…" oninput="rXdockList()"></div><div id="xd-l"></div>';
+  document.getElementById("s-xdock").innerHTML=h;
+  rXdockList();
+}
+function rXdockList(){
+  var q=((document.getElementById("xd-q")||{}).value||"").toLowerCase();
+  var rows=XDOCK.filter(function(x){return !q||(x.city+" "+x.addr).toLowerCase().indexOf(q)>=0;});
+  var h=rows.length?"":empty("🏢","No match");
+  rows.forEach(function(x){
+    var tel=(x.contact||"").match(/(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})/);
+    h+='<div class="card"><div class="card-bd">'+
+      '<div class="grp-t">'+esc(x.city)+'</div>'+
+      '<div class="grp-s" style="margin:4px 0 8px">'+esc(x.addr)+'</div>'+
+      (x.contact?kv("Contact",esc(x.contact)):"")+
+      (x.price?kv("Pricing",esc(x.price)):"")+
+      '<div style="display:flex;gap:8px;margin-top:10px">'+
+      '<a class="btn btn-o" style="flex:1;text-align:center;text-decoration:none" href="https://maps.google.com/?q='+encodeURIComponent(x.addr)+'" target="_blank" rel="noopener">Maps</a>'+
+      (tel?'<a class="btn btn-o" style="flex:1;text-align:center;text-decoration:none" href="tel:'+esc(tel[1].replace(/[^\d]/g,""))+'">Call</a>':"")+
+      '</div></div></div>';
+  });
+  document.getElementById("xd-l").innerHTML=h;
+}
+
+/* ── PAYROLL ─────────────────────────────────────────────────────── */
+/* Honest state: the pay rates, bonus tiers and the 10% on combined trailers
+   live in the desktop board and the Board 2026 workbook, neither of which
+   this app has. What it CAN do from the sheet is the revenue side per
+   driver, which is what the split in driverRows() produces. */
+function rPayroll(){
+  var rows=driverRows().filter(function(d){return !d.local;});
+  var tot=rows.reduce(function(s,d){return s+d.net;},0);
+  setSub(rows.length+" OTR drivers · "+(wk().label||""));
+  var h='<div class="note note-w"><b>Revenue side only.</b> This is each driver\'s share of trailer net for the '+
+    'selected week, split across a trailer\'s drivers. It is <b>not</b> their pay: base rates, bonus tiers and '+
+    'your 10% on combined trailers are held in the desktop board and the Board 2026 workbook, which this app does not read. '+
+    'Local drivers are excluded, the same way the board excludes them.</div>';
+  h+='<div class="kpis"><div class="kpi"><div class="kpi-l">OTR net, all drivers</div>'+
+    '<div class="kpi-v" style="color:var(--green)">'+money(tot)+'</div></div>'+
+    '<div class="kpi"><div class="kpi-l">Drivers</div><div class="kpi-v">'+rows.length+'</div></div></div>';
+  h+='<div class="sec-t">Per driver</div>';
+  h+= rows.length?rows.map(function(d){
+    return '<div class="grp"><button class="grp-row" onclick="openDriver(\''+esc(d.name)+'\')">'+
+      '<div class="grp-ic" style="background:#dcfce7;color:var(--green)">'+esc(d.name.charAt(0))+'</div>'+
+      '<div class="grp-mid"><div class="grp-t">'+esc(d.name)+'</div>'+
+      '<div class="grp-s">'+nf(d.mi)+' mi · '+d.trailers+' trailer'+(d.trailers===1?"":"s")+'</div></div>'+
+      '<div class="grp-rt"><div class="grp-n">'+money(d.net)+'</div></div>'+
+      '<span class="tile-chev">›</span></button></div>';
+  }).join(""):empty("💵","No OTR drivers this week");
+  h+='<div class="note note-i" style="margin-top:14px"><b>Still outstanding:</b> re-import Board 2026.xlsx on the '+
+    'desktop Payroll tab so the <code>8312026-962026</code> and <code>972026-9132026</code> tabs re-key and your 10% populates. '+
+    'That needs the desktop board carrying <code>parseCompact</code>.</div>';
+  document.getElementById("s-payroll").innerHTML=h;
+}
+
+/* ── SEARCH ──────────────────────────────────────────────────────── */
+var searchT=null;
+function rSearch(){
+  setSub("loads, cities, drivers, brokers");
+  document.getElementById("s-search").innerHTML=
+    '<div class="fld"><input class="inp" id="sq" placeholder="Search every week…" autocomplete="off" oninput="debSearch()"></div>'+
+    '<div id="sres"></div>';
+  var i=document.getElementById("sq");if(i)i.focus();
+}
+function debSearch(){clearTimeout(searchT);searchT=setTimeout(doSearch,180);}
+function doSearch(){
+  var q=((document.getElementById("sq")||{}).value||"").trim().toLowerCase();
+  var o=document.getElementById("sres");if(!o)return;
+  if(q.length<2){o.innerHTML='<div class="grp-s" style="padding:4px 2px">Type at least two characters.</div>';return;}
+  var out=[];
+  weeks.forEach(function(w,wi){
+    (w.groups||[]).forEach(function(g){
+      var gh=((g.groupDriver||"")+" "+(g.groupTruck||"")+" "+(g.groupTrailer||"")).toLowerCase();
+      (g.loads||[]).forEach(function(l){
+        var hay=((l.sr||"")+" "+(l.broker||"")+" "+(l.loadNum||"")+" "+(l.status||"")+" "+
+          (l.pickup||"")+" "+(l.delivery||"")+" "+gh).toLowerCase();
+        if(hay.indexOf(q)>=0)out.push({w:w.label||("Week "+(wi+1)),wi:wi,g:g,l:l});
+      });
+    });
+  });
+  if(!out.length){o.innerHTML=empty("⌕",'No results for "'+esc(q)+'"');return;}
+  var h='<div class="grp-s" style="padding:2px 2px 8px">'+out.length+' result'+(out.length===1?"":"s")+'</div>';
+  out.slice(0,120).forEach(function(r){
+    var sr=parseSR(r.l.sr||"");
+    h+='<div class="grp"><button class="grp-row" onclick="jump('+r.wi+',\''+esc(String(r.g.id))+'\')">'+
+      '<div class="grp-ic" style="background:#e0e7ff;color:#3730a3">'+(isCombined(r.g)?"🔄":isOTR(r.g)?"🚛":"📋")+'</div>'+
+      '<div class="grp-mid"><div class="grp-t">'+esc(sr.r||sr.s||"—")+'</div>'+
+      '<div class="grp-s">'+esc([sr.s,r.g.groupDriver,r.l.delivery,r.w].filter(Boolean).join(" · "))+'</div></div>'+
+      (r.l.rate?'<div class="grp-rt"><div class="grp-n">'+money(parseFloat(r.l.rate)||0)+'</div></div>':'')+
+      '<span class="tile-chev">›</span></button></div>';
+  });
+  if(out.length>120)h+='<div class="grp-s" style="padding:8px 2px">Showing the first 120.</div>';
+  o.innerHTML=h;
+}
+function jump(wi,gid){wkIdx=wi;openTrailer(gid);}
+
+/* ── SETTINGS ────────────────────────────────────────────────────── */
+function rSettings(){
+  setSub(roleFromTok()||"not signed in");
+  var c=readCache();
+  var h='<div class="card"><div class="card-bd">'+
+    kv("Signed in as",esc(roleFromTok()||"—"))+
+    kv("Board synced",cachedAt?esc(ago(cachedAt)):"never")+
+    kv("Weeks loaded",String(weeks.length))+
+    kv("Trucks reporting",String(Object.keys(liveTrucks).length))+
+    '</div></div>';
+  h+='<div class="sec-t">Data tables</div><div class="card"><div class="card-bd">'+
+    kv("City mileages (DIST)","534")+kv("Coordinates (CITYLL)","130")+kv("ZIP mileages (ZIPDIST)","515")+
+    kv("Local charge radius",LOCAL_MAX_MI+" mi")+
+    '</div></div>';
+  h+='<div class="sec-t">Screens</div>';
+  [["milecheck","📏","Mileage data check"],["routes","🧭","Routes & mileage"],["xdock","🏢","Crossdocks"],
+   ["payroll","💵","Payroll"],["brokers","🔎","Broker check"],["market","⛽","Market & fuel"],["trucks","📍","Tracking"]]
+   .forEach(function(x){h+='<div class="grp"><button class="grp-row" onclick="go(\''+x[0]+'\')">'+
+     '<div class="grp-ic" style="background:var(--line2);color:var(--ink2)">'+x[1]+'</div>'+
+     '<div class="grp-mid"><div class="grp-t">'+x[2]+'</div></div><span class="tile-chev">›</span></button></div>';});
+  h+='<div class="sec-t">Session</div>';
+  h+='<button class="btn btn-o" style="width:100%;margin-bottom:9px" onclick="refreshData(true)">Refresh now</button>';
+  h+='<button class="btn" style="width:100%;background:var(--red)" onclick="signOut()">Sign out</button>';
+  h+='<div class="note note-i" style="margin-top:14px">Signing out clears this phone\'s cached copy of the board, so a shared phone does not keep showing loads.</div>';
+  document.getElementById("s-settings").innerHTML=h;
+}
+
+function empty(ic,t){return '<div class="empty"><div class="empty-i">'+ic+'</div><div class="empty-t">'+esc(t)+'</div></div>';}
+
+/* ── AUTH ────────────────────────────────────────────────────────── */
+function showLogin(msg){
+  document.getElementById("login").classList.add("on");
+  document.getElementById("login-cancel").style.display=sessTok()?"block":"none";
+  document.getElementById("login-e").textContent=msg||"";
+  setTimeout(function(){var p=document.getElementById("pin");if(p)p.focus();},120);
+}
+function hideLogin(){
+  document.getElementById("login").classList.remove("on");
+  document.getElementById("pin").value="";
+  document.getElementById("login-e").textContent="";
+}
+function clrErr(){document.getElementById("login-e").textContent="";}
+var loginBusy=false;
+function attemptLogin(){
+  var pin=(document.getElementById("pin").value||"").trim();
+  if(!pin||loginBusy)return;
+  loginBusy=true;
+  var e=document.getElementById("login-e"),b=document.getElementById("login-btn");
+  e.textContent="Checking…";b.disabled=true;
+  fetch(baseUrl()+"?action=login&pin="+encodeURIComponent(pin),{redirect:"follow"})
+    .then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();})
+    .then(function(j){
+      if(j&&j.ok&&j.token){
+        var role=String(j.token).split(".")[0];
+        if(role!=="admin"&&role!=="dispatcher"){
+          e.textContent="That PIN is not an admin or dispatcher PIN.";
+          document.getElementById("pin").value="";return;
+        }
+        setSessTok(j.token);hideLogin();refreshData(true);return;
+      }
+      e.textContent="Incorrect PIN — try again";
+      document.getElementById("pin").value="";
+    })
+    .catch(function(){e.textContent="Could not reach the board — check your connection and try again";})
+    .then(function(){loginBusy=false;b.disabled=false;});
+}
+function signOut(){
+  setSessTok("");clearCache();
+  weeks=[];liveTrucks={};cachedAt=0;
+  stack=[{s:"hub"}];paint();
+  setDot("err");setSub("Signed out");
+  showLogin();
+}
+
+/* ── DATA ────────────────────────────────────────────────────────── */
+function setDot(s){document.getElementById("dot").className="dot"+(s==="loading"?" load":s==="err"?" err":"");}
+/* The top bar is fixed, and the banner sits inside it, so the banner's
+   height has to be added to the scroll area's top padding or it covers the
+   first heading on every screen. Measured rather than hard-coded — the
+   banner wraps to two lines on a narrow phone. */
+function syncTopPad(){
+  var top=document.querySelector(".top"),w=document.querySelector(".wrap");
+  if(top&&w)w.style.paddingTop=top.offsetHeight+"px";
+}
+function banner(kind,txt){
+  var b=document.getElementById("banner");
+  if(!kind){b.className="banner";}
+  else{b.className="banner on "+kind;document.getElementById("banner-t").textContent=txt;}
+  syncTopPad();
+}
+window.addEventListener("resize",syncTopPad);
+window.addEventListener("orientationchange",function(){setTimeout(syncTopPad,150);});
+function applyData(d){
+  var raw=Array.isArray(d)?d:(d.weeks||[]);
+  weeks=raw.map(function(w){
+    var o={};for(var k in w)o[k]=w[k];
+    o.groups=(w.groups||[]).map(function(g){
+      var q={};for(var k2 in g)q[k2]=g[k2];
+      q.loads=(g.loads||[]).map(function(l){var c={};for(var k3 in l)c[k3]=l[k3];delete c.photos;delete c.tripPrice;return c;});
+      return q;
+    });
+    return o;
+  });
+  cachedAt=Date.now();
+  writeCache(weeks);
+  wkIdx=Math.min(wkIdx,Math.max(0,weeks.length-1));
+}
+function refreshData(manual){
+  if(!sessTok()){setDot("err");setSub("Sign in to load the board");showLogin();return;}
+  setDot("loading");if(manual)setSub("Syncing…");
+  fetch(withTok(baseUrl()+"?action=samsaraLocations"),{redirect:"follow"})
+    .then(function(r){return r.json();})
+    .then(function(j){
+      if(j&&j.ok&&Array.isArray(j.trucks)){
+        var m={};
+        j.trucks.forEach(function(t){if(t.number)m[t.number]={address:t.address||"",lat:t.lat,lng:t.lng,asOf:t.asOf||Date.now(),name:t.name};});
+        liveTrucks=m;
+        if(cur().s==="trucks"||cur().s==="hub")paint();
+      }
+    }).catch(function(){});
+  sheetsLoad("viewer").then(function(d){
+    if(isAuthReq(d)){
+      setSessTok("");setDot("err");
+      banner("bad","Session expired");
+      showLogin("Session expired — sign in again");return;
+    }
+    if(!d||(!Array.isArray(d)&&!Array.isArray(d.weeks)))throw new Error("unexpected response");
+    applyData(d);
+    setDot("ok");banner(null);
+    paint();
+  }).catch(function(e){
+    setDot("err");
+    var c=readCache();
+    if(!weeks.length&&c){weeks=c.weeks;cachedAt=c.at||0;wkIdx=Math.min(wkIdx,Math.max(0,weeks.length-1));}
+    if(!navigator.onLine)banner("bad","Offline — showing the last board this phone loaded");
+    else banner("warn","Could not reach the board"+(cachedAt?(" — showing a copy from "+ago(cachedAt)):""));
+    paint();
+  });
+}
+window.addEventListener("online",function(){refreshData();});
+window.addEventListener("offline",function(){banner("bad","Offline — showing the last board this phone loaded");});
+document.addEventListener("visibilitychange",function(){if(!document.hidden)refreshData();});
+document.getElementById("pin").addEventListener("keydown",function(e){if(e.key==="Enter")attemptLogin();});
+
+/* ── INIT ────────────────────────────────────────────────────────── */
+(function init(){
+  try{history.pushState(null,"","");}catch(e){}
+  var c=readCache();
+  if(sessTok()&&c){weeks=c.weeks;cachedAt=c.at||0;}
+  else if(!sessTok())clearCache();
+  paint();
+  syncTopPad();
+  if(sessTok())refreshData(true);else showLogin();
+  setInterval(function(){if(!document.hidden)refreshData();},60000);
+  if("serviceWorker" in navigator){
+    navigator.serviceWorker.register("sw.js").catch(function(){});
+  }
+})();
+</script>
+</body>
+</html>
