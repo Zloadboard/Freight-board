@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>Z Board — payload size &amp; timing</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:#0f1f3d;color:#e2e8f0;padding:16px;padding-top:calc(16px + env(safe-area-inset-top));
+  padding-bottom:calc(32px + env(safe-area-inset-bottom));font-size:14px;line-height:1.5}
+h1{font-size:18px;font-weight:900;margin-bottom:4px}
+.sub{font-size:11.5px;color:rgba(255,255,255,.45);margin-bottom:16px}
+label{display:block;font-size:10px;font-weight:800;text-transform:uppercase;
+  letter-spacing:.06em;color:rgba(255,255,255,.5);margin-bottom:6px}
+input{width:100%;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.16);
+  border-radius:10px;padding:12px;color:#fff;font-size:16px;font-family:inherit;outline:none;margin-bottom:12px}
+input:focus{border-color:#2563eb}
+button{width:100%;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:800;
+  background:#2563eb;color:#fff;font-family:inherit;cursor:pointer;margin-bottom:8px}
+button:disabled{background:#475569}
+button.alt{background:rgba(255,255,255,.1)}
+.row{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);
+  border-radius:11px;padding:11px 12px;margin-bottom:9px}
+.row h2{font-size:12.5px;font-weight:800;margin-bottom:3px;display:flex;align-items:center;gap:7px}
+.tag{font-size:9.5px;font-weight:800;padding:2px 7px;border-radius:99px;flex-shrink:0}
+.ok{background:#14532d;color:#86efac}
+.bad{background:#7f1d1d;color:#fca5a5}
+.hang{background:#78350f;color:#fcd34d}
+.wait{background:#334155;color:#cbd5e1}
+.why{font-size:11px;color:rgba(255,255,255,.55);margin-bottom:6px}
+pre{background:rgba(0,0,0,.35);border-radius:7px;padding:8px 9px;font-size:10.5px;
+  white-space:pre-wrap;word-break:break-all;color:#cbd5e1;max-height:190px;overflow:auto}
+.big{font-size:19px;font-weight:900;color:#fde047;margin:2px 0 4px}
+.note{background:rgba(37,99,235,.14);border:1px solid rgba(37,99,235,.4);border-radius:10px;
+  padding:11px 12px;font-size:11.5px;margin-bottom:14px;color:#bfdbfe}
+.verdict{border-radius:11px;padding:12px;margin:14px 0;font-size:12.5px;font-weight:700;display:none}
+.verdict.on{display:block}
+.tick{font-size:11px;color:#fcd34d;font-weight:700}
+</style>
+</head>
+<body>
+
+<h1>Z Board — payload size &amp; timing</h1>
+<div class="sub">Round two. The first run showed every board request timing out at 8s while login answered in 4.2s. This one waits up to 90 seconds and measures how many bytes actually come back.</div>
+
+<div class="note">
+This can take <b>2–3 minutes</b>. Leave the screen on and don't switch apps — iOS suspends background
+tabs and that would look like another hang. A live counter ticks while each request is in flight.
+</div>
+
+<label for="url">Apps Script /exec URL</label>
+<input id="url" type="url" autocapitalize="off" autocorrect="off" spellcheck="false"
+  value="https://script.google.com/macros/s/AKfycbwvzKkQR2jRUL6-pPHET8JxUbPgVgGdRMs3BjmKyCrsNgHqo3GhUTUUw-qky61e-FQfqQ/exec"/>
+
+<label for="pin">PIN</label>
+<input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="••••"/>
+
+<label for="tmo">Timeout per request (seconds)</label>
+<input id="tmo" type="number" inputmode="numeric" value="90"/>
+
+<button id="go">Run</button>
+<button id="copy" class="alt">Copy results</button>
+
+<div class="verdict" id="verdict"></div>
+<div id="out"></div>
+
+<script>
+"use strict";
+var results = [];
+function el(id){ return document.getElementById(id); }
+function bytes(n){
+  if(n < 1024) return n + " B";
+  if(n < 1048576) return (n/1024).toFixed(1) + " KB";
+  return (n/1048576).toFixed(2) + " MB";
+}
+function card(title, why){
+  var d = document.createElement("div");
+  d.className = "row";
+  d.innerHTML = '<h2><span class="t"></span><span class="tag wait">running</span></h2>' +
+                '<div class="why"></div><div class="tick"></div><div class="big" style="display:none"></div><pre></pre>';
+  d.querySelector(".t").textContent = title;
+  d.querySelector(".why").textContent = why;
+  el("out").appendChild(d);
+  return d;
+}
+
+/* Reads the body as a stream where possible so we can report how many bytes
+   arrived even when the request is abandoned part-way. That is the difference
+   between "the server never answered" and "the answer is too big to finish". */
+function timed(url, opts, tmoMs, d){
+  var ctl = new AbortController();
+  var started = Date.now();
+  var got = 0, aborted = false;
+  var tickEl = d ? d.querySelector(".tick") : null;
+  var iv = setInterval(function(){
+    if(tickEl) tickEl.textContent = "in flight " + ((Date.now()-started)/1000).toFixed(0) + "s"
+      + (got ? (" · " + bytes(got) + " received") : "");
+  }, 500);
+  var t = setTimeout(function(){ aborted = true; ctl.abort(); }, tmoMs);
+
+  opts = opts || {}; opts.signal = ctl.signal; opts.redirect = "follow";
+
+  function done(o){ clearTimeout(t); clearInterval(iv); if(tickEl) tickEl.textContent = ""; return o; }
+
+  return fetch(url, opts).then(function(r){
+    var ttfb = Date.now() - started;
+    if(r.body && r.body.getReader){
+      var reader = r.body.getReader();
+      var chunks = [];
+      return (function pump(){
+        return reader.read().then(function(res){
+          if(res.done) return;
+          got += res.value.length;
+          if(chunks.length < 40) chunks.push(res.value);
+          return pump();
+        });
+      })().then(function(){
+        var head = "";
+        try{ head = new TextDecoder().decode(chunks.length ? chunks[0] : new Uint8Array()); }catch(e){}
+        return done({ ok:true, status:r.status, ttfb:ttfb, ms:Date.now()-started,
+                      size:got, head:head.slice(0,600) });
+      });
+    }
+    return r.text().then(function(txt){
+      return done({ ok:true, status:r.status, ttfb:ttfb, ms:Date.now()-started,
+                    size:txt.length, head:txt.slice(0,600) });
+    });
+  }).catch(function(e){
+    return done({ ok:false, hung:aborted, ms:Date.now()-started, size:got,
+                  err:(e && (e.name+": "+e.message)) || String(e) });
+  });
+}
+
+function report(d, res, label){
+  var tag = d.querySelector(".tag"), big = d.querySelector(".big"), pre = d.querySelector("pre");
+  var line;
+  if(res.ok){
+    tag.className = "tag ok"; tag.textContent = "HTTP " + res.status;
+    big.style.display = "block";
+    big.textContent = bytes(res.size) + " in " + (res.ms/1000).toFixed(1) + "s";
+    pre.textContent = "first byte : " + res.ttfb + " ms\ntotal      : " + res.ms +
+      " ms\nsize       : " + res.size + " bytes (" + bytes(res.size) + ")\n\n" + res.head;
+    line = label + " -> HTTP " + res.status + ", " + bytes(res.size) + ", ttfb " + res.ttfb +
+           "ms, total " + res.ms + "ms";
+  } else if(res.hung){
+    tag.className = "tag hang"; tag.textContent = "TIMED OUT";
+    big.style.display = "block";
+    big.textContent = bytes(res.size) + " arrived before I gave up";
+    pre.textContent = "Abandoned after " + (res.ms/1000).toFixed(0) + "s.\nBytes received: " +
+      res.size + "\n\n" + (res.size > 0
+        ? "Data WAS arriving — the response is too big or too slow to finish, not blocked."
+        : "Not one byte arrived. The server never started answering this request.");
+    line = label + " -> TIMED OUT after " + res.ms + "ms, " + res.size + " bytes received";
+  } else {
+    tag.className = "tag bad"; tag.textContent = "FAILED";
+    pre.textContent = res.err;
+    line = label + " -> FAILED " + res.err;
+  }
+  results.push(line);
+  return res;
+}
+
+el("go").onclick = function(){
+  var base = el("url").value.trim().replace(/\?.*$/, "");
+  var pin  = el("pin").value.trim();
+  var tmo  = Math.max(5, parseInt(el("tmo").value, 10) || 90) * 1000;
+  if(!base || !pin){ alert("Enter the URL and your PIN"); return; }
+  el("go").disabled = true; el("go").textContent = "Running…";
+  el("out").innerHTML = ""; el("verdict").className = "verdict"; results = [];
+
+  var env = card("0 · This browser", "");
+  report(env, { ok:true, status:200, ttfb:0, ms:0, size:0,
+    head:"origin: " + location.origin + "\nonLine: " + navigator.onLine +
+         "\nstreaming supported: " + !!(window.ReadableStream) + "\nUA: " + navigator.userAgent }, "env");
+  env.querySelector(".big").style.display = "none";
+  env.querySelector(".tag").textContent = "info";
+
+  var tok = "";
+  var c1 = card("1 · Login", "Small response. The control — this answered in 4.2s last time.");
+  timed(base + "?action=login&pin=" + encodeURIComponent(pin), null, tmo, c1)
+  .then(function(r1){
+    report(c1, r1, "login");
+    try{ var j = JSON.parse(r1.head); if(j && j.token) tok = j.token; }catch(e){}
+    c1.querySelector("pre").textContent = "first byte : " + r1.ttfb + " ms\ntotal      : " +
+      r1.ms + " ms\nsize       : " + r1.size + " bytes\ntoken      : " +
+      (tok ? (String(tok).split(".")[0] + " role, " + tok.length + " chars (hidden)") : "NOT RETURNED");
+    if(!tok) throw new Error("no token — check the PIN");
+
+    var c2 = card("2 · Session check", "Authenticated but tiny. Fast here + slow on the board = size, not auth.");
+    return timed(base + "?action=session&tok=" + encodeURIComponent(tok), null, tmo, c2)
+    .then(function(r2){
+      report(c2, r2, "session");
+
+      var c3 = card("3 · The board itself", "The call that hangs in the app. How big is it, and does it ever finish?");
+      return timed(base + "?tok=" + encodeURIComponent(tok), null, tmo, c3)
+      .then(function(r3){
+        report(c3, r3, "board");
+
+        var v = el("verdict"), msg, bg;
+        if(r3.ok){
+          msg = "The board DOES come back: " + bytes(r3.size) + " in " + (r3.ms/1000).toFixed(1)
+              + "s, first byte at " + r3.ttfb + "ms."
+              + (r3.ms > 20000
+                 ? " That is far longer than anyone waits while staring at an amber dot, and the app"
+                   + " re-fires every 60s with no timeout."
+                 : " That is fast enough that slowness alone does not explain the app's behaviour —"
+                   + " which points back at the app, not the server.");
+          bg = r3.ms > 20000 ? "#78350f" : "#14532d";
+        } else if(r3.hung && r3.size > 0){
+          var kbs = (r3.size/1024) / (r3.ms/1000);
+          msg = bytes(r3.size) + " had arrived when I stopped waiting at " + (r3.ms/1000).toFixed(0)
+              + "s — about " + kbs.toFixed(0) + " KB/s. Data IS flowing, so the request is not blocked. "
+              + "Whether that was the whole board or part of it, this measurement cannot say. Send the "
+              + "numbers over and raise the timeout if you want a complete figure.";
+          bg = "#78350f";
+        } else if(r3.hung && r2.ok){
+          msg = "Session check answered but the board sent nothing at all in " + (r3.ms/1000).toFixed(0)
+              + "s. Auth is fine; the board branch of doGet is stalling server-side. That is an Apps "
+              + "Script problem, not a phone problem.";
+          bg = "#7f1d1d";
+        } else {
+          msg = "Send me the copied output — this combination needs reading, not a canned verdict.";
+          bg = "#334155";
+        }
+        v.style.background = bg; v.className = "verdict on"; v.textContent = msg;
+        results.push("VERDICT: " + msg);
+      });
+    });
+  }).catch(function(e){
+    var v = el("verdict");
+    v.style.background = "#7f1d1d"; v.className = "verdict on";
+    v.textContent = "Stopped: " + (e.message || e);
+    results.push("STOPPED: " + (e.message || e));
+  }).then(function(){
+    el("go").disabled = false; el("go").textContent = "Run again";
+  });
+};
+
+function legacyCopy(txt){
+  try{
+    var ta = document.createElement("textarea");
+    ta.value = txt; ta.style.position="fixed"; ta.style.opacity="0";
+    document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, txt.length);
+    var done = document.execCommand("copy"); document.body.removeChild(ta); return done;
+  }catch(e){ return false; }
+}
+el("copy").onclick = function(){
+  var txt = results.join("\n");
+  if(!txt){ el("copy").textContent = "Nothing to copy yet";
+            setTimeout(function(){ el("copy").textContent = "Copy results"; }, 1500); return; }
+  function ok(){ el("copy").textContent = "Copied";
+                 setTimeout(function(){ el("copy").textContent = "Copy results"; }, 1500); }
+  function manual(){
+    el("copy").textContent = "Copy by hand from below";
+    var pre = document.createElement("pre");
+    pre.textContent = txt; pre.style.userSelect = "all"; pre.style.marginTop = "8px";
+    el("out").insertBefore(pre, el("out").firstChild);
+  }
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(ok, function(){ if(legacyCopy(txt)) ok(); else manual(); });
+  } else { if(legacyCopy(txt)) ok(); else manual(); }
+};
+</script>
+</body>
+</html>
