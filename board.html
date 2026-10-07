@@ -3520,6 +3520,119 @@ function GBStopLine({stop,canRemove,isViewer,onField,onCycleColor,onRemove}){
 
 
 
+// Turn the board another window just saved into this window's state.
+// Returns null when there is nothing newer to take. Photos are stored outside
+// the saved board, so they are put back from the photo cache, falling back to
+// whatever this window already had in memory for that load.
+function adoptSavedBoard(d,currentWeeks,lastTs,readPhotoCache){
+  if(!d||!Array.isArray(d.weeks)||!d.weeks.length)return null;
+  const ts=Number(d.savedAt)||0;
+  if(ts&&ts<=lastTs)return null;
+  let cache={};
+  try{cache=readPhotoCache()||{};}catch(e){cache={};}
+  const mem={};
+  (currentWeeks||[]).forEach(w=>(w.groups||[]).forEach(g=>(g.loads||[]).forEach(l=>{
+    const dp=(l.photos||[]).filter(p=>p&&typeof p==="object"&&p.data);
+    if(dp.length)mem[l.id]=dp;
+  })));
+  const weeks=d.weeks.map(w=>({...w,groups:(w.groups||[]).map(g=>({...g,loads:(g.loads||[]).map(l=>{
+    const urlPh=(l.photos||[]).filter(p=>p&&typeof p==="object"&&p.url);
+    const dataPh=cache[l.id]||mem[l.id]||[];
+    const all=urlPh.concat(dataPh);
+    return {...l,photos:all};
+  })}))}));
+  return{weeks,savedAt:ts||Date.now()};
+}
+
+// ─── POP-OUT WINDOWS ────────────────────────────────────────────────────
+// board.html?view=generalboard opens the same board in a second window that
+// starts on the General Board. The login is handed over from the window that
+// opened it (same-origin, in memory only — never stored, never in the URL), so
+// the second window does not ask for the PIN again while the main one is open.
+const POPOUT=(()=>{
+  try{
+    const v=new URLSearchParams(window.location.search).get("view");
+    if(v!=="generalboard")return null;
+    let h=null;
+    try{h=window.opener&&window.opener.__fcbHandoff;}catch(e){h=null;}
+    if(h&&h.mode)return{view:v,mode:h.mode,disp:h.disp||null,tok:h.tok||""};
+    return{view:v,mode:null,disp:null,tok:""};
+  }catch(e){return null;}
+})();
+
+// ─── Z LOAD SEARCH TAB ──────────────────────────────────────────────────
+// Shows the Z Load Search board that already runs on the dispatch PC
+// (http://localhost:8765). Nothing of Z Load Search is copied in here: it
+// keeps its own memory, its own settings and its own storage. Leaving this
+// tab, or popping it out, unloads the embedded copy so only one is running.
+const ZLS_URL="http://localhost:8765/";
+function LoadSearchTab(){
+  const[status,setStatus]=useState("checking"); // checking | up | down
+  const[popped,setPopped]=useState(false);
+  const[force,setForce]=useState(false);
+  const winRef=useRef(null);
+  const check=useCallback(()=>{
+    setStatus("checking");
+    let done=false;
+    const ctl=(typeof AbortController!=="undefined")?new AbortController():null;
+    const t=setTimeout(()=>{if(ctl)ctl.abort();if(!done){done=true;setStatus("down");}},4000);
+    fetch(ZLS_URL+"api/health",{cache:"no-store",signal:ctl?ctl.signal:undefined})
+      .then(r=>{if(done)return;done=true;clearTimeout(t);setStatus(r.ok?"up":"down");})
+      .catch(()=>{if(done)return;done=true;clearTimeout(t);setStatus("down");});
+  },[]);
+  useEffect(()=>{check();},[check]);
+  // While popped out, notice when that window is closed and show it here again.
+  useEffect(()=>{
+    if(!popped)return;
+    const iv=setInterval(()=>{
+      let closed=true;
+      try{closed=!winRef.current||winRef.current.closed;}catch(e){closed=true;}
+      if(closed){winRef.current=null;setPopped(false);}
+    },1500);
+    return()=>clearInterval(iv);
+  },[popped]);
+  const popOut=()=>{
+    const w=window.open(ZLS_URL,"zls_board","popup=yes,width=1500,height=900");
+    if(w){winRef.current=w;setPopped(true);}
+    else alert("Chrome blocked the new window. Allow pop-ups for this site and try again.");
+  };
+  const btn=(bg,fg,bd)=>({background:bg,color:fg,border:"1px solid "+bd,borderRadius:"7px",padding:"6px 14px",fontSize:"12px",fontWeight:"700",cursor:"pointer"});
+  const showFrame=!popped&&(status==="up"||force);
+  return(<div style={{padding:"14px"}}>
+    <div style={{display:"flex",flexWrap:"wrap",gap:"10px",alignItems:"center",justifyContent:"space-between",marginBottom:"10px"}}>
+      <div>
+        <div style={{fontSize:"16px",fontWeight:"800",color:"#0f1f3d"}}>🔎 Load Search</div>
+        <div style={{fontSize:"11px",color:"#64748b",marginTop:"2px"}}>Z Load Search — all broker boards in one place · runs on this computer only</div>
+      </div>
+      <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+        <span style={{fontSize:"11px",fontWeight:"700",color:status==="up"?"#15803d":status==="down"?"#b91c1c":"#64748b"}}>
+          {status==="up"?"● Running":status==="down"?"● Not reachable":"● Checking…"}
+        </span>
+        {popped
+          ?<button onClick={()=>{try{if(winRef.current)winRef.current.close();}catch(e){}winRef.current=null;setPopped(false);}} style={btn("#f1f5f9","#374151","#d1d5db")}>Show here again</button>
+          :<button onClick={popOut} style={btn("#2563eb","#fff","#2563eb")}>⧉ Open in new window</button>}
+      </div>
+    </div>
+    {popped&&(<div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:"10px",padding:"28px",textAlign:"center",color:"#1e40af",fontSize:"13px",fontWeight:"600"}}>
+      Load Search is open in its own window.
+      <div style={{fontSize:"11px",fontWeight:"500",color:"#64748b",marginTop:"6px"}}>The copy on this page is switched off so only one is running. Close that window, or click "Show here again", to bring it back.</div>
+    </div>)}
+    {!popped&&status==="checking"&&!force&&(<div style={{padding:"40px",textAlign:"center",color:"#64748b",fontSize:"12px"}}>Looking for Z Load Search on this computer…</div>)}
+    {!popped&&status==="down"&&!force&&(<div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:"10px",padding:"22px",color:"#92400e",fontSize:"12px",lineHeight:"1.6"}}>
+      <div style={{fontWeight:"800",fontSize:"14px",marginBottom:"6px"}}>Z Load Search is not reachable from this page</div>
+      <div>• It only works on the dispatch PC, in Chrome, while Z Load Search is running.</div>
+      <div>• The first time, Chrome asks to let this site reach apps on this device — choose <b>Allow</b>.</div>
+      <div style={{display:"flex",gap:"8px",marginTop:"12px",flexWrap:"wrap"}}>
+        <button onClick={check} style={btn("#b45309","#fff","#b45309")}>Try again</button>
+        <button onClick={()=>setForce(true)} style={btn("#fff","#92400e","#fde68a")}>Show it anyway</button>
+        <button onClick={popOut} style={btn("#fff","#92400e","#fde68a")}>Open in new window</button>
+      </div>
+    </div>)}
+    {showFrame&&(<iframe src={ZLS_URL} title="Z Load Search" allow="clipboard-write; autoplay"
+      style={{width:"100%",height:"calc(100vh - 150px)",minHeight:"520px",border:"1px solid #e2e8f0",borderRadius:"8px",background:"#fff",display:"block"}}/>)}
+  </div>);
+}
+
 function App(){
   // A claim link short-circuits the whole board: no sign-in, no board data,
   // just the one load the token unlocks.
@@ -3527,8 +3640,10 @@ function App(){
     try{return new URLSearchParams(window.location.search).get("claim")||"";}catch(e){return "";}
   },[]);
 
-  const[appMode,setAppMode]=useState("public"); // default: everyone lands as public viewer (Dashboard only)
-  const sessionToken=React.useRef(""); // role session token sent to Sheets
+  // A pop-out window inherits the login of the window that opened it; if that
+  // window is gone (no handoff) it shows the normal login screen instead.
+  const[appMode,setAppMode]=useState(POPOUT?(POPOUT.mode||null):"public"); // default: everyone lands as public viewer (Dashboard only)
+  const sessionToken=React.useRef(POPOUT?POPOUT.tok:""); // role session token sent to Sheets
   const[weeks,setWeeks]=useState([]);
   const[activeWeek,setActiveWeek]=useState(0);
   // Viewer is locked to the newest week — no ability to navigate past weeks.
@@ -3539,7 +3654,7 @@ function App(){
       if(activeWeek!==newest)setActiveWeek(newest);
     }
   },[appMode,weeks?.length]);
-  const[_activeTab,_setActiveTab]=useState(()=>localStorage.getItem("fcbv2_lastTab")||"dashboard");
+  const[_activeTab,_setActiveTab]=useState(()=>POPOUT?POPOUT.view:(localStorage.getItem("fcbv2_lastTab")||"dashboard"));
   // Public mode is pinned to Dashboard. Any attempt to navigate elsewhere is a no-op.
   // Viewer + admin navigate freely via _setActiveTab.
   const activeTab=appMode==="public"?"dashboard":_activeTab;
@@ -3600,7 +3715,7 @@ function App(){
   const[manualPlannedOrder,setManualPlannedOrder]=useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_plannedManualOrder")||"{}");}catch{return{};}});
   useEffect(()=>{localStorage.setItem("fcbv2_plannedManualMode",manualOrderActive?"1":"0");},[manualOrderActive]);
   useEffect(()=>{localStorage.setItem("fcbv2_plannedManualOrder",JSON.stringify(manualPlannedOrder));},[manualPlannedOrder]);
-  useEffect(()=>{if(activeTab&&appMode)localStorage.setItem("fcbv2_lastTab",activeTab);},[activeTab,appMode]); // all | today | tomorrow | active | pending | done
+  useEffect(()=>{if(POPOUT)return;if(activeTab&&appMode)localStorage.setItem("fcbv2_lastTab",activeTab);},[activeTab,appMode]); // all | today | tomorrow | active | pending | done
   const[dashCurIdx,setDashCurIdx]=useState(0);
   const[dashPrevIdx,setDashPrevIdx]=useState(1);
   const[driverDateFrom,setDriverDateFrom]=useState("");
@@ -3842,7 +3957,12 @@ function App(){
   const allTrucks=useMemo(()=>[...TRUCK_NUMBERS,...customTrucks].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[customTrucks]);
   const allTrailers=useMemo(()=>[...TRAILER_NUMBERS,...customTrailers].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[customTrailers]);
   const[dispatchers,setDispatchers]=useState(()=>{try{return JSON.parse(localStorage.getItem(DISPATCHERS_KEY)||"[]");}catch{return[];}});
-  const[currentDispatcher,setCurrentDispatcher]=useState(null);
+  const[currentDispatcher,setCurrentDispatcher]=useState(POPOUT?POPOUT.disp:null);
+  // Keep the login available to a pop-out window opened from this one.
+  useEffect(()=>{
+    try{window.__fcbHandoff=(appMode&&appMode!=="public")?{mode:appMode,disp:currentDispatcher,tok:sessionToken.current}:null;}catch(e){}
+    if(POPOUT){try{document.title="General Board";}catch(e){}}
+  },[appMode,currentDispatcher]);
   const saveTimer=useRef(null);
   const [dragWeekIdx,setDragWeekIdx]=React.useState(null);
   const [loginLog,setLoginLog]=React.useState(()=>{try{return JSON.parse(localStorage.getItem("fcbv2_loginlog")||"[]");}catch(e){return [];}});
@@ -4574,6 +4694,38 @@ function App(){
       setStorageFull(true);
       return false;
     }
+  },[]);
+
+  // ─── TWO-WINDOW SAFETY ────────────────────────────────────────────────
+  // Every save writes the WHOLE board. With the board open in two windows
+  // (General Board popped out), each window holds its own copy, so a save from
+  // one would silently wipe edits made in the other. Fix: the moment one window
+  // saves, the browser tells the other ("storage" event — it only fires in the
+  // OTHER windows, never the one that wrote), and that window takes the saved
+  // board as its own before it can save anything over it.
+  const lastAdoptedTs=useRef(0);
+  useEffect(()=>{
+    const onStorage=(e)=>{
+      if(e.key!==LS_KEY||!e.newValue)return;
+      let d=null;
+      try{d=JSON.parse(e.newValue);}catch(err){return;}
+      const next=adoptSavedBoard(d,latestState.current.weeks,lastAdoptedTs.current,()=>{try{return JSON.parse(localStorage.getItem("fcbv2_photos")||"{}");}catch(err){return{};}});
+      if(!next)return;
+      lastAdoptedTs.current=next.savedAt;
+      clearTimeout(saveTimer.current); // a stale pending save here must not go out over the newer board
+      setWeeks(next.weeks);
+      if(Array.isArray(d.customDrivers))setCustomDrivers(d.customDrivers);
+      if(Array.isArray(d.customTrucks))setCustomTrucks(d.customTrucks);
+      if(Array.isArray(d.customTrailers))setCustomTrailers(d.customTrailers);
+      if(Array.isArray(d.dispatchers))setDispatchers(d.dispatchers);
+      if(d.truckAssignments&&typeof d.truckAssignments==="object")setTruckAssignments(d.truckAssignments);
+      if(Array.isArray(d.archive))setArchivedWeeks(d.archive);
+      if(Array.isArray(d.terminatedDrivers))setTerminatedDrivers(d.terminatedDrivers);
+      setUndoStack([]); // old snapshots here predate the other window's edits
+      setSaveStatus("idle");
+    };
+    window.addEventListener("storage",onStorage);
+    return()=>window.removeEventListener("storage",onStorage);
   },[]);
 
   const setWeeksAndSave=useCallback((updater)=>{
@@ -6652,6 +6804,7 @@ ${accRows.length>0?`
     // Dispatchers go straight to the board; admins go to dashboard
     if(mode==="dispatcher"){setActiveTab("weeks");localStorage.setItem("fcbv2_lastTab","weeks");}
     else if(mode==="admin"){const lastTab=localStorage.getItem("fcbv2_lastTab")||"dashboard";setActiveTab(lastTab);}
+    if(POPOUT)_setActiveTab(POPOUT.view);
     const entry={name:mode==="dispatcher"&&disp?disp.name:mode==="admin"?"Admin":mode==="viewer"?"Viewer":"Public Viewer",role:mode,ts:new Date().toLocaleString("en-US",{month:"2-digit",day:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true})};
     setLoginLog(prev=>{const next=[entry,...prev].slice(0,200);localStorage.setItem("fcbv2_loginlog",JSON.stringify(next));return next;});
   }}/>;
@@ -7553,6 +7706,7 @@ ${accRows.length>0?`
             {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="equipment"?" active":"")} style={{color:activeTab==="equipment"?"#0369a1":"#374151",background:activeTab==="equipment"?"#eff6ff":"transparent"}} onClick={()=>{setActiveTab("equipment");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🚛</span>Equipment</button>}
             {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="xdock"?" active":"")} style={{color:activeTab==="xdock"?"#7c3aed":"#374151",background:activeTab==="xdock"?"#faf5ff":"transparent"}} onClick={()=>{setActiveTab("xdock");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🔁</span>Crossdock</button>}
             {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="generalboard"?" active":"")} style={{color:activeTab==="generalboard"?"#1d4ed8":"#374151",background:activeTab==="generalboard"?"#eff6ff":"transparent"}} onClick={()=>{setActiveTab("generalboard");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🗓️</span>General Board</button>}
+            {isAdmin&&!POPOUT&&<button className={"hdr-menu-item"+(activeTab==="loadsearch"?" active":"")} style={{color:activeTab==="loadsearch"?"#1d4ed8":"#374151",background:activeTab==="loadsearch"?"#eff6ff":"transparent"}} onClick={()=>{setActiveTab("loadsearch");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🔎</span>Load Search</button>}
             {(isAdmin||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="archive"?" active":"")} style={{color:activeTab==="archive"?"#4c1d95":"#374151",background:activeTab==="archive"?"#faf5ff":"transparent"}} onClick={()=>{setActiveTab("archive");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📦</span>Archive{archivedWeeks.length>0 ? <span style={{marginLeft:"auto",fontSize:"9px",fontWeight:"700",color:"#7c3aed",background:"#ede9fe",padding:"1px 6px",borderRadius:"10px"}}>{archivedWeeks.length}</span> : null}</button>}
             {(isAdmin||isDispatcher||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="stats"?" active":"")} style={{color:activeTab==="stats"?"#b45309":"#374151",background:activeTab==="stats"?"#fffbeb":"transparent"}} onClick={()=>{setActiveTab("stats");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>📊</span>Stats</button>}
             {(isAdmin||isViewer)&&<button className={"hdr-menu-item"+(activeTab==="insights"?" active":"")} style={{color:activeTab==="insights"?"#0891b2":"#374151",background:activeTab==="insights"?"#ecfeff":"transparent"}} onClick={()=>{setActiveTab("insights");setShowHdrMenu(false);}}><span style={{fontSize:"15px",width:"18px",textAlign:"center",flexShrink:0}}>🧠</span>Insights</button>}
@@ -9958,6 +10112,8 @@ ${accRows.length>0?`
         Planned Shipments/OTR. Lives on the SAME week object (generalBoardDrivers)
         so it saves through the exact same pipeline as Local/Crossdock and
         stays in lockstep with the main week timeline. */}
+    {activeTab==="loadsearch"&&isAdmin&&<LoadSearchTab/>}
+
     {activeTab==="generalboard"&&(isAdmin||isDispatcher||isViewer)&&(
       <div style={{padding:"14px",maxWidth:"100%",overflowX:"hidden"}}>
 
@@ -9965,6 +10121,7 @@ ${accRows.length>0?`
           <div>
             <div style={{fontSize:"16px",fontWeight:"800",color:"#0f1f3d"}}>🗓️ General Board</div>
             <div style={{fontSize:"11px",color:"#64748b",marginTop:"2px"}}>{week.label} · full week, one screen</div>
+            {!POPOUT&&<button onClick={()=>{const w=window.open(window.location.pathname+"?view=generalboard","fcb_generalboard","popup=yes,width=1500,height=900");if(!w)alert("Chrome blocked the new window. Allow pop-ups for this site and try again.");}} title="Open the General Board in its own window — changes stay in sync with this one" style={{marginTop:"6px",background:"#2563eb",color:"#fff",border:"none",borderRadius:"7px",padding:"5px 12px",fontSize:"11px",fontWeight:"700",cursor:"pointer"}}>⧉ Open in new window</button>}
           </div>
           <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
             {[["Drivers",gbWeekTotals.drivers],["Week miles",gbWeekTotals.m.toLocaleString()],
