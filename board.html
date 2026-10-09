@@ -5215,7 +5215,7 @@ function App(){
   // Renata, or any dispatcher's own name) moves the driver to that dispatcher.
   // Notes like TANKER / NT / Chains are ignored; a driver without a matching
   // tag stays with the section it is in.
-  const MB_TAG_ALIASES={ez:"Eimantas",eimantas:"Eimantas",maz:"Mazvydas",mazvydas:"Mazvydas",ren:"Renata",renata:"Renata",zygis:"Zygis",zyggi:"Zygis",ziggy:"Zygis",zygi:"Zygis"};
+  const MB_TAG_ALIASES={ez:"Eimantas",eimantas:"Eimantas",maz:"Mazvydas",mazvydas:"Mazvydas",ren:"Renata",renata:"Renata",zygis:"Zygis",zyggi:"Zygis",ziggy:"Zygis",zygi:"Zygis",louis:"Lukas",lukas:"Lukas"};
   // Dispatchers who can be tagged but may not have their own section on the sheet.
   const MB_TAG_EXTRA=["Renata"];
   const mbDispatcherFromTag=(tag,sectionNames)=>{
@@ -5237,21 +5237,29 @@ function App(){
     }
     return null;
   };
-  // Tags only decide in a block that is individually assigned: at least half of
-  // its drivers (and at least 2) carry a dispatcher tag. Your regular sections
-  // keep going by rows, even if one driver there has an old tag in the name.
+  const MB_UNASSIGNED="Unassigned";
+  // Summary-row names of people no longer with the company. A tagged block under
+  // one of these names sends its untagged drivers to "Unassigned" (not paid).
+  const MB_FORMER=["justas"];
   const mbAssignByTag=(dispatchersOut)=>{
     const known=dispatchersOut.map(d=>d.name).filter(Boolean);
     const byName={};
     dispatchersOut.forEach(d=>{byName[d.name]=d;});
     const moves=[];
     dispatchersOut.forEach(d=>{
+      // Tags only decide in the shared block at the bottom (its summary row is blank or
+      // carries the name of someone no longer here, e.g. "Justas"). Every regular
+      // section goes by rows, even when drivers there carry a name in their notes.
+      const shared=!String(d.name||"").trim()||MB_FORMER.includes(String(d.name).trim().toLowerCase())||d.name===MB_UNASSIGNED;
+      if(!shared)return;
       const targets=d.drivers.map(dr=>dr.tag?mbDispatcherFromTag(dr.tag,known):null);
-      const tagged=targets.filter(Boolean).length;
-      if(tagged<2||tagged*2<d.drivers.length)return; // a regular section: rows decide
       d.drivers=d.drivers.filter((dr,i)=>{
-        const target=targets[i];
-        if(!target){if(dr.tag)dr.untaggedNote=dr.tag;return true;}
+        // In an individually assigned block the summary-row name is not the
+        // dispatcher (e.g. "Justas", no longer with the company): a driver here
+        // without a dispatcher tag goes to "Unassigned" (not paid) so it shows up.
+        const target=targets[i]||MB_UNASSIGNED;
+        if(!targets[i]&&dr.tag)dr.untaggedNote=dr.tag;
+        if(!target)return true;
         if(target===d.name)return true;
         moves.push({dr:{...dr,assignedBy:"tag",sheetSection:d.name},target});
         return false;
@@ -5277,7 +5285,8 @@ function App(){
     const summaryIdxs=[];
     grid.forEach((row,i)=>{
       const rt=row.join(" ");
-      if(rt.includes("Gross:")&&rt.includes("/truck")){
+      // same tolerance as the xlsx import: a cleared "Gross:" label must not merge two sections
+      if((rt.includes("Gross:")&&rt.includes("/truck"))||(/\/truck/.test(rt)&&/\bmiles\b/i.test(rt)&&!/^\s*\d/.test(String(row[1]||"")))){
         // Skip the Zygis/Laura LOCALS summary — we don't process locals
         if(rt.toLowerCase().includes("zygis/laura"))return;
         // Skip the master totals row if any
@@ -5323,7 +5332,7 @@ function App(){
         const r3=grid[i+2]||[]; // "MILES" + total + per-day
         const r4=grid[i+3]||[]; // "GROSS" + total + per-day
         // A driver block starts when col 1 is a small integer (driver slot 1-11) AND col 3 is MILES-like row below
-        const isDriverHeader=r1[1]&&/^\d{1,2}$/.test(r1[1])&&r3[1]==="MILES"&&r4[1]==="GROSS";
+        const isDriverHeader=r1[1]&&/^\d{1,2}$/.test(r1[1])&&r3[1]==="MILES"&&(r4[1]==="GROSS"||!String(r4[1]||"").trim());
         if(!isDriverHeader){i++;continue;}
         // Extract driver info
         const tagM=String(r1[2]||"").match(/\*+\s*(?:Co\s*-?\s*driver|Solo)(?:\s*driver)?(.*)$/i);
@@ -5463,9 +5472,20 @@ function App(){
       const grid=window.XLSX.utils.sheet_to_json(sheet,{header:1,defval:""});
       if(grid.length<20)return[];
       const summaryIdxs=[];
+      // A dispatcher summary row: "Name | RPM | … | Gross: | total | /truck | … | miles | … | /truck".
+      // 10/5 week: someone cleared "Gross:" in Eimantas's row 48, the row wasn't seen, and his
+      // drivers ran into Elijah's section. So also accept the row by its other labels: col A
+      // empty, a name in col B, "/truck" and "miles" present.
+      const isSummaryRow=(row)=>{
+        const rt=row.join(' ');
+        if(rt.includes('Gross:')&&rt.includes('/truck'))return true;
+        const a=String(row[0]??"").trim(),b=String(row[1]??"").trim();
+        const cells=row.map(c=>String(c??"").trim().toLowerCase());
+        return !a&&b&&!/^\d/.test(b)&&cells.filter(c=>c==='/truck').length>=1&&cells.includes('miles');
+      };
       grid.forEach((row,i)=>{
         const rt=row.join(' ');
-        if(rt.includes('Gross:')&&rt.includes('/truck')){
+        if(isSummaryRow(row)){
           if(rt.toLowerCase().includes('zygis/laura'))return;
           summaryIdxs.push(i);
         }
@@ -5475,8 +5495,9 @@ function App(){
       let prevEnd=0;
       summaryIdxs.forEach(sumIdx=>{
         const row=grid[sumIdx];
-        const dispName=String(row[1]||"").trim();
-        if(!dispName){prevEnd=sumIdx+1;return;}
+        // A summary row with no name (10/5: row 338 under Lukas) still closes its block;
+        // those drivers are individually tagged and get sorted by tag, not dropped.
+        const dispName=String(row[1]||"").trim()||MB_UNASSIGNED;
         if(sumIdx>=500){prevEnd=sumIdx+1;return;}
         sections.push({dispName,startRow:prevEnd,endRow:sumIdx-1});
         prevEnd=sumIdx+1;
@@ -5522,7 +5543,11 @@ function App(){
           const r3=grid[i+2]||[];
           const r4=grid[i+3]||[];
           const posStr=String(r1[0]||"").trim();
-          const isDriverHeader=/^\d{1,2}$/.test(posStr)&&String(r3[0]).trim()==='MILES'&&String(r4[0]).trim()==='GROSS';
+          // 10/5: on 5 of Lukas's drivers the "GROSS" label in col A had been overwritten with
+          // spaces, and those drivers were skipped. MILES two rows down is enough; the GROSS
+          // label may be blank.
+          const r4a=String(r4[0]??"").trim();
+          const isDriverHeader=/^\d{1,2}$/.test(posStr)&&String(r3[0]).trim()==='MILES'&&(r4a==='GROSS'||r4a==='');
           if(!isDriverHeader){i++;continue;}
           let rawName=String(r1[1]||"").trim();
           const tagM=rawName.match(/\*+\s*(?:Co\s*-?\s*driver|Solo)(?:\s*driver)?(.*)$/i);
@@ -5637,11 +5662,22 @@ function App(){
     const results=[];
     mainBoardData.dispatchers.forEach(disp=>{
       const isZygis=String(disp.name).toLowerCase().includes("zygis");
+      // Renata is the manager: she takes trucks when dispatch is overloaded, so
+      // her trucks' bonuses count but she gets no dispatcher base. "Unassigned"
+      // holds drivers in a tagged block with no dispatcher tag: shown, not paid.
+      const isManager=/^renata\b/i.test(String(disp.name));
+      const isUnassigned=disp.name==="Unassigned";
       const activeDrivers=disp.drivers.filter(d=>d.gross>0);
       const driverCount=activeDrivers.length;
       // Base compensation
       let base=0,baseNote="";
-      if(isZygis){
+      if(isUnassigned){
+        base=0;
+        baseNote="Not paid — add the dispatcher's name after these drivers on the sheet";
+      } else if(isManager){
+        base=0;
+        baseNote="Manager — no dispatcher base (use the override if she is paid for these trucks)";
+      } else if(isZygis){
         base=200*driverCount;
         baseNote=`$200 × ${driverCount} driver${driverCount===1?"":"s"}`;
       } else {
@@ -5671,7 +5707,7 @@ function App(){
         const b=bonusForGross(d.gross);
         return{...d,bonus:b.amount,tier:b.tier};
       }).sort((a,b)=>b.gross-a.gross);
-      const bonusTotal=driversWithBonuses.reduce((s,d)=>s+d.bonus,0);
+      const bonusTotal=isUnassigned?0:driversWithBonuses.reduce((s,d)=>s+d.bonus,0);
       const computed=base+ten.total+bonusTotal;
       // Manual override — keyed by freight week id (or "noweek" if none)
       const ovKey=freightWeek?.id||"noweek";
