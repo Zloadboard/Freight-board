@@ -5204,6 +5204,66 @@ function App(){
   // We do NOT hardcode row numbers because they may vary. Instead we walk the
   // rows and use structural signals: summary rows terminate a section; driver
   // header rows have a numeric position index in col 1 (1-11).
+  // ─── PER-DRIVER DISPATCHER TAGS ──────────────────────────────────────────
+  // Since the 9/28 week the shared block under Lukas (rows ~290-334) holds
+  // drivers that each belong to a different dispatcher, written after the
+  // driver's name: "Ahmed Omar***Co driver TANKER EZ", "Moses ...Co driver
+  // Elijah", "Wycliff ...Co driver NT Renata", "Badrudin ...Co-Driver NT Maz".
+  // That block's summary row is labelled with one name (e.g. "Justas"), so the
+  // payroll credited all of them to that one person. The tag after the name now
+  // decides: a word matching a dispatcher (EZ = Eimantas, Maz = Mazvydas, Ren =
+  // Renata, or any dispatcher's own name) moves the driver to that dispatcher.
+  // Notes like TANKER / NT / Chains are ignored; a driver without a matching
+  // tag stays with the section it is in.
+  const MB_TAG_ALIASES={ez:"Eimantas",eimantas:"Eimantas",maz:"Mazvydas",mazvydas:"Mazvydas",ren:"Renata",renata:"Renata",zygis:"Zygis",zyggi:"Zygis",ziggy:"Zygis",zygi:"Zygis"};
+  // Dispatchers who can be tagged but may not have their own section on the sheet.
+  const MB_TAG_EXTRA=["Renata"];
+  const mbDispatcherFromTag=(tag,sectionNames)=>{
+    const toks=String(tag||"").split(/[^A-Za-z]+/).filter(Boolean);
+    const sec=n=>sectionNames.find(x=>x.toLowerCase()===String(n).toLowerCase());
+    for(let i=toks.length-1;i>=0;i--){ // the tag is written last
+      const t=toks[i].toLowerCase();
+      if(sec(t))return sec(t);
+      if(MB_TAG_ALIASES[t]){
+        const want=MB_TAG_ALIASES[t];
+        return sec(want)||sectionNames.find(x=>x.toLowerCase().startsWith(want.toLowerCase().slice(0,3)))||want;
+      }
+      if(t.length>=3){
+        const pre=sectionNames.find(n=>n.toLowerCase().startsWith(t));
+        if(pre)return pre;
+      }
+      const extra=MB_TAG_EXTRA.find(n=>n.toLowerCase()===t);
+      if(extra)return extra;
+    }
+    return null;
+  };
+  // Tags only decide in a block that is individually assigned: at least half of
+  // its drivers (and at least 2) carry a dispatcher tag. Your regular sections
+  // keep going by rows, even if one driver there has an old tag in the name.
+  const mbAssignByTag=(dispatchersOut)=>{
+    const known=dispatchersOut.map(d=>d.name).filter(Boolean);
+    const byName={};
+    dispatchersOut.forEach(d=>{byName[d.name]=d;});
+    const moves=[];
+    dispatchersOut.forEach(d=>{
+      const targets=d.drivers.map(dr=>dr.tag?mbDispatcherFromTag(dr.tag,known):null);
+      const tagged=targets.filter(Boolean).length;
+      if(tagged<2||tagged*2<d.drivers.length)return; // a regular section: rows decide
+      d.drivers=d.drivers.filter((dr,i)=>{
+        const target=targets[i];
+        if(!target){if(dr.tag)dr.untaggedNote=dr.tag;return true;}
+        if(target===d.name)return true;
+        moves.push({dr:{...dr,assignedBy:"tag",sheetSection:d.name},target});
+        return false;
+      });
+    });
+    moves.forEach(({dr,target})=>{
+      if(!byName[target]){byName[target]={name:target,drivers:[]};dispatchersOut.push(byName[target]);}
+      byName[target].drivers.push(dr);
+    });
+    return dispatchersOut.filter(d=>d.drivers.length>0);
+  };
+
   const parseMainBoardHTML=(htmlText)=>{
     const parser=new DOMParser();
     const doc=parser.parseFromString(htmlText,"text/html");
@@ -5266,6 +5326,8 @@ function App(){
         const isDriverHeader=r1[1]&&/^\d{1,2}$/.test(r1[1])&&r3[1]==="MILES"&&r4[1]==="GROSS";
         if(!isDriverHeader){i++;continue;}
         // Extract driver info
+        const tagM=String(r1[2]||"").match(/\*+\s*(?:Co\s*-?\s*driver|Solo)(?:\s*driver)?(.*)$/i);
+        const tag=tagM?tagM[1].trim():"";
         const rawName=(r1[2]||"").replace(/\*+\s*Co[- ]?driver.*/i,"").replace(/\*+/g,"").trim();
         const truck=(r1[3]||"").trim();
         const phone=(r2[2]||"").trim();
@@ -5274,7 +5336,7 @@ function App(){
         const gross=parseFloat(grossStr);
         // Skip empty driver slots (no name, no gross)
         if(rawName&&isFinite(gross)&&gross>0){
-          drivers.push({name:rawName,truck,phone,gross:Math.round(gross)});
+          drivers.push({name:rawName,truck,phone,gross:Math.round(gross),tag});
         }
         i+=4;
       }
@@ -5283,6 +5345,8 @@ function App(){
       }
     });
     if(!dispatchersOut.length)return{ok:false,error:"Parsed the file but found no drivers with gross > 0."};
+    const tagged=mbAssignByTag(dispatchersOut);
+    dispatchersOut.length=0;tagged.forEach(d=>dispatchersOut.push(d));
     // Try to detect the week label from filename or first row
     // Detect the week's date range from the top of the sheet. The Main Board has
     // date cells for Monday through Sunday in row 2 (or thereabouts). We collect
@@ -5461,8 +5525,10 @@ function App(){
           const isDriverHeader=/^\d{1,2}$/.test(posStr)&&String(r3[0]).trim()==='MILES'&&String(r4[0]).trim()==='GROSS';
           if(!isDriverHeader){i++;continue;}
           let rawName=String(r1[1]||"").trim();
+          const tagM=rawName.match(/\*+\s*(?:Co\s*-?\s*driver|Solo)(?:\s*driver)?(.*)$/i);
+          const tag=tagM?tagM[1].trim():"";
           // Strip trailing "**** Co driver" / "*** Co-Driver" / "**Solo" role markers
-          rawName=rawName.replace(/\*+\s*(Co[- ]?[Dd]river|Solo).*$/,"").replace(/\*+/g,"").trim();
+          rawName=rawName.replace(/\*+\s*(Co\s*-?\s*driver|Solo).*$/i,"").replace(/\*+/g,"").trim();
           const truck=String(r1[6]||"").trim();
           const phone=String(r2[1]||"").trim();
           const grossRaw=r4[1];
@@ -5473,13 +5539,15 @@ function App(){
             gross=parseFloat(grossStr);
           }
           if(rawName&&isFinite(gross)&&gross>0){
-            drivers.push({name:rawName,truck,phone,gross:Math.round(gross)});
+            drivers.push({name:rawName,truck,phone,gross:Math.round(gross),tag});
           }
           i+=4;
         }
         if(drivers.length>0)dispOut.push({name:sec.dispName,drivers});
       });
-      return dispOut;
+      const tagged=mbAssignByTag(dispOut);
+      tagged.laneRecs=laneRecs;
+      return tagged;
     };
     const weeks=[];
     wb.SheetNames.forEach(sheetName=>{
@@ -11107,6 +11175,8 @@ ${accRows.length>0?`
                                 <div key={di} style={{display:"grid",gridTemplateColumns:"minmax(0,1.5fr) 60px 100px 100px",gap:"8px",padding:"6px 10px",fontSize:"11px",borderBottom:di<disp.drivers.length-1?"1px solid #f1f5f9":"none",alignItems:"center"}}>
                                   <div style={{minWidth:0,overflow:"hidden"}}>
                                     <div style={{fontWeight:"600",color:"#0f1f3d",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.name}</div>
+                                    {d.assignedBy==="tag"&&<div title={"Tagged \""+(d.tag||"")+"\" on the sheet"} style={{fontSize:"9px",color:"#7c3aed",fontWeight:"600"}}>by tag · sits in {d.sheetSection}'s rows</div>}
+                                    {d.untaggedNote&&!d.assignedBy&&<div title="This word after the name is not a known dispatcher" style={{fontSize:"9px",color:"#b45309",fontWeight:"600"}}>tag "{d.untaggedNote}" not matched</div>}
                                   </div>
                                   <div style={{textAlign:"center",color:"#64748b",fontWeight:"600"}}>{d.truck||"—"}</div>
                                   <div style={{textAlign:"right",fontWeight:"700",color:"#0f1f3d"}}>${d.gross.toLocaleString()}</div>
